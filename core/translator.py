@@ -234,6 +234,7 @@ class GoogleTranslator:
         is_chinese_fn=None,
         count_chinese_fn=None,
         pass_callback: Optional[Callable[[int, int, int, float], None]] = None,
+        max_retry_passes: int = 8,
     ) -> List[str]:
         """
         Translate texts and keep retrying ALL failures until everything is done.
@@ -244,7 +245,9 @@ class GoogleTranslator:
         - Cooldown between passes: 5 → 10 → 20 → 30 → 60 → 60 (cap at 60s)
         - Per-request retries increase: base → +1 → +2 (cap at base+3)
         
-        Keeps looping until zero failures remain or cancelled.
+        Keeps looping until zero failures remain, cancelled, or max_retry_passes
+        is reached with 3 or fewer segments still failing (to avoid getting stuck
+        on a handful of stubborn segments that the API consistently rejects).
         
         Args:
             texts: List of texts to translate
@@ -253,6 +256,7 @@ class GoogleTranslator:
             count_chinese_fn: Function to count Chinese chars
             pass_callback: Optional callback(pass_number, remaining, total, cooldown)
                            called at the start of each retry pass
+            max_retry_passes: Give up if stuck on ≤3 segments after this many passes
             
         Returns:
             List of translated texts
@@ -297,6 +301,11 @@ class GoogleTranslator:
             
             if not failed_indices:
                 break  # 🎉 Everything translated
+
+            if len(failed_indices) <= 3 and retry_pass >= max_retry_passes:
+                print(f"\n  ⚠ Stuck on {len(failed_indices)} segment(s) after {max_retry_passes} passes. "
+                      f"Giving up and proceeding.")
+                break  # Don't block forever on a handful of stubborn segments
             
             retry_pass += 1
             

@@ -59,7 +59,7 @@ Based on WebToEpub extension and fixTranslate.py.
 4. **Options**:
    - ✅ Remove watermarks & ads - Cleans the content
    - ✅ Translate to English - Translates Chinese text
-   - Translation Workers - Number of concurrent translation requests (default: 100)
+   - Translation Workers - Number of concurrent translation requests (default: 200)
 
 5. **Download**: Click "Download EPUB" — saved automatically to your Downloads folder
 
@@ -135,6 +135,7 @@ novel_downloader/
 ### "Translation failed" errors
 - Reduce workers (try 20-30 instead of 50)
 - Google may rate-limit; the app will retry with backoff
+- In multi-download mode, if 1–3 segments persistently fail after 8 retry passes, the app will skip them and continue to the next novel rather than getting stuck
 
 ### "Could not extract book ID"
 - Make sure you're using the main novel page URL
