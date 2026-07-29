@@ -2,7 +2,7 @@
 
 **Current version: 2.1.0**
 
-A standalone Windows and macOS application for downloading Chinese web novels and translating them to English EPUBs.
+A Python application for downloading Chinese web novels and translating them to English EPUBs. Run it from source on **Windows, macOS, or Linux** (any OS with Python 3.10+). Prebuilt executables are published for **Windows and macOS**.
 
 Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another project of mine).
 
@@ -26,7 +26,9 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 
 ## Installation
 
-### Option 1: Run from Source (Recommended for development)
+### Option 1: Run from Source (any OS)
+
+Works on Windows, macOS, and Linux.
 
 1. Install Python 3.10 or newer
 2. Clone/download this folder
@@ -39,7 +41,15 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
    python app.py
    ```
 
-### Option 2: Build Standalone Executable
+### Option 2: Prebuilt Executables (Windows & macOS)
+
+Download the latest release from the [Releases](https://github.com/joelsnl/novelDownloader/releases) page:
+- `NovelDownloader-windows.zip`
+- `NovelDownloader-macos.zip`
+
+Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in-app updater uses these same builds.
+
+### Option 3: Build Standalone Executable Yourself
 
 1. Install dependencies + PyInstaller:
    ```bash
@@ -52,7 +62,7 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
    ```
 3. Find the executable in `dist/`:
    - **Windows:** `NovelDownloader.exe`
-   - **macOS:** `NovelDownloader.app`
+   - **macOS / Linux:** `NovelDownloader`
 
 ## Usage
 
