@@ -281,15 +281,14 @@ class Shuba69Parser(BaseParser):
             else:
                 referer = self._base_url
         
-        # Small delay between chapter fetches
-        time.sleep(self.request_delay)
-        
+        # Note: the download loop in the app already sleeps request_delay
+        # between chapters, so no extra delay here.
         soup = self._fetch_with_encoding(chapter.url, referer=referer)
         
         # Content is in div.txtnav
         content_el = soup.select_one("div.txtnav")
         if not content_el:
-            return f"<p>Failed to extract content from {chapter.url}</p>"
+            raise ValueError(f"Could not find chapter content at {chapter.url}")
         
         # Remove unwanted elements
         for selector in ['.txtinfo', '#txtright', '.bottom-ad', 'script', 

@@ -1,6 +1,8 @@
 # Novel Downloader & Translator
 
-A standalone Windows application for downloading Chinese web novels and translating them to English EPUBs.
+**Current version: 2.1.0**
+
+A standalone Windows and macOS application for downloading Chinese web novels and translating them to English EPUBs.
 
 Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another project of mine).
 
@@ -9,13 +11,18 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 ## Features
 
 - **Download novels** from supported sites (currently: twkan.com, 69shuba.com, uukanshu.cc)
+- **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site
 - **Multi-download mode** — queue up to 7 novels and download them all sequentially with one click
 - **Remove watermarks** and ads automatically
-- **Translate to English** using Google Translate (free, concurrent)
-- **Create EPUB** files ready for e-readers
-- **Select specific chapters** to download
-- **Progress tracking** with cancel support
-- **Auto-updater** with silent background update checks
+- **Translate to English** using Google Translate (free, concurrent) or a LibreTranslate server
+- **Resume support** — downloaded chapters are cached, so re-runs and interrupted downloads skip what's already fetched
+- **Translation cache** — previously translated text is reused across runs, costing zero API requests
+- **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes
+- **Select specific chapters** to download, including quick range selection (e.g. 200-450)
+- **Progress tracking** with ETA and cancel support; failed chapters are retried at the end of the run
+- **Custom output folder** and persistent settings
+- **Auto-updater** — downloads prebuilt, checksum-verified release builds when available
+- **Log file** (`logs/novel_downloader.log`) for diagnosing issues with the packaged app
 
 ## Installation
 
@@ -25,7 +32,6 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 2. Clone/download this folder
 3. Install dependencies:
    ```bash
-   cd novel_downloader
    pip install -r requirements.txt
    ```
 4. Run the app:
@@ -44,7 +50,9 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
    ```bash
    python build.py
    ```
-3. Find the executable in `dist/NovelDownloader.exe`
+3. Find the executable in `dist/`:
+   - **Windows:** `NovelDownloader.exe`
+   - **macOS:** `NovelDownloader.app`
 
 ## Usage
 
@@ -57,13 +65,17 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 
 3. **Select Chapters**: Check/uncheck chapters you want to download
    - Use "Select All", "Select None", or "Invert" for bulk selection
+   - Or enter a range (e.g. 200 - 450) and click "Select Range"
 
-4. **Options**:
+4. **Options** (remembered between sessions):
    - ✅ Remove watermarks & ads - Cleans the content
    - ✅ Translate to English - Translates Chinese text
-   - Translation Workers - Number of concurrent translation requests (default: 100)
+   - ✅ Use chapter cache (resume) - Reuses chapters downloaded in previous runs
+   - Translator - Google (default) or LibreTranslate (server URL configurable in `settings.json`)
+   - Translation Workers - Number of concurrent translation requests (default: 200)
+   - Save to - Output folder (defaults to your Downloads folder)
 
-5. **Download**: Click "Download EPUB" — saved automatically to your Downloads folder
+5. **Download**: Click "Download EPUB" — saved automatically to the chosen folder
 
 ### Multi Mode
 
@@ -80,6 +92,7 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 | twkan.com | `https://twkan.com/book/{id}.html` | ✅ Working |
 | 69shuba.com | `https://69shuba.com/book/{id}/` | ✅ Working |
 | uukanshu.cc | `https://uukanshu.cc/book/{id}/` | ✅ Working |
+| Other sites | any novel table-of-contents URL | 🧪 Experimental (generic parser) |
 
 ## Adding New Sites
 
@@ -107,29 +120,42 @@ class NewSiteParser(BaseParser):
         pass
 ```
 
-Then import it in `parsers/__init__.py`:
+Then import it in `parsers/__init__.py` **before** the generic parser (registration order matters — the generic parser matches any URL and must stay last):
 ```python
 from parsers.newsite import NewSiteParser
+```
+
+## Running Tests
+
+The test suite is fully offline (HTML fixtures, no network needed):
+
+```bash
+pip install pytest
+python -m pytest tests/
 ```
 
 ## Project Structure
 
 ```
-novel_downloader/
+.
 ├── app.py              # Main GUI application
 ├── requirements.txt    # Python dependencies
-├── build.py           # PyInstaller build script
+├── build.py            # PyInstaller build script
 ├── core/
-│   ├── __init__.py
-│   ├── parser.py      # Base parser class
-│   ├── cleaner.py     # Watermark/ad removal
-│   ├── translator.py  # Google Translate integration
-│   └── epub_builder.py # EPUB creation
-└── parsers/
-    ├── __init__.py
-    ├── twkan.py       # twkan.com parser
-    ├── shuba69.py     # 69shuba.com parser
-    └── uukanshu.py    # uukanshu.cc parser
+│   ├── parser.py       # Base parser class + registry
+│   ├── cleaner.py      # Watermark/ad removal
+│   ├── translator.py   # Translation (Google / LibreTranslate)
+│   ├── epub_builder.py # EPUB creation
+│   ├── settings.py     # Persistent app settings
+│   ├── cache.py        # Chapter + translation caches (SQLite)
+│   ├── logger.py       # Log-to-file setup
+│   └── updater.py      # Auto-updater
+├── parsers/
+│   ├── twkan.py        # twkan.com parser
+│   ├── shuba69.py      # 69shuba.com parser
+│   ├── uukanshu.py     # uukanshu.cc parser
+│   └── generic.py      # Fallback parser for other sites
+└── tests/              # Offline pytest suite
 ```
 
 ## Troubleshooting
@@ -137,6 +163,9 @@ novel_downloader/
 ### "Translation failed" errors
 - Reduce workers (try 20-30 instead of 50)
 - Google may rate-limit; the app will retry with backoff
+- If some segments persistently fail to translate, the app gives up after a
+  few retry passes, keeps the best available text, and builds the EPUB anyway
+  instead of getting stuck
 
 ### "Could not extract book ID"
 - Make sure you're using the main novel page URL

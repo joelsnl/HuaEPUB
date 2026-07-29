@@ -1,0 +1,129 @@
+"""Offline parser tests using HTML fixtures (no network)."""
+
+import pytest
+from bs4 import BeautifulSoup
+
+from core.parser import get_parser_for_url, Chapter
+from parsers.twkan import TwkanParser
+from parsers.shuba69 import Shuba69Parser
+from parsers.uukanshu import UUKanshuParser
+from parsers.generic import GenericParser
+
+from conftest import load_fixture
+
+
+def soup_of(fixture_name: str) -> BeautifulSoup:
+    return BeautifulSoup(load_fixture(fixture_name), 'lxml')
+
+
+class TestRegistry:
+    def test_dedicated_parsers_win_over_generic(self):
+        assert isinstance(get_parser_for_url('https://twkan.com/book/76222.html'), TwkanParser)
+        assert isinstance(get_parser_for_url('https://69shuba.com/book/123.htm'), Shuba69Parser)
+        assert isinstance(get_parser_for_url('https://uukanshu.cc/book/22432/'), UUKanshuParser)
+
+    def test_generic_is_fallback_for_unknown_sites(self):
+        parser = get_parser_for_url('https://some-random-novel-site.example/book/1')
+        assert isinstance(parser, GenericParser)
+
+    def test_non_http_not_handled(self):
+        assert get_parser_for_url('ftp://example.com/x') is None
+
+
+class TestTwkan:
+    def test_parse_novel_info(self):
+        parser = TwkanParser()
+        info = parser._parse_novel_info(
+            soup_of('twkan_book.html'), 'https://twkan.com/book/76222.html'
+        )
+        assert info.title == '測試小說'
+        assert info.author == '測試作者'
+        assert '測試小說' in info.description or info.description
+        assert info.cover_url.endswith('76222s.jpg')
+        assert '玄幻' in info.tags
+
+    def test_parse_chapter_list(self):
+        parser = TwkanParser()
+        chapters = parser._parse_chapter_list(load_fixture('twkan_chapterlist.html'))
+        assert len(chapters) == 3  # the /book/ link is filtered out
+        assert chapters[0].title == '第1章 開始'
+        assert chapters[0].url == 'https://twkan.com/txt/76222/1000001'
+        assert chapters[2].url == 'https://twkan.com/txt/76222/1000003'
+
+
+class TestShuba69:
+    def test_parse_novel_info(self):
+        parser = Shuba69Parser()
+        info = parser._parse_novel_info(
+            soup_of('shuba69_book.html'), 'https://69shuba.com/book/123.htm'
+        )
+        assert info.title == '测试书'
+        assert info.author == '作者名'
+        assert info.description == '这是一本测试书的简介。'
+        assert info.cover_url.startswith('http')
+        assert '玄幻小说' in info.tags
+
+    def test_parse_chapter_list_reverses_order(self):
+        parser = Shuba69Parser()
+        chapters = parser._parse_chapter_list(
+            soup_of('shuba69_toc.html'), 'https://69shuba.com/book/123/'
+        )
+        assert len(chapters) == 3
+        # Site lists newest first; parser must reverse to reading order
+        assert chapters[0].title == '第1章 开头'
+        assert chapters[-1].title == '第3章 结尾'
+        assert [c.index for c in chapters] == [0, 1, 2]
+
+
+class TestUUKanshu:
+    def test_parse_novel_info(self):
+        parser = UUKanshuParser()
+        info = parser._parse_novel_info(
+            soup_of('uukanshu_book.html'), 'https://uukanshu.cc/book/22432/'
+        )
+        assert info.title == '繁體測試書'
+        assert info.author == '繁體作者'
+        assert info.language == 'zh-Hant'
+
+    def test_parse_chapter_list(self):
+        parser = UUKanshuParser()
+        chapters = parser._parse_chapter_list(soup_of('uukanshu_book.html'), '22432')
+        assert len(chapters) == 3
+        assert chapters[0].title == '第一章 起點'
+        assert chapters[0].url.startswith('http')
+
+
+class TestGeneric:
+    def test_parse_novel_info_from_meta(self):
+        parser = GenericParser()
+        info = parser._parse_novel_info(
+            soup_of('generic_toc.html'), 'https://unknown.example/novel/1/'
+        )
+        assert info.title == '未知站點小說'
+        assert info.author == '無名氏'
+        assert info.cover_url == 'https://unknown.example/cover.jpg'  # made absolute
+
+    def test_chapter_list_ignores_nav_links(self):
+        parser = GenericParser()
+        chapters = parser._parse_chapter_list(
+            soup_of('generic_toc.html'), 'https://unknown.example/novel/1/'
+        )
+        assert len(chapters) == 6
+        assert chapters[0].title == '第1章 陌生的开始'
+        assert chapters[0].url == 'https://unknown.example/novel/1/ch1.html'
+        assert all('login' not in c.url for c in chapters)
+
+    def test_content_extraction_finds_main_text(self):
+        soup = soup_of('generic_chapter.html')
+        for tag in ('nav', 'footer'):
+            for el in soup.find_all(tag):
+                el.decompose()
+        el = GenericParser._find_content_element(soup)
+        assert el is not None
+        text = el.get_text()
+        assert '正文的第一段' in text
+        assert '关于我们' not in text
+
+    def test_content_too_short_returns_none(self):
+        soup = BeautifulSoup('<div>short</div>', 'lxml')
+        assert GenericParser._find_content_element(soup) is None

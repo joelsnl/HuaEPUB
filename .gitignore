@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller build artifacts
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# Tests
+.pytest_cache/
+.pytest_deps/
+
+# Runtime-generated files
+.update_backup/
+updater_settings.json
+settings.json
+cache.db
+cache.db-wal
+cache.db-shm
+logs/
+_update_helper.sh
+_update_helper.bat

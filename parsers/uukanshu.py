@@ -5,7 +5,6 @@ Traditional Chinese novel site with direct chapter listing on the main page.
 """
 
 import re
-import time
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -78,8 +77,11 @@ class UUKanshuParser(BaseParser):
         return self._parse_chapter_list(soup, book_id)
 
     def get_chapter_content(self, chapter: Chapter) -> str:
-        """Fetch and extract content for a single chapter."""
-        time.sleep(self.request_delay)
+        """Fetch and extract content for a single chapter.
+        
+        Note: the download loop in the app already sleeps request_delay
+        between chapters, so no extra delay here.
+        """
         soup = self.fetch_page(chapter.url)
 
         # Content lives inside div.readcotent (note: site typo, not "readcontent")
@@ -88,7 +90,7 @@ class UUKanshuParser(BaseParser):
             # Fallback selectors
             content_el = soup.select_one("div.readcontent, div.content, #bookContent")
         if not content_el:
-            return f"<p>Failed to extract content from {chapter.url}</p>"
+            raise ValueError(f"Could not find chapter content at {chapter.url}")
 
         # Remove scripts, ads, and other junk
         for selector in ['script', 'ins.adsbygoogle', '.ads', '.ad',

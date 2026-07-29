@@ -1,0 +1,100 @@
+"""Offline tests for core.epub_builder."""
+
+import hashlib
+
+from ebooklib import epub
+
+from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder, VOLUME_PREFIX_RE
+
+
+def make_epub_chapter(title):
+    ch = epub.EpubHtml(title=title, file_name='x.xhtml')
+    ch.title = title
+    return ch
+
+
+class TestStableIdentifier:
+    def test_identifier_is_deterministic(self):
+        url = 'https://example.com/book/1'
+        expected = f"novel-{hashlib.md5(url.encode('utf-8')).hexdigest()[:16]}"
+        # Two hash computations across "runs" must match
+        assert expected == f"novel-{hashlib.md5(url.encode('utf-8')).hexdigest()[:16]}"
+
+
+class TestTranslationApplication:
+    def test_node_replacement_escapes_special_chars(self):
+        builder = TranslatedEPUBBuilder.__new__(TranslatedEPUBBuilder)
+        html = '<p>你好世界</p><p>第二段</p>'
+        segments = builder._extract_text_segments(html)
+        assert segments == ['你好世界', '第二段']
+
+        pairs = [('你好世界', 'Hello <world> & "friends"'), ('第二段', 'Second')]
+        result = builder._apply_content_translations(html, pairs)
+        assert 'Hello' in result
+        assert '<world>' not in result  # escaped, can't break the XHTML
+        assert '&lt;world&gt;' in result
+        assert 'Second' in result
+
+    def test_untranslated_segments_left_alone(self):
+        builder = TranslatedEPUBBuilder.__new__(TranslatedEPUBBuilder)
+        html = '<p>你好</p>'
+        result = builder._apply_content_translations(html, [('你好', '你好')])
+        assert '你好' in result
+
+
+class TestVolumeToc:
+    def make_builder(self):
+        return EPUBBuilder.__new__(EPUBBuilder)
+
+    def test_flat_toc_without_volume_prefixes(self):
+        builder = self.make_builder()
+        chapters = [make_epub_chapter(f'Chapter {i}') for i in range(1, 6)]
+        toc = builder._build_toc(chapters)
+        assert toc == chapters
+
+    def test_grouped_toc_with_chinese_volumes(self):
+        builder = self.make_builder()
+        titles = (
+            ['第一卷 第%d章' % i for i in range(1, 4)]
+            + ['第二卷 第%d章' % i for i in range(1, 4)]
+        )
+        chapters = [make_epub_chapter(t) for t in titles]
+        toc = builder._build_toc(chapters)
+        assert len(toc) == 2
+        section1, children1 = toc[0]
+        section2, children2 = toc[1]
+        assert section1.title == '第一卷'
+        assert section2.title == '第二卷'
+        assert len(children1) == 3
+        assert len(children2) == 3
+
+    def test_grouped_toc_with_english_volumes(self):
+        builder = self.make_builder()
+        titles = ['Volume 1 Chapter 1', 'Volume 1 Chapter 2',
+                  'Volume 2 Chapter 1', 'Volume 2 Chapter 2']
+        chapters = [make_epub_chapter(t) for t in titles]
+        toc = builder._build_toc(chapters)
+        assert len(toc) == 2
+
+    def test_single_volume_stays_flat(self):
+        builder = self.make_builder()
+        chapters = [make_epub_chapter(f'第一卷 第{i}章') for i in range(1, 5)]
+        toc = builder._build_toc(chapters)
+        assert toc == chapters  # only one distinct volume - no grouping
+
+    def test_mostly_unlabeled_stays_flat(self):
+        builder = self.make_builder()
+        titles = ['第一卷 第1章', '第二卷 第2章'] + [f'Chapter {i}' for i in range(3, 11)]
+        chapters = [make_epub_chapter(t) for t in titles]
+        toc = builder._build_toc(chapters)
+        assert toc == chapters  # <60% labeled - no grouping
+
+
+class TestVolumeRegex:
+    def test_matches(self):
+        for title in ['第一卷 风起', '第12卷 高潮', 'Volume 3: Rising', 'Vol. 2 Something', 'Book 4 - End']:
+            assert VOLUME_PREFIX_RE.match(title), title
+
+    def test_non_matches(self):
+        for title in ['第一章 开始', 'Chapter 5', 'Prologue']:
+            assert not VOLUME_PREFIX_RE.match(title), title

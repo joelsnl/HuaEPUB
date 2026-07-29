@@ -7,8 +7,8 @@ Supports both source installations and compiled executables.
 
 import os
 import sys
-import json
 import shutil
+import hashlib
 import zipfile
 import tempfile
 import subprocess
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Callable
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 # GitHub repository info
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -141,20 +141,23 @@ def _find_python() -> Optional[str]:
     return None
 
 
-def _create_replacement_script(new_exe: Path, old_exe: Path, app_dir: Path) -> Path:
+def _create_replacement_script(new_exe: Path, old_exe: Path, app_dir: Path, pid: int) -> Path:
     """
     Create a script that will replace the old executable with the new one.
     This script runs after the main app closes.
+    
+    Waits on the specific PID of the running app. (Name matching with
+    pgrep -f could match the helper script's own command line and hang.)
     """
     if sys.platform == 'win32':
         # Windows batch script
         script_path = app_dir / '_update_helper.bat'
         script_content = f'''@echo off
-echo Waiting for application to close...
+echo Waiting for application (pid {pid}) to close...
 timeout /t 2 /nobreak > nul
 
 :waitloop
-tasklist /FI "IMAGENAME eq {old_exe.name}" 2>NUL | find /I /N "{old_exe.name}">NUL
+tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL
 if "%ERRORLEVEL%"=="0" (
     timeout /t 1 /nobreak > nul
     goto waitloop
@@ -172,11 +175,11 @@ del /f "{app_dir / '_update_backup.exe'}" 2>nul
         # Unix shell script (macOS/Linux)
         script_path = app_dir / '_update_helper.sh'
         script_content = f'''#!/bin/bash
-echo "Waiting for application to close..."
+echo "Waiting for application (pid {pid}) to close..."
 sleep 2
 
 # Wait for the old process to finish
-while pgrep -f "{old_exe.name}" > /dev/null 2>&1; do
+while kill -0 {pid} 2>/dev/null; do
     sleep 1
 done
 
@@ -228,17 +231,45 @@ def download_update(
             session = requests.Session()
             session.headers.update({'User-Agent': 'NovelDownloader-Updater/1.0'})
         
+        # Fetch info about the latest release (tag + prebuilt assets)
+        release_data = None
+        try:
+            api_response = session.get(GITHUB_API_URL, timeout=15)
+            if api_response.status_code == 200:
+                release_data = api_response.json()
+        except Exception:
+            release_data = None
+        
+        app_dir = get_app_dir()
+        
+        # Preferred path for compiled apps: download a prebuilt release asset
+        # (built by CI) with checksum verification, instead of building from
+        # source on the user's machine
+        if is_frozen() and release_data:
+            asset = _find_platform_asset(release_data)
+            if asset:
+                return _update_frozen_from_asset(
+                    session, release_data, asset, app_dir, progress_callback
+                )
+            print("  No prebuilt asset for this platform; falling back to source build")
+        
+        # Download the same release tag the update check advertised,
+        # falling back to the main branch if there are no releases
+        download_url = GITHUB_DOWNLOAD_URL
+        if release_data:
+            tag = release_data.get('tag_name', '')
+            if tag:
+                download_url = f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{tag}.zip"
+        
         # Download the zip file
         if progress_callback:
             progress_callback(10, 100, "Downloading update...")
         
-        response = session.get(GITHUB_DOWNLOAD_URL, timeout=120)
+        response = session.get(download_url, timeout=120)
         response.raise_for_status()
         
         if progress_callback:
             progress_callback(30, 100, "Extracting files...")
-        
-        app_dir = get_app_dir()
         
         # Create temp directory for extraction
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -270,6 +301,144 @@ def download_update(
         import traceback
         traceback.print_exc()
         return (False, f"Update failed: {str(e)}")
+
+
+def _find_platform_asset(release_data: dict) -> Optional[dict]:
+    """Find the prebuilt executable zip for this platform in a release."""
+    if sys.platform == 'win32':
+        wanted = 'windows'
+    elif sys.platform == 'darwin':
+        wanted = 'macos'
+    else:
+        wanted = 'linux'
+    
+    for asset in release_data.get('assets', []):
+        name = asset.get('name', '').lower()
+        if wanted in name and name.endswith('.zip'):
+            return asset
+    return None
+
+
+def _get_expected_checksum(session, release_data: dict, asset_name: str) -> Optional[str]:
+    """Download the SHA256SUMS asset (if present) and return the expected hash."""
+    for asset in release_data.get('assets', []):
+        if asset.get('name', '').upper().startswith('SHA256SUMS'):
+            try:
+                resp = session.get(asset.get('browser_download_url', ''), timeout=30)
+                resp.raise_for_status()
+                for line in resp.text.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[-1].lstrip('*') == asset_name:
+                        return parts[0].lower()
+            except Exception:
+                return None
+    return None
+
+
+def _launch_replacement_script(script_path: Path):
+    """Run the replacement helper script in the background."""
+    if sys.platform == 'win32':
+        subprocess.Popen(
+            ['cmd', '/c', str(script_path)],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    else:
+        subprocess.Popen(
+            ['/bin/bash', str(script_path)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+
+def _update_frozen_from_asset(
+    session,
+    release_data: dict,
+    asset: dict,
+    app_dir: Path,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> Tuple[bool, str]:
+    """
+    Update a compiled app from a prebuilt release asset.
+    Downloads the zip, verifies its SHA256 against the release's SHA256SUMS
+    (when published), and schedules the executable replacement.
+    """
+    asset_name = asset.get('name', '')
+    url = asset.get('browser_download_url', '')
+    if not url:
+        return (False, "Release asset has no download URL.")
+    
+    if progress_callback:
+        progress_callback(20, 100, f"Downloading {asset_name}...")
+    
+    response = session.get(url, timeout=300)
+    response.raise_for_status()
+    data = response.content
+    
+    # Verify checksum when the release publishes one
+    if progress_callback:
+        progress_callback(60, 100, "Verifying download...")
+    
+    expected = _get_expected_checksum(session, release_data, asset_name)
+    if expected:
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != expected:
+            return (False,
+                "Update failed: checksum mismatch.\n"
+                "The downloaded file may be corrupted or tampered with."
+            )
+        print(f"  Checksum verified: {actual}")
+    else:
+        print("  Warning: release has no SHA256SUMS asset; skipping verification")
+    
+    exe_name = 'NovelDownloader.exe' if sys.platform == 'win32' else 'NovelDownloader'
+    
+    old_exe = get_executable_path()
+    if not old_exe:
+        return (False, "Could not determine current executable path.")
+    
+    if progress_callback:
+        progress_callback(80, 100, "Extracting update...")
+    
+    temp_new_exe = app_dir / f'_new_{exe_name}'
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        zip_path = temp_path / (asset_name or 'update.zip')
+        with open(zip_path, 'wb') as f:
+            f.write(data)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_path)
+        
+        new_exe = None
+        for candidate in temp_path.rglob(exe_name):
+            if candidate.is_file():
+                new_exe = candidate
+                break
+        if new_exe is None:
+            return (False, f"Executable '{exe_name}' not found inside {asset_name}")
+        
+        shutil.copy2(new_exe, temp_new_exe)
+    
+    if sys.platform != 'win32':
+        os.chmod(temp_new_exe, os.stat(temp_new_exe).st_mode | stat.S_IEXEC)
+    
+    if progress_callback:
+        progress_callback(90, 100, "Scheduling replacement...")
+    
+    script_path = _create_replacement_script(temp_new_exe, old_exe, app_dir, os.getpid())
+    _launch_replacement_script(script_path)
+    
+    if progress_callback:
+        progress_callback(100, 100, "Update ready!")
+    
+    return (True,
+        "Update downloaded and verified!\n\n"
+        "The application will now close to apply the update.\n"
+        "Please restart it manually after it closes."
+    )
 
 
 def _update_source_app(
@@ -436,26 +605,9 @@ def _update_frozen_app(
     temp_new_exe = app_dir / f'_new_{new_exe_name}'
     shutil.copy2(new_exe, temp_new_exe)
     
-    # Create the replacement script
-    script_path = _create_replacement_script(temp_new_exe, old_exe, app_dir)
-    
-    # Launch the replacement script
-    if sys.platform == 'win32':
-        # On Windows, launch the batch script without a visible console window
-        subprocess.Popen(
-            ['cmd', '/c', str(script_path)],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-    else:
-        # On Unix, run in background
-        subprocess.Popen(
-            ['/bin/bash', str(script_path)],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+    # Create and launch the replacement script
+    script_path = _create_replacement_script(temp_new_exe, old_exe, app_dir, os.getpid())
+    _launch_replacement_script(script_path)
     
     if progress_callback:
         progress_callback(100, 100, "Update ready!")
@@ -500,45 +652,17 @@ def download_update_async(
     thread.start()
 
 
-# Settings management for auto-update preference
-SETTINGS_FILE = "updater_settings.json"
-
-
-def get_settings_path() -> Path:
-    """Get the path to the settings file."""
-    return get_app_dir() / SETTINGS_FILE
-
-
-def load_settings() -> dict:
-    """Load updater settings."""
-    settings_path = get_settings_path()
-    try:
-        if settings_path.exists():
-            with open(settings_path, 'r') as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {'auto_check_updates': True}
-
-
-def save_settings(settings: dict):
-    """Save updater settings."""
-    settings_path = get_settings_path()
-    try:
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
-    except Exception:
-        pass
-
+# Settings management for auto-update preference (delegates to core.settings,
+# which migrates the legacy updater_settings.json automatically)
 
 def get_auto_check_updates() -> bool:
     """Get the auto-check updates preference."""
-    return load_settings().get('auto_check_updates', True)
+    from core.settings import get_setting
+    return bool(get_setting('auto_check_updates'))
 
 
 def set_auto_check_updates(enabled: bool):
     """Set the auto-check updates preference."""
-    settings = load_settings()
-    settings['auto_check_updates'] = enabled
-    save_settings(settings)
+    from core.settings import set_setting
+    set_setting('auto_check_updates', enabled)
 

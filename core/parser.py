@@ -28,6 +28,23 @@ if not HTTP_CLIENT:
     print("Warning: curl_cffi not installed. Run: pip install curl_cffi")
 
 
+def create_http_session():
+    """
+    Create an HTTP session with Chrome TLS impersonation when curl_cffi
+    is available, falling back to a plain requests session.
+    Shared by parsers, the app (cover preview), and the EPUB builder.
+    """
+    if HTTP_CLIENT == "curl_cffi":
+        return CurlSession(impersonate="chrome120")
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    })
+    return session
+
+
 @dataclass
 class Chapter:
     """Represents a single chapter."""
@@ -63,15 +80,7 @@ class BaseParser(ABC):
     SITE_DOMAINS = []  # e.g., ["twkan.com", "www.twkan.com"]
     
     def __init__(self):
-        if HTTP_CLIENT == "curl_cffi":
-            # curl_cffi with Chrome 120 impersonation
-            self.session = CurlSession(impersonate="chrome120")
-        else:
-            import requests
-            self.session = requests.Session()
-            self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            })
+        self.session = create_http_session()
         
         # Rate limiting - default 2 seconds between requests (like WebToEpub)
         self.request_delay = 2.0

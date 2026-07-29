@@ -13,26 +13,28 @@ New features ported from fixTranslate.py:
 import os
 import io
 import re
-from typing import List, Optional, Callable, Tuple
+import hashlib
+from typing import List, Optional, Callable, Tuple, Dict
 from pathlib import Path
 
 from ebooklib import epub
 
-from core.parser import Chapter, NovelInfo
+from core.parser import Chapter, NovelInfo, create_http_session
 from core.cleaner import ContentCleaner, is_chinese, count_chinese_chars
 
-# Use curl_cffi for better compatibility (same as parser)
-try:
-    from curl_cffi.requests import Session as HttpSession
-    _http_session = HttpSession(impersonate="chrome120")
-    print("EPUB Builder: Using curl_cffi for image downloads")
-except ImportError:
-    import requests
-    _http_session = requests.Session()
-    _http_session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
-    })
-    print("EPUB Builder: Using requests for image downloads")
+# Shared session for image downloads (curl_cffi impersonation when available)
+_http_session = create_http_session()
+
+# Volume prefix detection for TOC grouping (Chinese and translated forms)
+VOLUME_PREFIX_RE = re.compile(
+    r'^\s*('
+    r'第\s*[0-9零一二三四五六七八九十百千两]+\s*[卷部集]'
+    r'|Volume\s*\d+'
+    r'|Vol\.?\s*\d+'
+    r'|Book\s+\d+'
+    r')',
+    re.IGNORECASE
+)
 
 
 class EPUBBuilder:
@@ -71,8 +73,10 @@ class EPUBBuilder:
         
         book = epub.EpubBook()
         
-        # Set metadata
-        book.set_identifier(f"novel-{hash(novel_info.title)}")
+        # Set metadata (md5 keeps the identifier stable across runs,
+        # unlike hash() which is randomized per process)
+        id_source = novel_info.source_url or novel_info.title
+        book.set_identifier(f"novel-{hashlib.md5(id_source.encode('utf-8')).hexdigest()[:16]}")
         book.set_title(novel_info.title)
         book.set_language('en')  # Set to English since we're translating
         book.add_author(novel_info.author)
@@ -146,8 +150,8 @@ class EPUBBuilder:
         if not epub_chapters:
             raise ValueError("No valid chapters to include in EPUB")
         
-        # Add navigation
-        book.toc = epub_chapters
+        # Add navigation (grouped by volume when titles carry volume prefixes)
+        book.toc = self._build_toc(epub_chapters)
         book.spine = spine
         
         # Add required NCX and Nav
@@ -178,6 +182,47 @@ class EPUBBuilder:
             raise
         
         return output_path
+    
+    def _build_toc(self, epub_chapters):
+        """
+        Build the TOC, grouping chapters under volume sections when most
+        chapter titles carry a volume prefix (e.g. 第一卷 / Volume 2).
+        Falls back to the plain flat list otherwise.
+        """
+        labels = []
+        for ch in epub_chapters:
+            m = VOLUME_PREFIX_RE.match(ch.title or '')
+            labels.append(m.group(1).strip() if m else None)
+        
+        distinct = {label for label in labels if label}
+        labeled_count = sum(1 for label in labels if label)
+        if len(distinct) < 2 or labeled_count < len(epub_chapters) * 0.6:
+            return epub_chapters  # flat TOC
+        
+        print(f"  Grouping TOC into {len(distinct)} volumes")
+        toc = []
+        current_label = None
+        current_children = []
+        
+        def flush():
+            nonlocal current_children
+            if current_children:
+                if current_label:
+                    toc.append((epub.Section(current_label), current_children))
+                else:
+                    toc.extend(current_children)
+            current_children = []
+        
+        for ch, label in zip(epub_chapters, labels):
+            # Unlabeled chapters stay in the current volume
+            effective = label or current_label
+            if effective != current_label:
+                flush()
+                current_label = effective
+            current_children.append(ch)
+        flush()
+        
+        return toc
     
     def _download_image(self, url: str) -> Optional[bytes]:
         """Download an image and return bytes using curl_cffi."""
@@ -306,6 +351,11 @@ class TranslatedEPUBBuilder(EPUBBuilder):
             all_texts.append(('author', 0, novel_info.author))
             print(f"Will translate author: {novel_info.author}")
         
+        # Collect description for translation (ends up in EPUB metadata)
+        if novel_info.description and is_chinese(novel_info.description):
+            all_texts.append(('description', 0, novel_info.description))
+            print("Will translate description")
+        
         # Collect all chapter titles for translation (these become the TOC)
         for idx, chapter in enumerate(chapters):
             if is_chinese(chapter.title):
@@ -359,22 +409,33 @@ class TranslatedEPUBBuilder(EPUBBuilder):
             else:
                 translated = self.translator.translate_texts(texts_to_translate, translate_progress)
             
-            # Apply translations back
+            # Apply translations back. Content translations are grouped per
+            # chapter and applied at the text-node level (not raw string
+            # replacement), so HTML entities in the source can't cause silent
+            # mismatches and translated text gets properly escaped.
+            content_pairs: Dict[int, List[Tuple[str, str]]] = {}
             for i, (text_type, idx, original) in enumerate(all_texts):
-                if i < len(translated) and translated[i] and translated[i] != original:
+                translated_text = translated[i] if i < len(translated) else ''
+                if text_type == 'content':
+                    content_pairs.setdefault(idx, []).append((original, translated_text))
+                    continue
+                if translated_text and translated_text != original:
                     if text_type == 'title':
-                        print(f"Translated title: {novel_info.title} -> {translated[i]}")
-                        novel_info.title = translated[i]
+                        print(f"Translated title: {novel_info.title} -> {translated_text}")
+                        novel_info.title = translated_text
                     elif text_type == 'author':
-                        print(f"Translated author: {novel_info.author} -> {translated[i]}")
-                        novel_info.author = translated[i]
+                        print(f"Translated author: {novel_info.author} -> {translated_text}")
+                        novel_info.author = translated_text
+                    elif text_type == 'description':
+                        novel_info.description = translated_text
                     elif text_type == 'chapter_title':
                         # This is crucial - translating chapter titles fixes the TOC!
-                        chapters[idx].title = translated[i]
-                    elif text_type == 'content':
-                        chapters[idx].content = chapters[idx].content.replace(
-                            original, translated[i], 1
-                        )
+                        chapters[idx].title = translated_text
+            
+            for idx, pairs in content_pairs.items():
+                chapters[idx].content = self._apply_content_translations(
+                    chapters[idx].content, pairs
+                )
         
         # Phase 2.5: Translation verification (from fixTranslate.py)
         if self.verify_translation:
@@ -417,22 +478,60 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                 print(f"    ... and {len(self.chapters_with_chinese) - 10} more")
             print("  These may need manual re-translation or the API failed silently.")
     
+    @staticmethod
+    def _find_translatable_nodes(soup) -> list:
+        """
+        Find text nodes eligible for translation, in document order.
+        Used by both extraction and application so the two always align.
+        """
+        nodes = []
+        for element in soup.find_all(string=True):
+            text = str(element).strip()
+            if text and len(text) > 1 and re.search(r'[\u4e00-\u9fff]', text):
+                nodes.append(element)
+        return nodes
+    
     def _extract_text_segments(self, html: str) -> List[str]:
         """Extract text segments from HTML for translation."""
         from bs4 import BeautifulSoup
         
         soup = BeautifulSoup(html, 'lxml')
-        texts = []
+        return [str(node).strip() for node in self._find_translatable_nodes(soup)]
+    
+    def _apply_content_translations(
+        self, html: str, pairs: List[Tuple[str, str]]
+    ) -> str:
+        """
+        Replace translatable text nodes with their translations.
         
-        # Get all text nodes
-        for element in soup.find_all(text=True):
-            text = str(element).strip()
-            if text and len(text) > 1:
-                # Skip if it's just whitespace or punctuation
-                if re.search(r'[\u4e00-\u9fff]', text):
-                    texts.append(text)
+        `pairs` is a list of (original, translated) in the same document order
+        that _extract_text_segments produced. Replacement happens on parsed
+        text nodes; BeautifulSoup escapes special characters on serialization,
+        so translations containing <, > or & can't break the XHTML.
+        """
+        from bs4 import BeautifulSoup
         
-        return texts
+        soup = BeautifulSoup(html, 'lxml')
+        nodes = self._find_translatable_nodes(soup)
+        
+        j = 0
+        for node in nodes:
+            if j >= len(pairs):
+                break
+            original, translated = pairs[j]
+            if str(node).strip() != original:
+                # Safety net - shouldn't happen since the same HTML is parsed
+                # by both extraction and application
+                continue
+            j += 1
+            if translated and translated != original:
+                node.replace_with(translated)
+        
+        # Return only the body contents so the result can be re-wrapped
+        # by _wrap_xhtml without nested <html>/<body> tags
+        if soup.body is not None:
+            return ''.join(str(child) for child in soup.body.children)
+        return str(soup)
     
     def get_translation_warnings(self) -> List[Tuple[str, int]]:
         """

@@ -357,36 +357,59 @@ class ContentCleaner:
         
         # Optional: convert br sequences to paragraphs
         if self.convert_br_to_p:
-            self._convert_br_sequences_to_p(root)
+            self._convert_br_runs_to_paragraphs(root, use_ns=True)
         
         return root
     
-    def _convert_br_sequences_to_p(self, root: etree._Element):
-        """Convert sequences of <br/> separated text into proper <p> tags."""
-        body = root.find(f'.//{{{XHTML_NS}}}body')
-        if body is None:
-            body = root.find('.//body')
-        if body is None:
-            return
-        
-        for parent in body.iter():
-            local_tag = parent.tag.split('}')[-1] if isinstance(parent.tag, str) and '}' in parent.tag else parent.tag
-            if local_tag in ('p', 'div', 'body'):
-                self._process_br_in_element(parent)
+    @staticmethod
+    def _local_tag(tag) -> Optional[str]:
+        """Get the local (namespace-free) tag name, or None for comments/PIs."""
+        if not isinstance(tag, str):
+            return None
+        return tag.split('}')[-1] if '}' in tag else tag
     
-    def _process_br_in_element(self, parent: etree._Element):
-        """Process br elements within a parent, converting double-br to paragraph breaks."""
-        children = list(parent)
+    def _convert_br_runs_to_paragraphs(self, root: etree._Element, use_ns: bool = False):
+        """
+        Convert containers like <div>text<br/><br/>text...</div> into real
+        <p> paragraphs.
         
-        br_with_text = []
-        for child in children:
-            local_tag = child.tag.split('}')[-1] if isinstance(child.tag, str) and '}' in child.tag else child.tag
-            if local_tag == 'br' and child.tail and child.tail.strip():
-                br_with_text.append(child)
+        Conservative on purpose: only converts div/body containers whose
+        element children are ALL <br/> tags (the typical web-novel content
+        block), so any mixed or nested markup is left untouched.
+        """
+        p_tag = XHTML('p') if use_ns else 'p'
         
-        # Pattern detected - tracked for future enhancement
-        if len(br_with_text) >= 3:
-            pass
+        candidates = []
+        for parent in root.iter():
+            name = self._local_tag(parent.tag)
+            if name not in ('div', 'body'):
+                continue
+            children = list(parent)
+            if len(children) < 2:
+                continue
+            if any(self._local_tag(child.tag) != 'br' for child in children):
+                continue
+            candidates.append(parent)
+        
+        for parent in candidates:
+            segments = []
+            if parent.text and parent.text.strip():
+                segments.append(parent.text.strip())
+            for br in parent:
+                if br.tail and br.tail.strip():
+                    segments.append(br.tail.strip())
+            
+            if len(segments) < 2:
+                continue
+            
+            parent.text = None
+            for child in list(parent):
+                parent.remove(child)
+            for segment in segments:
+                p = etree.SubElement(parent, p_tag)
+                p.text = segment
+            
+            self.stats['br_converted'] += len(segments)
     
     # ========================================================================
     # SERIALIZATION (from fixTranslate)
@@ -419,10 +442,8 @@ class ContentCleaner:
             attrs = match.group(2) or b''
             return b'<' + tag + attrs + b'></' + tag + b'>'
         
-        fixed = pattern.findall(data)
-        self.stats['self_closing_fixed'] += len(fixed)
-        
-        result = pattern.sub(replace_func, data)
+        result, count = pattern.subn(replace_func, data)
+        self.stats['self_closing_fixed'] += count
         return result
     
     # ========================================================================
@@ -535,6 +556,10 @@ class ContentCleaner:
                     self.stats['duplicate_ids_removed'] += 1
                 else:
                     seen_ids.add(id_val)
+        
+        # Convert br-separated text into proper paragraphs
+        if self.convert_br_to_p:
+            self._convert_br_runs_to_paragraphs(root)
         
         return root
     

@@ -24,9 +24,6 @@ class TwkanParser(BaseParser):
         super().__init__()
         # Higher delay to avoid 429 errors (like WebToEpub does for strict sites)
         self.request_delay = 3.0  # 3 seconds between requests
-        # Cache for parallel fetching
-        self._cached_soup = None
-        self._cached_url = None
     
     def _extract_book_id(self, url: str) -> Optional[str]:
         """Extract book ID from URL."""
@@ -212,7 +209,7 @@ class TwkanParser(BaseParser):
         # Content selector: #txtcontent0
         content_el = soup.select_one("#txtcontent0")
         if not content_el:
-            return f"<p>Failed to extract content from {chapter.url}</p>"
+            raise ValueError(f"Could not find chapter content at {chapter.url}")
         
         # Get chapter title
         title_el = soup.select_one(".txtnav h1, #container .txtnav h1, h1")

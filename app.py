@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
+# Author: joelsnl and Anthropic Claude
 """
 Novel Downloader & Translator
 A standalone GUI application for downloading and translating web novels to EPUB.
 
 Based on WebToEpub extension and fixTranslate.py
-
-Author: joelsnl and Anthropic Claude
 """
 
 import os
@@ -21,21 +20,12 @@ from io import BytesIO
 import customtkinter as ctk
 from PIL import Image
 
-# Try curl_cffi for HTTP requests (better compatibility)
-try:
-    from curl_cffi.requests import Session as HttpSession
-    http_session = HttpSession(impersonate="chrome120")
-except ImportError:
-    import requests
-    http_session = requests.Session()
-    http_session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
-    })
-
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.parser import Chapter, NovelInfo, get_parser_for_url, cleanup_browser
+from core.parser import (
+    Chapter, NovelInfo, get_parser_for_url, cleanup_browser, create_http_session
+)
 from core.cleaner import ContentCleaner
 from core.translator import GoogleTranslator
 from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder
@@ -43,14 +33,25 @@ from core.updater import (
     get_current_version, check_for_updates_async, download_update_async,
     get_auto_check_updates, set_auto_check_updates, is_frozen
 )
+from core.settings import load_settings, save_settings, get_app_dir
+from core.cache import NovelCache
+from core.logger import setup_logging
 
 # Import parsers to register them
 import parsers
+
+# Shared session for auxiliary requests (cover preview)
+http_session = create_http_session()
 
 
 # Set appearance
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+class _DownloadCancelled(Exception):
+    """Raised inside download worker threads when the user cancels."""
+    pass
 
 
 class NovelDownloaderApp(ctk.CTk):
@@ -64,7 +65,12 @@ class NovelDownloaderApp(ctk.CTk):
         self.minsize(800, 600)
         
         # Get app directory for auto-save
-        self.app_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        self.app_dir = get_app_dir()
+        
+        # Persistent settings and caches
+        self.settings = load_settings()
+        self.output_dir = self.settings.get('output_dir', '') or ''
+        self.cache = NovelCache(self.app_dir / 'cache.db')
         
         # State
         self.novel_info: Optional[NovelInfo] = None
@@ -74,6 +80,10 @@ class NovelDownloaderApp(ctk.CTk):
         self.cancel_requested = False
         self.cover_image = None  # Store PhotoImage reference
         self.translated_title = None  # Store translated title
+        
+        # Generation counters to ignore results from stale background work
+        self._fetch_generation = 0   # bumped on each new fetch
+        self._list_generation = 0    # bumped each time the chapter list rebuilds
         
         # Multi-download mode state
         self.multi_mode = False
@@ -92,12 +102,49 @@ class NovelDownloaderApp(ctk.CTk):
             self.after(2000, self._auto_check_updates)  # Check after 2 seconds
     
     def _on_close(self):
-        """Handle window close - cleanup browser."""
+        """Handle window close - persist settings and clean up."""
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+        try:
+            self.cache.close()
+        except Exception:
+            pass
         try:
             cleanup_browser()
         except:
             pass
         self.destroy()
+    
+    def _save_settings(self):
+        """Persist current UI options to settings.json."""
+        self.settings['translate'] = bool(self.translate_var.get())
+        self.settings['clean'] = bool(self.clean_var.get())
+        self.settings['use_chapter_cache'] = bool(self.use_cache_var.get())
+        self.settings['workers'] = self._get_workers()
+        self.settings['output_dir'] = self.output_dir
+        self.settings['translation_backend'] = (
+            'libretranslate' if self.backend_menu.get() == 'LibreTranslate' else 'google'
+        )
+        save_settings(self.settings)
+    
+    def _get_workers(self) -> int:
+        """Parse the workers entry, falling back to the default."""
+        try:
+            return max(1, int(self.workers_entry.get()))
+        except ValueError:
+            return 200
+    
+    def _make_translator(self, max_workers: int) -> GoogleTranslator:
+        """Create a translator configured from the current UI settings."""
+        backend = 'libretranslate' if self.backend_menu.get() == 'LibreTranslate' else 'google'
+        return GoogleTranslator(
+            max_workers=max_workers,
+            backend=backend,
+            libretranslate_url=self.settings.get('libretranslate_url', 'https://libretranslate.com'),
+            persistent_cache=self.cache,
+        )
     
     def _create_ui(self):
         """Create all UI elements."""
@@ -174,9 +221,18 @@ class NovelDownloaderApp(ctk.CTk):
         btn_frame = ctk.CTkFrame(self.list_frame, fg_color="transparent")
         btn_frame.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         
-        ctk.CTkButton(btn_frame, text="Select All", width=100, command=self._select_all).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Select None", width=100, command=self._select_none).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Invert", width=100, command=self._invert_selection).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Select All", width=90, command=self._select_all).pack(side="left", padx=4)
+        ctk.CTkButton(btn_frame, text="Select None", width=90, command=self._select_none).pack(side="left", padx=4)
+        ctk.CTkButton(btn_frame, text="Invert", width=70, command=self._invert_selection).pack(side="left", padx=4)
+        
+        # Range selection (e.g. chapters 200-450 without clicking checkboxes)
+        ctk.CTkLabel(btn_frame, text="Range:").pack(side="left", padx=(15, 2))
+        self.range_from_entry = ctk.CTkEntry(btn_frame, width=55, placeholder_text="from")
+        self.range_from_entry.pack(side="left", padx=2)
+        ctk.CTkLabel(btn_frame, text="-").pack(side="left")
+        self.range_to_entry = ctk.CTkEntry(btn_frame, width=55, placeholder_text="to")
+        self.range_to_entry.pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Select Range", width=95, command=self._select_range).pack(side="left", padx=4)
         
         self.selected_label = ctk.CTkLabel(btn_frame, text="Selected: 0")
         self.selected_label.pack(side="right", padx=10)
@@ -254,24 +310,57 @@ class NovelDownloaderApp(ctk.CTk):
         options_frame = ctk.CTkFrame(self)
         options_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
         
-        # Left side - checkboxes
-        left_opts = ctk.CTkFrame(options_frame, fg_color="transparent")
-        left_opts.pack(side="left", padx=10, pady=10)
+        top_row = ctk.CTkFrame(options_frame, fg_color="transparent")
+        top_row.pack(fill="x")
         
-        self.clean_var = ctk.BooleanVar(value=True)
+        # Left side - checkboxes (initial values from saved settings)
+        left_opts = ctk.CTkFrame(top_row, fg_color="transparent")
+        left_opts.pack(side="left", padx=10, pady=(10, 5))
+        
+        self.clean_var = ctk.BooleanVar(value=bool(self.settings.get('clean', True)))
         ctk.CTkCheckBox(left_opts, text="Remove watermarks & ads", variable=self.clean_var).pack(anchor="w", pady=2)
         
-        self.translate_var = ctk.BooleanVar(value=True)
+        self.translate_var = ctk.BooleanVar(value=bool(self.settings.get('translate', True)))
         ctk.CTkCheckBox(left_opts, text="Translate to English", variable=self.translate_var).pack(anchor="w", pady=2)
         
-        # Right side - workers
-        right_opts = ctk.CTkFrame(options_frame, fg_color="transparent")
-        right_opts.pack(side="right", padx=10, pady=10)
+        self.use_cache_var = ctk.BooleanVar(value=bool(self.settings.get('use_chapter_cache', True)))
+        ctk.CTkCheckBox(left_opts, text="Use chapter cache (resume)", variable=self.use_cache_var).pack(anchor="w", pady=2)
+        
+        # Right side - translator backend + workers
+        right_opts = ctk.CTkFrame(top_row, fg_color="transparent")
+        right_opts.pack(side="right", padx=10, pady=(10, 5))
+        
+        ctk.CTkLabel(right_opts, text="Translator:").pack(side="left", padx=(0, 5))
+        self.backend_menu = ctk.CTkOptionMenu(right_opts, values=["Google", "LibreTranslate"], width=130)
+        self.backend_menu.set(
+            "LibreTranslate" if self.settings.get('translation_backend') == 'libretranslate' else "Google"
+        )
+        self.backend_menu.pack(side="left", padx=(0, 15))
         
         ctk.CTkLabel(right_opts, text="Translation Workers:").pack(side="left", padx=5)
         self.workers_entry = ctk.CTkEntry(right_opts, width=60)
-        self.workers_entry.insert(0, "200")
+        self.workers_entry.insert(0, str(self.settings.get('workers', 200)))
         self.workers_entry.pack(side="left", padx=5)
+        
+        # Bottom row - output folder
+        folder_row = ctk.CTkFrame(options_frame, fg_color="transparent")
+        folder_row.pack(fill="x", padx=10, pady=(0, 10))
+        
+        ctk.CTkLabel(folder_row, text="Save to:").pack(side="left", padx=(0, 5))
+        self.output_dir_label = ctk.CTkLabel(folder_row, text="", text_color="gray", anchor="w")
+        self.output_dir_label.pack(side="left", fill="x", expand=True)
+        
+        ctk.CTkButton(
+            folder_row, text="Default", width=70,
+            command=self._reset_output_dir,
+            fg_color="gray40", hover_color="gray30"
+        ).pack(side="right", padx=2)
+        ctk.CTkButton(
+            folder_row, text="Browse", width=70,
+            command=self._choose_output_dir
+        ).pack(side="right", padx=2)
+        
+        self._update_output_dir_label()
         
         # === Progress Section ===
         progress_frame = ctk.CTkFrame(self)
@@ -371,6 +460,9 @@ class NovelDownloaderApp(ctk.CTk):
         self.status_label.configure(text="Fetching novel info...")
         self.progress_bar.set(0)
         
+        # Invalidate any cover/title threads still running from a previous fetch
+        self._fetch_generation += 1
+        
         # Run in thread
         thread = threading.Thread(target=self._fetch_thread, args=(url,))
         thread.daemon = True
@@ -420,12 +512,18 @@ class NovelDownloaderApp(ctk.CTk):
         
         # Load cover image in background
         if self.novel_info.cover_url:
-            thread = threading.Thread(target=self._load_cover, args=(self.novel_info.cover_url,))
+            thread = threading.Thread(
+                target=self._load_cover,
+                args=(self.novel_info.cover_url, self._fetch_generation)
+            )
             thread.daemon = True
             thread.start()
         
         # Translate title in background
-        thread = threading.Thread(target=self._translate_title, args=(self.novel_info.title,))
+        thread = threading.Thread(
+            target=self._translate_title,
+            args=(self.novel_info.title, self._fetch_generation)
+        )
         thread.daemon = True
         thread.start()
         
@@ -435,8 +533,21 @@ class NovelDownloaderApp(ctk.CTk):
         self.chapter_vars.clear()
         self.chapter_checkboxes.clear()
         
-        # Add chapter checkboxes
-        for idx, chapter in enumerate(self.chapters):
+        # Add chapter checkboxes in batches so the UI doesn't freeze
+        # on novels with thousands of chapters
+        self._list_generation += 1
+        self.download_btn.configure(state="disabled")
+        self._update_status(f"Loading {len(self.chapters)} chapters...")
+        self._add_chapter_rows(0, self._list_generation)
+    
+    def _add_chapter_rows(self, start: int, generation: int, batch_size: int = 100):
+        """Create chapter checkboxes in batches to keep the UI responsive."""
+        if generation != self._list_generation:
+            return  # A newer fetch replaced this list
+        
+        end = min(start + batch_size, len(self.chapters))
+        for idx in range(start, end):
+            chapter = self.chapters[idx]
             var = ctk.BooleanVar(value=True)
             self.chapter_vars.append(var)
             
@@ -449,9 +560,13 @@ class NovelDownloaderApp(ctk.CTk):
             cb.grid(row=idx, column=0, padx=5, pady=2, sticky="w")
             self.chapter_checkboxes.append(cb)
         
-        self._update_selected_count()
-        self.download_btn.configure(state="normal")
-        self._update_status(f"Found {len(self.chapters)} chapters. Ready to download.")
+        if end < len(self.chapters):
+            self._update_status(f"Loading chapters... {end}/{len(self.chapters)}")
+            self.after(1, lambda: self._add_chapter_rows(end, generation, batch_size))
+        else:
+            self._update_selected_count()
+            self.download_btn.configure(state="normal")
+            self._update_status(f"Found {len(self.chapters)} chapters. Ready to download.")
     
     def _update_selected_count(self):
         """Update the selected count label."""
@@ -472,6 +587,52 @@ class NovelDownloaderApp(ctk.CTk):
         for var in self.chapter_vars:
             var.set(not var.get())
         self._update_selected_count()
+    
+    def _select_range(self):
+        """Select only the chapters in the From-To range (1-based, inclusive)."""
+        if not self.chapter_vars:
+            return
+        n = len(self.chapter_vars)
+        try:
+            start = int(self.range_from_entry.get())
+        except ValueError:
+            start = 1
+        try:
+            end = int(self.range_to_entry.get())
+        except ValueError:
+            end = n
+        start = max(1, min(start, n))
+        end = max(start, min(end, n))
+        for i, var in enumerate(self.chapter_vars):
+            var.set(start - 1 <= i <= end - 1)
+        self._update_selected_count()
+    
+    # ------------------------------------------------------------------
+    # Output folder
+    # ------------------------------------------------------------------
+    
+    def _choose_output_dir(self):
+        """Let the user pick a custom output folder."""
+        initial = self.output_dir or str(self._get_downloads_folder())
+        chosen = filedialog.askdirectory(initialdir=initial, title="Choose output folder")
+        if chosen:
+            self.output_dir = chosen
+            self._update_output_dir_label()
+            self._save_settings()
+    
+    def _reset_output_dir(self):
+        """Reset to the system Downloads folder."""
+        self.output_dir = ''
+        self._update_output_dir_label()
+        self._save_settings()
+    
+    def _update_output_dir_label(self):
+        if self.output_dir:
+            self.output_dir_label.configure(text=self.output_dir, text_color="white")
+        else:
+            self.output_dir_label.configure(
+                text=f"{self._system_downloads_folder()} (default)", text_color="gray"
+            )
     
     def _on_download(self):
         """Handle download button click."""
@@ -509,6 +670,9 @@ class NovelDownloaderApp(ctk.CTk):
         
         print(f"Auto-saving to: {output_path}")
         
+        # Persist current options before starting
+        self._save_settings()
+        
         # Start download
         self.is_downloading = True
         self.cancel_requested = False
@@ -523,21 +687,27 @@ class NovelDownloaderApp(ctk.CTk):
         thread.daemon = True
         thread.start()
     
-    def _get_downloads_folder(self) -> Path:
-        """Get the user's Downloads folder."""
-        # Try common locations
+    def _system_downloads_folder(self) -> Path:
+        """Get the system Downloads folder (or app dir if it doesn't exist)."""
         if sys.platform == "win32":
-            # Windows: use USERPROFILE/Downloads
             downloads = Path(os.environ.get("USERPROFILE", "")) / "Downloads"
         else:
-            # macOS/Linux: use HOME/Downloads
             downloads = Path(os.environ.get("HOME", "")) / "Downloads"
         
-        # Fallback to app directory if Downloads doesn't exist
         if not downloads.exists():
             downloads = self.app_dir
         
         return downloads
+    
+    def _get_downloads_folder(self) -> Path:
+        """Get the output folder: user-chosen folder if set, else Downloads."""
+        custom = (self.output_dir or '').strip()
+        if custom:
+            path = Path(custom)
+            if path.exists():
+                return path
+            print(f"Warning: chosen output folder no longer exists: {custom}")
+        return self._system_downloads_folder()
     
     def _create_short_filename(self, title: str, max_length: int = 40) -> str:
         """
@@ -579,35 +749,111 @@ class NovelDownloaderApp(ctk.CTk):
         
         return shortened
     
+    @staticmethod
+    def _format_eta(seconds: float) -> str:
+        """Format a duration like '3m 20s' or '1h 12m'."""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m {seconds % 60}s"
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    
+    def _download_chapters_with_cache(
+        self,
+        parser,
+        chapters: List[Chapter],
+        book_key: str,
+        set_status,
+        set_progress,
+    ) -> List[str]:
+        """
+        Download chapter contents sequentially with:
+        - persistent chapter cache (resume support - cached chapters are
+          instant and skip the rate-limit delay)
+        - ETA in the status text
+        - an end-of-run retry pass for failed chapters
+        
+        set_status(text) / set_progress(fraction 0..1) are called from this
+        worker thread and must be thread-safe.
+        
+        Returns titles of chapters that still failed after the retry pass.
+        Raises _DownloadCancelled if the user cancels.
+        """
+        total = len(chapters)
+        delay = parser.request_delay
+        use_cache = bool(self.use_cache_var.get())
+        failed: List[Chapter] = []
+        start_time = time.monotonic()
+        
+        for idx, chapter in enumerate(chapters):
+            if self.cancel_requested:
+                raise _DownloadCancelled()
+            
+            set_progress((idx + 1) / total)
+            
+            eta_text = ""
+            if idx >= 3:
+                avg = (time.monotonic() - start_time) / idx
+                eta_text = f"  (ETA {self._format_eta(avg * (total - idx))})"
+            
+            # Cached chapters are free - no fetch, no delay
+            cached = self.cache.get_chapter(chapter.url) if use_cache else None
+            if cached:
+                chapter.content = cached
+                set_status(f"Chapter [{idx+1}/{total}] from cache{eta_text}")
+                continue
+            
+            set_status(f"Downloading [{idx+1}/{total}]: {chapter.title[:40]}{eta_text}")
+            try:
+                chapter.content = parser.get_chapter_content(chapter)
+                if use_cache:
+                    self.cache.put_chapter(book_key, chapter.url, chapter.title, chapter.content)
+            except Exception as e:
+                # A single failed chapter should not abort the whole download;
+                # it gets another chance in the retry pass below
+                print(f"  Chapter [{idx+1}/{total}] failed: {chapter.title}: {e}")
+                failed.append(chapter)
+            
+            if idx < total - 1:
+                time.sleep(delay)
+        
+        # End-of-run retry pass: transient failures usually succeed here
+        still_failed: List[str] = []
+        if failed:
+            set_status(f"Retrying {len(failed)} failed chapter(s)...")
+            print(f"Retrying {len(failed)} failed chapter(s)...")
+            for chapter in failed:
+                if self.cancel_requested:
+                    raise _DownloadCancelled()
+                time.sleep(delay)
+                try:
+                    chapter.content = parser.get_chapter_content(chapter)
+                    if use_cache:
+                        self.cache.put_chapter(book_key, chapter.url, chapter.title, chapter.content)
+                    print(f"  Retry succeeded: {chapter.title}")
+                except Exception as e:
+                    print(f"  Retry failed: {chapter.title}: {e}")
+                    chapter.content = "<p>[Chapter could not be downloaded from the source site.]</p>"
+                    still_failed.append(chapter.title)
+        
+        return still_failed
+    
     def _download_thread(self, chapters: List[Chapter], output_path: str):
         """Download and build EPUB in background thread."""
         try:
-            total = len(chapters)
-            delay = self.parser.request_delay
+            book_key = self.novel_info.source_url if self.novel_info else ''
             
-            # Phase 1: Download chapter content
-            self.after(0, lambda: self._update_status(f"Downloading chapters ({delay}s delay between requests)..."))
-            
-            for idx, chapter in enumerate(chapters):
-                if self.cancel_requested:
-                    self.after(0, lambda: self._update_status("Cancelled"))
-                    return
-                
-                progress = (idx + 1) / (total * 2)  # First half is download
-                self.after(0, lambda p=progress: self.progress_bar.set(p))
-                self.after(0, lambda i=idx, t=chapter.title: self._update_status(
-                    f"Downloading [{i+1}/{total}]: {t[:40]}..."
-                ))
-                
-                # Fetch chapter content
-                chapter.content = self.parser.get_chapter_content(chapter)
-                
-                # Delay to avoid rate limiting (shows in status)
-                if idx < total - 1:  # Don't wait after last chapter
-                    self.after(0, lambda i=idx, d=delay: self._update_status(
-                        f"Downloaded [{i+1}/{total}] - waiting {d}s..."
-                    ))
-                    time.sleep(delay)
+            # Phase 1: Download chapter content (first half of the progress bar)
+            try:
+                failed_chapters = self._download_chapters_with_cache(
+                    self.parser, chapters, book_key,
+                    set_status=lambda s: self.after(0, lambda t=s: self._update_status(t)),
+                    set_progress=lambda f: self.after(0, lambda p=f / 2: self.progress_bar.set(p)),
+                )
+            except _DownloadCancelled:
+                self.after(0, lambda: self._update_status("Cancelled"))
+                return
             
             # Phase 2: Build EPUB
             self.after(0, lambda: self._update_status("Building EPUB..."))
@@ -617,11 +863,7 @@ class NovelDownloaderApp(ctk.CTk):
             translator = None
             
             if self.translate_var.get():
-                try:
-                    workers = int(self.workers_entry.get())
-                except ValueError:
-                    workers = 200
-                translator = GoogleTranslator(max_workers=workers)
+                translator = self._make_translator(self._get_workers())
 
             # Build EPUB
             if translator:
@@ -657,9 +899,19 @@ class NovelDownloaderApp(ctk.CTk):
                 )
             
             # Done
+            success_msg = f"EPUB saved to:\n{output_path}"
+            if failed_chapters:
+                shown = "\n".join(f"  • {t[:50]}" for t in failed_chapters[:10])
+                if len(failed_chapters) > 10:
+                    shown += f"\n  ... and {len(failed_chapters) - 10} more"
+                success_msg += (
+                    f"\n\nWarning: {len(failed_chapters)} chapter(s) could not be "
+                    f"downloaded and contain placeholder text:\n{shown}"
+                )
+            
             self.after(0, lambda: self.progress_bar.set(1.0))
             self.after(0, lambda: self._update_status(f"Done! Saved to: {output_path}"))
-            self.after(0, lambda: messagebox.showinfo("Success", f"EPUB saved to:\n{output_path}"))
+            self.after(0, lambda m=success_msg: messagebox.showinfo("Success", m))
             
         except Exception as e:
             error_msg = f"Download failed: {str(e)}"
@@ -830,7 +1082,7 @@ class NovelDownloaderApp(ctk.CTk):
                 
                 # Translate title
                 try:
-                    translator = GoogleTranslator(max_workers=1)
+                    translator = self._make_translator(1)
                     translated = translator.translate_text(info.title)
                     novel['translated_title'] = translated if translated and translated != info.title else info.title
                 except Exception:
@@ -881,6 +1133,9 @@ class NovelDownloaderApp(ctk.CTk):
         if not fetched:
             return
         
+        # Persist current options before starting
+        self._save_settings()
+        
         self.is_downloading = True
         self.cancel_requested = False
         self.multi_download_btn.configure(state="disabled")
@@ -898,12 +1153,12 @@ class NovelDownloaderApp(ctk.CTk):
     def _multi_download_thread(self, novels: list):
         """Download all novels sequentially in background."""
         total_novels = len(novels)
-        results = []  # (title, path, success, error)
+        results = []  # (title, path, success, error, failed_chapter_count)
         downloads_dir = self._get_downloads_folder()
         
         for novel_idx, novel in enumerate(novels):
             if self.cancel_requested:
-                results.append((novel['translated_title'] or "Unknown", "", False, "Cancelled"))
+                results.append((novel['translated_title'] or "Unknown", "", False, "Cancelled", 0))
                 continue
             
             info = novel['info']
@@ -933,24 +1188,25 @@ class NovelDownloaderApp(ctk.CTk):
                     output_path = base_path.replace(".epub", f" ({counter}).epub")
                     counter += 1
                 
-                # Phase 1: Download chapters
-                total_ch = len(chapters)
-                delay = parser.request_delay
+                # Phase 1: Download chapters (with cache + retry pass)
+                book_key = info.source_url if info else novel['url']
                 
-                for ch_idx, chapter in enumerate(chapters):
-                    if self.cancel_requested:
-                        raise Exception("Cancelled by user")
-                    
-                    overall = (novel_idx + (ch_idx + 1) / (total_ch * 2)) / total_novels
-                    self.after(0, lambda p=overall: self.progress_bar.set(p))
-                    self.after(0, lambda ni=novel_idx, tn=total_novels, ci=ch_idx, tc=total_ch: self._update_status(
-                        f"Novel {ni + 1}/{tn} — Chapter [{ci + 1}/{tc}]"
+                def set_status(s, _ni=novel_idx, _tn=total_novels):
+                    self.after(0, lambda t=s, ni=_ni, tn=_tn: self._update_status(
+                        f"Novel {ni + 1}/{tn} — {t}"
                     ))
-                    
-                    chapter.content = parser.get_chapter_content(chapter)
-                    
-                    if ch_idx < total_ch - 1:
-                        time.sleep(delay)
+                
+                def set_progress(f, _ni=novel_idx, _tn=total_novels):
+                    overall = (_ni + f / 2) / _tn
+                    self.after(0, lambda p=overall: self.progress_bar.set(p))
+                
+                try:
+                    failed_titles = self._download_chapters_with_cache(
+                        parser, chapters, book_key, set_status, set_progress
+                    )
+                except _DownloadCancelled:
+                    raise Exception("Cancelled by user")
+                failed_ch_count = len(failed_titles)
                 
                 # Phase 2: Build EPUB
                 self.after(0, lambda ni=novel_idx, tn=total_novels: self._update_status(
@@ -961,11 +1217,7 @@ class NovelDownloaderApp(ctk.CTk):
                 translator = None
                 
                 if self.translate_var.get():
-                    try:
-                        workers = int(self.workers_entry.get())
-                    except ValueError:
-                        workers = 200
-                    translator = GoogleTranslator(max_workers=workers)
+                    translator = self._make_translator(self._get_workers())
 
                 if translator:
                     builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator)
@@ -993,13 +1245,14 @@ class NovelDownloaderApp(ctk.CTk):
                     
                     builder.build(info, chapters, output_path, progress_cb)
                 
-                results.append((title_for_filename, output_path, True, None))
-                self.after(0, lambda i=full_idx: self.multi_result_labels[i]['status'].configure(
-                    text="Done", text_color="#2B7A3E"
+                results.append((title_for_filename, output_path, True, None, failed_ch_count))
+                status_text = "Done" if not failed_ch_count else f"Done ({failed_ch_count} ch. failed)"
+                self.after(0, lambda i=full_idx, s=status_text: self.multi_result_labels[i]['status'].configure(
+                    text=s, text_color="#2B7A3E"
                 ))
                 
             except Exception as e:
-                results.append((title_for_filename, "", False, str(e)))
+                results.append((title_for_filename, "", False, str(e), 0))
                 self.after(0, lambda i=full_idx: self.multi_result_labels[i]['status'].configure(
                     text="Failed", text_color="red"
                 ))
@@ -1013,11 +1266,14 @@ class NovelDownloaderApp(ctk.CTk):
         summary = f"Completed: {len(success)}/{len(results)} novels\n\n"
         if success:
             summary += "Saved to:\n"
-            for title, path, _, _ in success:
-                summary += f"  • {Path(path).name}\n"
+            for title, path, _, _, failed_ch in success:
+                line = Path(path).name
+                if failed_ch:
+                    line += f"  ({failed_ch} chapter(s) failed - placeholder text)"
+                summary += f"  • {line}\n"
         if failed:
             summary += "\nFailed:\n"
-            for title, _, _, err in failed:
+            for title, _, _, err, _ in failed:
                 short_title = title[:30] + "..." if len(title) > 30 else title
                 summary += f"  • {short_title}: {err[:40]}\n"
         
@@ -1038,7 +1294,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.after(0, lambda: self.fetch_btn.configure(state="normal"))
         self.after(0, lambda: self.mode_switch.configure(state="normal"))
     
-    def _load_cover(self, url: str):
+    def _load_cover(self, url: str, generation: int):
         """Load cover image from URL in background."""
         try:
             print(f"Loading cover from: {url}")
@@ -1054,6 +1310,9 @@ class NovelDownloaderApp(ctk.CTk):
             # Convert to CTkImage
             ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=image.size)
             
+            if generation != self._fetch_generation:
+                return  # A newer fetch started; don't overwrite its cover
+            
             # Update UI in main thread
             self.after(0, lambda: self._set_cover_image(ctk_image))
             print("Cover loaded successfully")
@@ -1066,12 +1325,15 @@ class NovelDownloaderApp(ctk.CTk):
         self.cover_image = image  # Keep reference
         self.cover_label.configure(image=image, text="")
     
-    def _translate_title(self, title: str):
+    def _translate_title(self, title: str, generation: int):
         """Translate the title to English in background."""
         try:
             print(f"Translating title: {title}")
-            translator = GoogleTranslator(max_workers=1)
+            translator = self._make_translator(1)
             translated = translator.translate_text(title)
+            
+            if generation != self._fetch_generation:
+                return  # A newer fetch started; don't overwrite its title
             
             if translated and translated != title:
                 self.translated_title = translated
@@ -1083,6 +1345,8 @@ class NovelDownloaderApp(ctk.CTk):
                 
         except Exception as e:
             print(f"Failed to translate title: {e}")
+            if generation != self._fetch_generation:
+                return
             self.translated_title = title
             self.after(0, lambda: self.eng_title_label.configure(text="(translation failed)", text_color="gray"))
     
@@ -1184,6 +1448,8 @@ class NovelDownloaderApp(ctk.CTk):
 
 
 def main():
+    log_path = setup_logging(get_app_dir())
+    print(f"Logging to: {log_path}")
     app = NovelDownloaderApp()
     app.mainloop()
 

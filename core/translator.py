@@ -20,7 +20,17 @@ from typing import List, Tuple, Dict, Optional, Callable
 
 
 class GoogleTranslator:
-    """Google Translate Free API with concurrent requests, retry logic, and multi-pass retry."""
+    """
+    Concurrent translator with retry logic and multi-pass retry.
+    
+    Backends:
+    - 'google' (default): the free Google Translate endpoint
+    - 'libretranslate': a LibreTranslate server (public instance or self-hosted),
+      configured via libretranslate_url
+    
+    Optionally uses a persistent cache (core.cache.NovelCache) so repeated
+    runs and recurring phrases across novels cost zero API requests.
+    """
     
     ENDPOINT = 'https://translate.googleapis.com/translate_a/single'
     USER_AGENT = (
@@ -36,6 +46,9 @@ class GoogleTranslator:
         request_timeout: int = 15,
         max_retries: int = 5,
         request_interval: float = 0.0,
+        backend: str = 'google',
+        libretranslate_url: str = 'https://libretranslate.com',
+        persistent_cache=None,
     ):
         self.source_lang = source_lang
         self.target_lang = target_lang
@@ -43,6 +56,9 @@ class GoogleTranslator:
         self.request_timeout = request_timeout
         self.max_retries = max_retries
         self.request_interval = request_interval
+        self.backend = backend if backend in ('google', 'libretranslate') else 'google'
+        self.libretranslate_url = libretranslate_url.rstrip('/')
+        self.persistent_cache = persistent_cache
         
         # Statistics
         self.stats = {
@@ -77,6 +93,69 @@ class GoogleTranslator:
         """Request cancellation of ongoing translation."""
         self._cancel_requested = True
     
+    # ------------------------------------------------------------------
+    # Backend requests
+    # ------------------------------------------------------------------
+    
+    def _request_google(self, text: str) -> str:
+        """Translate via the free Google Translate endpoint."""
+        params = {
+            'client': 'gtx',
+            'sl': self.source_lang,
+            'tl': self.target_lang,
+            'dt': 't',
+            'dj': '1',
+            'q': text
+        }
+        
+        # Use GET for short texts, POST for long texts
+        if len(text) <= 1800:
+            response = requests.get(
+                self.ENDPOINT,
+                params=params,
+                headers={'User-Agent': self.USER_AGENT},
+                timeout=self.request_timeout
+            )
+        else:
+            response = requests.post(
+                self.ENDPOINT,
+                data=params,
+                headers={'User-Agent': self.USER_AGENT},
+                timeout=self.request_timeout
+            )
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        return ''.join(
+            s.get('trans', '')
+            for s in data.get('sentences', [])
+            if 'trans' in s
+        )
+    
+    def _request_libretranslate(self, text: str) -> str:
+        """Translate via a LibreTranslate server."""
+        # LibreTranslate uses plain ISO codes ('zh', not 'zh-CN')
+        source = self.source_lang.split('-')[0]
+        response = requests.post(
+            f'{self.libretranslate_url}/translate',
+            json={
+                'q': text,
+                'source': source,
+                'target': self.target_lang,
+                'format': 'text',
+            },
+            headers={'User-Agent': self.USER_AGENT},
+            timeout=self.request_timeout
+        )
+        response.raise_for_status()
+        return response.json().get('translatedText', '')
+    
+    def _request_translation(self, text: str) -> str:
+        if self.backend == 'libretranslate':
+            return self._request_libretranslate(text)
+        return self._request_google(text)
+    
     def _translate_single(self, text: str, index: int) -> Tuple[int, str]:
         """Translate a single text with exponential backoff retry."""
         if self._cancel_requested:
@@ -87,7 +166,7 @@ class GoogleTranslator:
         
         cache_key = text.strip()
         
-        # Check cache
+        # Check in-memory cache
         with self.cache_lock:
             if cache_key in self.cache:
                 with self.stats_lock:
@@ -95,14 +174,16 @@ class GoogleTranslator:
                 self._update_progress()
                 return (index, self.cache[cache_key])
         
-        params = {
-            'client': 'gtx',
-            'sl': self.source_lang,
-            'tl': self.target_lang,
-            'dt': 't',
-            'dj': '1',
-            'q': text
-        }
+        # Check persistent cache
+        if self.persistent_cache is not None:
+            cached = self.persistent_cache.get_translation(cache_key, self.backend)
+            if cached:
+                with self.cache_lock:
+                    self.cache[cache_key] = cached
+                with self.stats_lock:
+                    self.stats['cache_hits'] += 1
+                self._update_progress()
+                return (index, cached)
         
         last_error = None
         for attempt in range(self.max_retries):
@@ -110,36 +191,14 @@ class GoogleTranslator:
                 return (index, text)
                 
             try:
-                # Use GET for short texts, POST for long texts
-                if len(text) <= 1800:
-                    response = requests.get(
-                        self.ENDPOINT,
-                        params=params,
-                        headers={'User-Agent': self.USER_AGENT},
-                        timeout=self.request_timeout
-                    )
-                else:
-                    response = requests.post(
-                        self.ENDPOINT,
-                        data=params,
-                        headers={'User-Agent': self.USER_AGENT},
-                        timeout=self.request_timeout
-                    )
-                
-                response.raise_for_status()
-                data = response.json()
-                
-                # Extract translated text
-                translated = ''.join(
-                    s.get('trans', '') 
-                    for s in data.get('sentences', []) 
-                    if 'trans' in s
-                )
+                translated = self._request_translation(text)
                 
                 if translated and translated.strip():
-                    # Cache the result
+                    # Cache the result (memory + persistent)
                     with self.cache_lock:
                         self.cache[cache_key] = translated
+                    if self.persistent_cache is not None:
+                        self.persistent_cache.put_translation(cache_key, translated, self.backend)
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
@@ -245,9 +304,10 @@ class GoogleTranslator:
         - Cooldown between passes: 5 → 10 → 20 → 30 → 60 → 60 (cap at 60s)
         - Per-request retries increase: base → +1 → +2 (cap at base+3)
         
-        Keeps looping until zero failures remain, cancelled, or max_retry_passes
-        is reached with 3 or fewer segments still failing (to avoid getting stuck
-        on a handful of stubborn segments that the API consistently rejects).
+        Guaranteed to terminate: stops when zero failures remain, when cancelled,
+        after max_retry_passes retry passes, or after 3 consecutive passes with
+        no progress. Segments that never fully translate keep their best partial
+        translation (or original text) so the EPUB build can always proceed.
         
         Args:
             texts: List of texts to translate
@@ -256,7 +316,7 @@ class GoogleTranslator:
             count_chinese_fn: Function to count Chinese chars
             pass_callback: Optional callback(pass_number, remaining, total, cooldown)
                            called at the start of each retry pass
-            max_retry_passes: Give up if stuck on ≤3 segments after this many passes
+            max_retry_passes: Hard cap on retry passes before giving up
             
         Returns:
             List of translated texts
@@ -302,10 +362,23 @@ class GoogleTranslator:
             if not failed_indices:
                 break  # 🎉 Everything translated
 
-            if len(failed_indices) <= 3 and retry_pass >= max_retry_passes:
-                print(f"\n  ⚠ Stuck on {len(failed_indices)} segment(s) after {max_retry_passes} passes. "
-                      f"Giving up and proceeding.")
-                break  # Don't block forever on a handful of stubborn segments
+            if retry_pass >= max_retry_passes:
+                print(f"\n  ⚠ {len(failed_indices)} segment(s) still contain Chinese after "
+                      f"{max_retry_passes} retry passes. Keeping best available text and proceeding.")
+                break  # Don't block forever on stubborn segments
+            
+            # Stall detection: give up after 3 consecutive passes with no progress.
+            # These segments are almost always ones the API consistently returns
+            # with Chinese still in them (names, terms) - more retries won't help.
+            if prev_failed_count is not None and len(failed_indices) >= prev_failed_count:
+                stall_count += 1
+                if stall_count >= 3:
+                    print(f"\n  ⚠ No progress on {len(failed_indices)} segment(s) for "
+                          f"{stall_count} passes. Keeping best available text and proceeding.")
+                    break
+            else:
+                stall_count = 0
+            prev_failed_count = len(failed_indices)
             
             retry_pass += 1
             
@@ -317,18 +390,6 @@ class GoogleTranslator:
             interval     = _get_step(INTERVAL_STEPS, retry_pass)
             cooldown     = _get_step(COOLDOWN_STEPS, retry_pass)
             extra_retry  = _get_step(EXTRA_RETRIES, retry_pass)
-            
-            # Stall detection: if no progress for 3+ passes, go even slower
-            if prev_failed_count is not None and len(failed_indices) >= prev_failed_count:
-                stall_count += 1
-                if stall_count >= 3:
-                    # Force maximum backoff
-                    cooldown = max(cooldown, 90)
-                    interval = max(interval, 2.5)
-                    workers_cap = min(workers_cap or 3, 3)
-            else:
-                stall_count = 0
-            prev_failed_count = len(failed_indices)
             
             # Resolve actual worker count
             retry_workers = min(
@@ -356,11 +417,14 @@ class GoogleTranslator:
             if self._cancel_requested:
                 break
             
-            # ── Clear cache for failed texts ──
+            # ── Clear caches for failed texts (memory + persistent) ──
             with self.cache_lock:
                 for i in failed_indices:
                     cache_key = texts[i].strip()
                     self.cache.pop(cache_key, None)
+            if self.persistent_cache is not None:
+                for i in failed_indices:
+                    self.persistent_cache.delete_translation(texts[i].strip(), self.backend)
             
             # ── Apply retry settings ──
             old_interval = self.request_interval
@@ -390,11 +454,17 @@ class GoogleTranslator:
                     except Exception:
                         pass
             
-            # ── Apply only improved translations ──
+            # ── Apply improved translations ──
+            # Accept any result with less Chinese than what we currently have.
+            # Partially translated text (e.g. an English sentence keeping a
+            # Chinese name) counts as progress instead of being discarded,
+            # which previously caused endless retry loops.
             improved = 0
             for j, i in enumerate(failed_indices):
                 translated = retry_results[j]
-                if translated and not is_chinese_fn(translated):
+                if not translated:
+                    continue
+                if count_chinese_fn(translated) < count_chinese_fn(results[i]):
                     results[i] = translated
                     improved += 1
             
@@ -414,6 +484,9 @@ class GoogleTranslator:
                   f"({retry_pass} retry pass{'es' if retry_pass != 1 else ''})")
         elif self._cancel_requested:
             print(f"\n  ⚠ Translation cancelled with {final_failed} segments remaining")
+        else:
+            print(f"\n  ⚠ Proceeding with {final_failed} segment(s) still containing Chinese "
+                  f"after {retry_pass} retry pass{'es' if retry_pass != 1 else ''}")
         
         return results
     
