@@ -49,12 +49,12 @@ class _Tee:
         return False
 
 
-def setup_logging(app_dir: Path) -> Path:
+def setup_logging(data_dir: Path) -> Path:
     """
-    Tee stdout/stderr to app_dir/logs/novel_downloader.log.
+    Tee stdout/stderr to data_dir/logs/novel_downloader.log.
     Returns the log file path. Never raises.
     """
-    log_path = app_dir / 'logs' / 'novel_downloader.log'
+    log_path = data_dir / 'logs' / 'novel_downloader.log'
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 

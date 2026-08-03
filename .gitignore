@@ -21,6 +21,9 @@ settings.json
 cache.db
 cache.db-wal
 cache.db-shm
+library.json
 logs/
 _update_helper.sh
 _update_helper.bat
+google_oauth_client.json
+google_token.json

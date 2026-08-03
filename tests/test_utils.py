@@ -1,6 +1,6 @@
-"""Tests for core.utils."""
+"""Tests for core.utils helpers."""
 
-from core.utils import format_eta
+from core.utils import format_eta, safe_filename, extract_urls, looks_like_url
 
 
 class TestFormatEta:
@@ -18,3 +18,45 @@ class TestFormatEta:
 
     def test_negative_clamped(self):
         assert format_eta(-5) == "0s"
+
+
+class TestSafeFilename:
+    def test_keeps_full_english_title(self):
+        assert safe_filename("The Legendary Mechanic") == "The Legendary Mechanic"
+
+    def test_strips_illegal_chars(self):
+        assert ":" not in safe_filename('Foo: Bar/Baz?')
+        assert safe_filename('Foo: Bar') == "Foo Bar"
+
+    def test_empty_fallback(self):
+        assert safe_filename("") == "novel"
+        assert safe_filename("???") == "novel"
+
+    def test_truncates_long(self):
+        long = "A" * 200
+        assert len(safe_filename(long, max_length=50)) <= 50
+
+
+class TestExtractUrls:
+    def test_block_of_urls(self):
+        text = """
+        https://twkan.com/book/1.html
+        https://69shuba.com/book/2/
+        not a url
+        https://twkan.com/book/1.html
+        """
+        urls = extract_urls(text)
+        assert urls == [
+            "https://twkan.com/book/1.html",
+            "https://69shuba.com/book/2/",
+        ]
+
+    def test_strips_trailing_punctuation(self):
+        assert extract_urls("see https://example.com/book/1.html.") == [
+            "https://example.com/book/1.html"
+        ]
+
+    def test_looks_like_url(self):
+        assert looks_like_url("https://twkan.com/book/1.html")
+        assert looks_like_url("https://a.com/1\nhttps://b.com/2")
+        assert not looks_like_url("just some text without links")

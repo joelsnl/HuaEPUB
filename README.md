@@ -1,6 +1,6 @@
 # Novel Downloader & Translator
 
-**Current version: 2.1.2**
+**Current version: 2.2.0**
 
 A Python application for downloading Chinese web novels and translating them to English EPUBs. Run it from source on **Windows, macOS, or Linux** (any OS with Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -12,7 +12,9 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 
 - **Download novels** from supported sites (currently: twkan.com, 69shuba.com, uukanshu.cc)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site
-- **Multi-download mode** — queue up to 7 novels and download them all sequentially with one click
+- **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
+- **Library mode** — track novels, pull only new chapters, rebuild full EPUBs (cache reuses old chapters)
+- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default)
 - **Remove watermarks** and ads automatically
 - **Translate to English** using Google Translate (free, concurrent) or a LibreTranslate server
 - **Resume support** — downloaded chapters are cached, so re-runs and interrupted downloads skip what's already fetched
@@ -20,9 +22,9 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA and cancel support; failed chapters are retried at the end of the run
-- **Custom output folder** and persistent settings
+- **Custom output folder** and persistent settings in `~/.noveldownloader/`
 - **Auto-updater** — downloads prebuilt, checksum-verified release builds when available
-- **Log file** (`logs/novel_downloader.log`) for diagnosing issues with the packaged app
+- **Log file** (`~/.noveldownloader/logs/novel_downloader.log`) for diagnosing issues
 
 ## Installation
 
@@ -84,17 +86,37 @@ Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in
    - ✅ Use chapter cache (resume) - Reuses chapters downloaded in previous runs
    - Translator - Google (default) or LibreTranslate (server URL configurable in `settings.json`)
    - Translation Workers - Number of concurrent translation requests (default: 200)
-   - Save to - Output folder (defaults to your Downloads folder)
+   - Save to - Output folder (defaults to `~/.noveldownloader/books`)
 
 5. **Download**: Click "Download EPUB" — saved automatically to the chosen folder
 
 ### Multi Mode
 
 1. **Switch mode**: Click the "Multi" toggle at the top left
-2. **Add URLs**: Enter up to 7 novel URLs (use "+ Add URL" / "- Remove" buttons)
+2. **Paste URLs**: Drop one or more novel URLs into the text box (one per line)
 3. **Fetch All**: Click "Fetch All" to load info for all novels at once
 4. **Download All**: Click "Download All" — each novel is processed sequentially (download → clean → translate → EPUB)
 5. **Summary**: A single popup shows all results when everything is done
+
+### Library Mode & Google Drive Sync (optional)
+
+Library mode tracks novels you've downloaded so you can **Update** them for new chapters on any machine that shares the same library.
+
+**Local data** (always used): `~/.noveldownloader/` (`settings.json`, `library.json`, `cache.db`, logs).
+
+**Optional Drive sync** (Library tab):
+
+1. Create a Google Cloud project, enable the **Google Drive API**, and create an OAuth client ID of type **Desktop app**
+2. Download the client JSON and save it as:
+   - Windows: `C:\Users\<you>\.noveldownloader\google_oauth_client.json`
+   - macOS / Linux: `~/.noveldownloader/google_oauth_client.json`
+3. In the app: open **Library** → enable **Sync with Google Drive** → **Connect** (browser login)
+4. Choose what to sync (any combo):
+   - **Sync library** — `library.json` (tracked novels + last-downloaded chapter cursors)
+   - **Sync EPUBs** — files under Drive `books/`
+Files are stored in a visible Drive folder (default **My Drive → NovelDownloader**, with `library.json` + `books/`). Use **Change folder** to pick another folder name or paste a Drive folder link, and **Open folder** to jump there.
+
+Sync is offline-first: if Drive is unreachable, downloads and the local library still work. Use **Sync Now** to pull/merge/push on demand. After a download, the app pushes in the background when sync is enabled.
 
 ## Supported Sites
 

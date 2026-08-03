@@ -33,10 +33,17 @@ from core.updater import (
     get_current_version, check_for_updates_async, download_update_async,
     get_auto_check_updates, set_auto_check_updates, is_frozen
 )
-from core.settings import load_settings, save_settings, get_app_dir
+from core.settings import (
+    load_settings, save_settings, get_app_dir, get_data_dir, get_default_books_dir,
+)
 from core.cache import NovelCache
 from core.logger import setup_logging
-from core.utils import format_eta
+from core.utils import format_eta, safe_filename, extract_urls, looks_like_url
+from core.library import LibraryStore, new_chapters_since
+from core.notify import notify
+from core.drive_sync import (
+    get_drive_sync, DriveSyncError, oauth_setup_instructions, oauth_client_path,
+)
 
 # Import parsers to register them
 import parsers
@@ -65,13 +72,16 @@ class NovelDownloaderApp(ctk.CTk):
         self.geometry("900x700")
         self.minsize(800, 600)
         
-        # Get app directory for auto-save
+        # Get directories: install dir (updater) vs user data (~/.noveldownloader)
         self.app_dir = get_app_dir()
+        self.data_dir = get_data_dir()
         
         # Persistent settings and caches
         self.settings = load_settings()
         self.output_dir = self.settings.get('output_dir', '') or ''
-        self.cache = NovelCache(self.app_dir / 'cache.db')
+        self.cache = NovelCache(self.data_dir / 'cache.db')
+        self.library_store = LibraryStore(self.data_dir / 'library.json')
+        self.drive_sync = get_drive_sync()
         
         # State
         self.novel_info: Optional[NovelInfo] = None
@@ -88,9 +98,18 @@ class NovelDownloaderApp(ctk.CTk):
         
         # Multi-download mode state
         self.multi_mode = False
-        self.multi_url_entries: List[ctk.CTkEntry] = []
+        self.library_mode = False
         self.multi_novels: List[dict] = []  # [{url, parser, info, chapters, status, translated_title}]
         self.multi_result_labels: List[dict] = []  # UI labels for each novel row
+        self._library_row_widgets: List[dict] = []
+        self._library_check_status: dict = {}  # source_url -> {state, new_count, total, error}
+        self._library_checking = False
+        self._drive_syncing = False
+        self._remote_books: dict = {}  # filename -> drive file id
+        
+        # Clipboard watcher
+        self._clipboard_last = ""
+        self._clipboard_seen_urls = set()
         
         # Create UI
         self._create_ui()
@@ -101,9 +120,24 @@ class NovelDownloaderApp(ctk.CTk):
         # Auto-check for updates on startup (if enabled)
         if get_auto_check_updates():
             self.after(2000, self._auto_check_updates)  # Check after 2 seconds
+        
+        # Start clipboard polling loop (no-op while checkbox is off)
+        self.after(1500, self._poll_clipboard)
+        
+        # Restore Drive session / optional startup sync
+        if self.settings.get('drive_sync_enabled'):
+            self.after(2500, self._drive_startup_sync)
+        
+        # Auto-check library novels for new chapters shortly after launch
+        if self.library_store.get_library():
+            self.after(4000, lambda: self._schedule_library_check(reason="startup"))
     
     def _on_close(self):
         """Handle window close - persist settings and clean up."""
+        try:
+            self._menu_close()
+        except Exception:
+            pass
         try:
             self._save_settings()
         except Exception:
@@ -123,6 +157,10 @@ class NovelDownloaderApp(ctk.CTk):
         self.settings['translate'] = bool(self.translate_var.get())
         self.settings['clean'] = bool(self.clean_var.get())
         self.settings['use_chapter_cache'] = bool(self.use_cache_var.get())
+        self.settings['clipboard_watcher'] = bool(self.clipboard_var.get())
+        self.settings['drive_sync_enabled'] = bool(self.drive_enabled_var.get())
+        self.settings['drive_sync_library'] = bool(self.drive_library_var.get())
+        self.settings['drive_sync_epubs'] = bool(self.drive_epubs_var.get())
         self.settings['workers'] = self._get_workers()
         self.settings['output_dir'] = self.output_dir
         self.settings['translation_backend'] = (
@@ -149,20 +187,21 @@ class NovelDownloaderApp(ctk.CTk):
     
     def _create_ui(self):
         """Create all UI elements."""
-        
-        # Configure grid
+        # Configure grid (row 0 = menubar; content starts at row 1)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+        
+        self._create_menubar()
         
         # === Mode Toggle + URL Input Section ===
         url_frame = ctk.CTkFrame(self)
-        url_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        url_frame.grid(row=1, column=0, padx=10, pady=(6, 5), sticky="ew")
         url_frame.grid_columnconfigure(1, weight=1)
         
         # Mode toggle
         self.mode_switch = ctk.CTkSegmentedButton(
-            url_frame, values=["Single", "Multi"],
-            command=self._on_mode_change, width=140
+            url_frame, values=["Single", "Multi", "Library"],
+            command=self._on_mode_change, width=220
         )
         self.mode_switch.set("Single")
         self.mode_switch.grid(row=0, column=0, padx=(10, 5), pady=10)
@@ -175,12 +214,19 @@ class NovelDownloaderApp(ctk.CTk):
         self.url_entry = ctk.CTkEntry(self.single_url_frame, placeholder_text="Enter novel URL (e.g., https://twkan.com/book/12345.html)")
         self.url_entry.grid(row=0, column=0, padx=5, pady=10, sticky="ew")
         
+        self.recent_btn = ctk.CTkButton(
+            self.single_url_frame, text="Recent", width=70,
+            command=self._show_recent_menu,
+            fg_color="gray40", hover_color="gray30"
+        )
+        self.recent_btn.grid(row=0, column=1, padx=(5, 0), pady=10)
+        
         self.fetch_btn = ctk.CTkButton(self.single_url_frame, text="Fetch Chapters", command=self._on_fetch)
-        self.fetch_btn.grid(row=0, column=1, padx=(5, 10), pady=10)
+        self.fetch_btn.grid(row=0, column=2, padx=(5, 10), pady=10)
         
         # === Single Mode: Novel Info Section (with cover preview) ===
         self.info_frame = ctk.CTkFrame(self)
-        self.info_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        self.info_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
         self.info_frame.grid_columnconfigure(1, weight=1)
         
         # Cover image on the left
@@ -214,7 +260,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         # === Chapter List Section ===
         self.list_frame = ctk.CTkFrame(self)
-        self.list_frame.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+        self.list_frame.grid(row=3, column=0, padx=10, pady=5, sticky="nsew")
         self.list_frame.grid_columnconfigure(0, weight=1)
         self.list_frame.grid_rowconfigure(1, weight=1)
         
@@ -252,7 +298,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.multi_frame.grid_columnconfigure(0, weight=1)
         self.multi_frame.grid_rowconfigure(1, weight=1)
         
-        # URL input area with scrollable list
+        # URL block paste area
         multi_url_section = ctk.CTkFrame(self.multi_frame)
         multi_url_section.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         multi_url_section.grid_columnconfigure(0, weight=1)
@@ -260,20 +306,18 @@ class NovelDownloaderApp(ctk.CTk):
         multi_url_header = ctk.CTkFrame(multi_url_section, fg_color="transparent")
         multi_url_header.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         
-        ctk.CTkLabel(multi_url_header, text="Novel URLs (max 7):", font=("", 13, "bold")).pack(side="left", padx=5)
+        ctk.CTkLabel(
+            multi_url_header,
+            text="Paste novel URLs (one per line):",
+            font=("", 13, "bold")
+        ).pack(side="left", padx=5)
         
-        self.multi_add_btn = ctk.CTkButton(
-            multi_url_header, text="+ Add URL", width=90, height=28,
-            command=self._multi_add_url
-        )
-        self.multi_add_btn.pack(side="right", padx=5)
-        
-        self.multi_remove_btn = ctk.CTkButton(
-            multi_url_header, text="- Remove", width=90, height=28,
-            command=self._multi_remove_url,
+        self.multi_clear_btn = ctk.CTkButton(
+            multi_url_header, text="Clear", width=70, height=28,
+            command=self._multi_clear_urls,
             fg_color="gray40", hover_color="gray30"
         )
-        self.multi_remove_btn.pack(side="right", padx=5)
+        self.multi_clear_btn.pack(side="right", padx=5)
         
         self.multi_fetch_btn = ctk.CTkButton(
             multi_url_header, text="Fetch All", width=100, height=28,
@@ -281,14 +325,8 @@ class NovelDownloaderApp(ctk.CTk):
         )
         self.multi_fetch_btn.pack(side="right", padx=5)
         
-        # URL entries container
-        self.multi_url_container = ctk.CTkFrame(multi_url_section, fg_color="transparent")
-        self.multi_url_container.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="ew")
-        self.multi_url_container.grid_columnconfigure(1, weight=1)
-        
-        # Start with 2 URL fields
-        for i in range(2):
-            self._multi_create_url_row(i)
+        self.multi_url_text = ctk.CTkTextbox(multi_url_section, height=110)
+        self.multi_url_text.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="ew")
         
         # Results table
         self.multi_results_frame = ctk.CTkScrollableFrame(self.multi_frame, label_text="Novels")
@@ -307,9 +345,147 @@ class NovelDownloaderApp(ctk.CTk):
         )
         self.multi_download_btn.grid(row=2, column=0, pady=(5, 5))
         
+        # === Library Mode UI (hidden by default) ===
+        self.library_frame = ctk.CTkFrame(self)
+        self.library_frame.grid_columnconfigure(0, weight=1)
+        self.library_frame.grid_rowconfigure(2, weight=1)
+        
+        lib_header = ctk.CTkFrame(self.library_frame, fg_color="transparent")
+        lib_header.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(
+            lib_header,
+            text="Your library — auto-checks for new chapters; Update rebuilds the full EPUB (cache reuses old chapters).",
+            font=("", 12),
+            text_color="gray",
+            wraplength=520,
+            justify="left",
+        ).pack(side="left", padx=5)
+        
+        self.library_update_all_btn = ctk.CTkButton(
+            lib_header, text="Update All", width=95, height=28,
+            command=self._on_library_update_all,
+            state="disabled",
+            fg_color="#2B7A3E", hover_color="#236332",
+        )
+        self.library_update_all_btn.pack(side="right", padx=3)
+        self.library_check_btn = ctk.CTkButton(
+            lib_header, text="Check updates", width=110, height=28,
+            command=lambda: self._schedule_library_check(reason="manual", force=True),
+            fg_color="gray40", hover_color="gray30",
+        )
+        self.library_check_btn.pack(side="right", padx=3)
+        self.library_refresh_btn = ctk.CTkButton(
+            lib_header, text="Refresh", width=80, height=28,
+            command=self._refresh_library_ui,
+            fg_color="gray40", hover_color="gray30"
+        )
+        self.library_refresh_btn.pack(side="right", padx=3)
+        self.library_check_status_label = ctk.CTkLabel(
+            lib_header, text="", font=("", 11), text_color="gray"
+        )
+        self.library_check_status_label.pack(side="right", padx=8)
+        
+        # Google Drive sync panel
+        sync_panel = ctk.CTkFrame(self.library_frame)
+        sync_panel.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="ew")
+        sync_panel.grid_columnconfigure(1, weight=1)
+        
+        sync_row1 = ctk.CTkFrame(sync_panel, fg_color="transparent")
+        sync_row1.pack(fill="x", padx=8, pady=(8, 4))
+        
+        self.drive_enabled_var = ctk.BooleanVar(
+            value=bool(self.settings.get('drive_sync_enabled', False))
+        )
+        ctk.CTkCheckBox(
+            sync_row1,
+            text="Sync with Google Drive",
+            variable=self.drive_enabled_var,
+            command=self._on_drive_enabled_toggle,
+        ).pack(side="left", padx=(0, 12))
+        
+        self.drive_status_label = ctk.CTkLabel(
+            sync_row1, text="Drive sync off", font=("", 11), text_color="gray"
+        )
+        self.drive_status_label.pack(side="left", padx=5)
+        
+        self.drive_connect_btn = ctk.CTkButton(
+            sync_row1, text="Connect", width=90, height=28,
+            command=self._on_drive_connect,
+        )
+        self.drive_connect_btn.pack(side="right", padx=3)
+        self.drive_sync_now_btn = ctk.CTkButton(
+            sync_row1, text="Sync Now", width=90, height=28,
+            command=self._on_drive_sync_now,
+            fg_color="#2B7A3E", hover_color="#236332",
+        )
+        self.drive_sync_now_btn.pack(side="right", padx=3)
+        
+        sync_row2 = ctk.CTkFrame(sync_panel, fg_color="transparent")
+        sync_row2.pack(fill="x", padx=8, pady=(0, 4))
+        
+        self.drive_library_var = ctk.BooleanVar(
+            value=bool(self.settings.get('drive_sync_library', True))
+        )
+        ctk.CTkCheckBox(
+            sync_row2, text="Sync library",
+            variable=self.drive_library_var,
+            command=self._on_drive_option_change,
+        ).pack(side="left", padx=5)
+        
+        self.drive_epubs_var = ctk.BooleanVar(
+            value=bool(self.settings.get('drive_sync_epubs', True))
+        )
+        ctk.CTkCheckBox(
+            sync_row2, text="Sync EPUBs",
+            variable=self.drive_epubs_var,
+            command=self._on_drive_option_change,
+        ).pack(side="left", padx=5)
+        
+        self.drive_change_folder_btn = ctk.CTkButton(
+            sync_row2, text="Change folder", width=110, height=28,
+            command=self._on_drive_change_folder,
+            fg_color="gray40", hover_color="gray30",
+        )
+        self.drive_change_folder_btn.pack(side="right", padx=3)
+        self.drive_open_folder_btn = ctk.CTkButton(
+            sync_row2, text="Open folder", width=95, height=28,
+            command=self._on_drive_open_folder,
+            fg_color="gray40", hover_color="gray30",
+        )
+        self.drive_open_folder_btn.pack(side="right", padx=3)
+        
+        sync_row3 = ctk.CTkFrame(sync_panel, fg_color="transparent")
+        sync_row3.pack(fill="x", padx=8, pady=(0, 8))
+        self.drive_folder_help = ctk.CTkLabel(
+            sync_row3,
+            text="",
+            font=("", 11),
+            text_color="gray",
+            anchor="w",
+            justify="left",
+            wraplength=780,
+        )
+        self.drive_folder_help.pack(side="left", fill="x", expand=True)
+        self.drive_last_sync_label = ctk.CTkLabel(
+            sync_row3,
+            text="",
+            font=("", 11),
+            text_color="gray",
+            anchor="e",
+        )
+        self.drive_last_sync_label.pack(side="right", padx=(10, 0))
+        
+        self._update_drive_sync_controls()
+        self._update_drive_folder_help()
+        self._update_drive_last_sync_label()
+        
+        self.library_list_frame = ctk.CTkScrollableFrame(self.library_frame, label_text="Tracked novels")
+        self.library_list_frame.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
+        self.library_list_frame.grid_columnconfigure(0, weight=1)
+        
         # === Options Section ===
         options_frame = ctk.CTkFrame(self)
-        options_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        options_frame.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
         
         top_row = ctk.CTkFrame(options_frame, fg_color="transparent")
         top_row.pack(fill="x")
@@ -326,6 +502,14 @@ class NovelDownloaderApp(ctk.CTk):
         
         self.use_cache_var = ctk.BooleanVar(value=bool(self.settings.get('use_chapter_cache', True)))
         ctk.CTkCheckBox(left_opts, text="Use chapter cache (resume)", variable=self.use_cache_var).pack(anchor="w", pady=2)
+        
+        self.clipboard_var = ctk.BooleanVar(value=bool(self.settings.get('clipboard_watcher', False)))
+        ctk.CTkCheckBox(
+            left_opts,
+            text="Watch clipboard for URLs",
+            variable=self.clipboard_var,
+            command=self._on_clipboard_toggle,
+        ).pack(anchor="w", pady=2)
         
         # Right side - translator backend + workers
         right_opts = ctk.CTkFrame(top_row, fg_color="transparent")
@@ -365,7 +549,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         # === Progress Section ===
         progress_frame = ctk.CTkFrame(self)
-        progress_frame.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
+        progress_frame.grid(row=5, column=0, padx=10, pady=5, sticky="ew")
         progress_frame.grid_columnconfigure(0, weight=1)
         
         self.progress_bar = ctk.CTkProgressBar(progress_frame)
@@ -377,7 +561,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         # === Download Button ===
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.grid(row=5, column=0, padx=10, pady=10)
+        btn_frame.grid(row=6, column=0, padx=10, pady=10)
         
         self.download_btn = ctk.CTkButton(
             btn_frame, 
@@ -404,7 +588,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         # === Footer with Version and Update ===
         footer_frame = ctk.CTkFrame(self, fg_color="transparent")
-        footer_frame.grid(row=6, column=0, padx=10, pady=(0, 10), sticky="ew")
+        footer_frame.grid(row=7, column=0, padx=10, pady=(0, 10), sticky="ew")
         
         # Version label on left
         self.version_label = ctk.CTkLabel(
@@ -622,7 +806,7 @@ class NovelDownloaderApp(ctk.CTk):
             self._save_settings()
     
     def _reset_output_dir(self):
-        """Reset to the system Downloads folder."""
+        """Reset to ~/.noveldownloader/books."""
         self.output_dir = ''
         self._update_output_dir_label()
         self._save_settings()
@@ -632,7 +816,7 @@ class NovelDownloaderApp(ctk.CTk):
             self.output_dir_label.configure(text=self.output_dir, text_color="white")
         else:
             self.output_dir_label.configure(
-                text=f"{self._system_downloads_folder()} (default)", text_color="gray"
+                text=f"{get_default_books_dir()} (default)", text_color="gray"
             )
     
     def _on_download(self):
@@ -652,22 +836,8 @@ class NovelDownloaderApp(ctk.CTk):
         # Use translated title if available, otherwise original
         title_for_filename = self.translated_title if self.translated_title else self.novel_info.title
         
-        # Create shortened filename like WebToEpub: "First...Last.epub"
-        clean_title = self._create_short_filename(title_for_filename)
-        
-        if not clean_title:
-            clean_title = "novel"
-        
-        # Save to central Downloads directory
         downloads_dir = self._get_downloads_folder()
-        output_path = str(downloads_dir / f"{clean_title}.epub")
-        
-        # If file exists, add number
-        counter = 1
-        base_path = output_path
-        while os.path.exists(output_path):
-            output_path = base_path.replace(".epub", f" ({counter}).epub")
-            counter += 1
+        output_path = self._unique_epub_path(downloads_dir, title_for_filename)
         
         print(f"Auto-saving to: {output_path}")
         
@@ -688,67 +858,74 @@ class NovelDownloaderApp(ctk.CTk):
         thread.daemon = True
         thread.start()
     
-    def _system_downloads_folder(self) -> Path:
-        """Get the system Downloads folder (or app dir if it doesn't exist)."""
-        if sys.platform == "win32":
-            downloads = Path(os.environ.get("USERPROFILE", "")) / "Downloads"
-        else:
-            downloads = Path(os.environ.get("HOME", "")) / "Downloads"
-        
-        if not downloads.exists():
-            downloads = self.app_dir
-        
-        return downloads
-    
     def _get_downloads_folder(self) -> Path:
-        """Get the output folder: user-chosen folder if set, else Downloads."""
+        """Get the output folder: user-chosen folder if set, else ~/.noveldownloader/books."""
         custom = (self.output_dir or '').strip()
         if custom:
             path = Path(custom)
             if path.exists():
                 return path
-            print(f"Warning: chosen output folder no longer exists: {custom}")
-        return self._system_downloads_folder()
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                return path
+            except Exception:
+                print(f"Warning: chosen output folder unavailable: {custom}")
+        return get_default_books_dir()
     
-    def _create_short_filename(self, title: str, max_length: int = 40) -> str:
-        """
-        Create a shortened filename like WebToEpub does.
-        Format: "FirstWord...LastWord" if title is too long.
-        """
-        # Clean the title - keep only safe characters
-        clean = "".join(c for c in title if c.isalnum() or c in " ._-").strip()
-        
-        # Replace multiple spaces with single space
-        clean = " ".join(clean.split())
-        
-        if not clean:
-            return "novel"
-        
-        # If short enough, return as-is
-        if len(clean) <= max_length:
-            return clean
-        
-        # Split into words
-        words = clean.split()
-        
-        if len(words) <= 2:
-            # Just truncate if only 1-2 words
-            return clean[:max_length]
-        
-        # Take first 2 words and last word, join with "..."
-        first_part = " ".join(words[:2])
-        last_part = words[-1]
-        
-        # Format: "First Two...Last"
-        shortened = f"{first_part}...{last_part}"
-        
-        # If still too long, truncate first part
-        if len(shortened) > max_length:
-            available = max_length - len(last_part) - 3  # 3 for "..."
-            first_part = first_part[:available].rstrip()
-            shortened = f"{first_part}...{last_part}"
-        
-        return shortened
+    def _unique_epub_path(self, folder: Path, title: str) -> str:
+        """Full English title filename; add (N) suffix if the file already exists."""
+        clean_title = safe_filename(title)
+        output_path = str(folder / f"{clean_title}.epub")
+        counter = 1
+        base_path = output_path
+        while os.path.exists(output_path):
+            output_path = base_path.replace(".epub", f" ({counter}).epub")
+            counter += 1
+        return output_path
+    
+    def _record_successful_download(
+        self,
+        info: NovelInfo,
+        chapters: List[Chapter],
+        translated_title: Optional[str],
+        output_path: str,
+    ):
+        """Update history + library after a successful EPUB build."""
+        if not info:
+            return
+        display_title = translated_title or info.title
+        last_ch = chapters[-1] if chapters else None
+        try:
+            epub_name = Path(output_path).name if output_path else ''
+            self.library_store.add_history(
+                source_url=info.source_url,
+                title=info.title,
+                translated_title=display_title,
+                author=info.author,
+                chapter_count=len(chapters),
+                output_path=output_path,
+            )
+            self.library_store.upsert_library(
+                source_url=info.source_url,
+                title=info.title,
+                translated_title=display_title,
+                author=info.author,
+                cover_url=info.cover_url or '',
+                chapter_count=len(chapters),
+                last_chapter_url=last_ch.url if last_ch else '',
+                last_chapter_title=last_ch.title if last_ch else '',
+                output_path=output_path,
+                epub_filename=epub_name,
+            )
+        except Exception as e:
+            print(f"Warning: failed to update library/history: {e}")
+        if self.library_mode:
+            self.after(0, self._refresh_library_ui)
+        # Optional Drive sync (library push + EPUB upload)
+        self._schedule_drive_push_after_download(
+            info.source_url if info else '',
+            output_path,
+        )
     
     def _download_chapters_with_cache(
         self,
@@ -890,6 +1067,10 @@ class NovelDownloaderApp(ctk.CTk):
                 )
             
             # Done
+            self._record_successful_download(
+                self.novel_info, chapters, self.translated_title, output_path
+            )
+            
             success_msg = f"EPUB saved to:\n{output_path}"
             if failed_chapters:
                 shown = "\n".join(f"  • {t[:50]}" for t in failed_chapters[:10])
@@ -899,6 +1080,9 @@ class NovelDownloaderApp(ctk.CTk):
                     f"\n\nWarning: {len(failed_chapters)} chapter(s) could not be "
                     f"downloaded and contain placeholder text:\n{shown}"
                 )
+            
+            title_note = self.translated_title or (self.novel_info.title if self.novel_info else "Novel")
+            notify("Download complete", f"{title_note}\nSaved to {Path(output_path).name}")
             
             self.after(0, lambda: self.progress_bar.set(1.0))
             self.after(0, lambda: self._update_status(f"Done! Saved to: {output_path}"))
@@ -923,72 +1107,81 @@ class NovelDownloaderApp(ctk.CTk):
     # ------------------------------------------------------------------
     
     def _on_mode_change(self, value: str):
-        """Toggle between Single and Multi download modes."""
+        """Toggle between Single, Multi, and Library modes."""
         if self.is_downloading:
-            self.mode_switch.set("Multi" if value == "Single" else "Single")
+            # Revert to current mode
+            if self.library_mode:
+                self.mode_switch.set("Library")
+            elif self.multi_mode:
+                self.mode_switch.set("Multi")
+            else:
+                self.mode_switch.set("Single")
             return
         
         self.multi_mode = (value == "Multi")
+        self.library_mode = (value == "Library")
         
-        if self.multi_mode:
-            # Hide single-mode UI
-            self.single_url_frame.grid_remove()
-            self.info_frame.grid_remove()
-            self.list_frame.grid_remove()
-            self.download_btn.pack_forget()
-            # Show multi-mode UI
-            self.multi_frame.grid(row=1, column=0, rowspan=2, padx=10, pady=5, sticky="nsew")
+        # Hide all mode panels first
+        self.single_url_frame.grid_remove()
+        self.info_frame.grid_remove()
+        self.list_frame.grid_remove()
+        self.multi_frame.grid_remove()
+        self.library_frame.grid_remove()
+        self.download_btn.pack_forget()
+        
+        if self.library_mode:
+            self.library_frame.grid(row=2, column=0, rowspan=2, padx=10, pady=5, sticky="nsew")
+            self._refresh_library_ui()
+            self._update_drive_status_label()
+            if self.drive_enabled_var.get():
+                self._schedule_drive_sync(silent=True)
+            self._schedule_library_check(reason="library_tab")
+        elif self.multi_mode:
+            self.multi_frame.grid(row=2, column=0, rowspan=2, padx=10, pady=5, sticky="nsew")
         else:
-            # Hide multi-mode UI
-            self.multi_frame.grid_remove()
-            # Show single-mode UI
             self.single_url_frame.grid()
             self.info_frame.grid()
             self.list_frame.grid()
             self.download_btn.pack(side="left", padx=5)
     
-    def _multi_create_url_row(self, index: int):
-        """Create a single URL entry row for multi mode."""
-        label = ctk.CTkLabel(self.multi_url_container, text=f"{index + 1}.", width=25)
-        label.grid(row=index, column=0, padx=(5, 2), pady=3, sticky="w")
-        
-        entry = ctk.CTkEntry(self.multi_url_container, placeholder_text=f"Novel URL #{index + 1}")
-        entry.grid(row=index, column=1, padx=2, pady=3, sticky="ew")
-        
-        self.multi_url_entries.append(entry)
+    def _multi_clear_urls(self):
+        """Clear the multi-mode URL block."""
+        self.multi_url_text.delete("1.0", "end")
     
-    def _multi_add_url(self):
-        """Add a new URL field in multi mode (max 7)."""
-        if len(self.multi_url_entries) >= 7:
-            messagebox.showinfo("Limit", "Maximum 7 novels in multi-download mode.")
-            return
-        self._multi_create_url_row(len(self.multi_url_entries))
+    def _multi_get_urls(self) -> List[str]:
+        """Parse unique URLs from the multi-mode text block."""
+        return extract_urls(self.multi_url_text.get("1.0", "end"))
     
-    def _multi_remove_url(self):
-        """Remove the last URL field in multi mode (min 2)."""
-        if len(self.multi_url_entries) <= 2:
-            return
-        entry = self.multi_url_entries.pop()
-        # Destroy the entry and its label
-        row = len(self.multi_url_entries)
-        for widget in self.multi_url_container.grid_slaves(row=row):
-            widget.destroy()
+    def _multi_append_urls(self, urls: List[str]) -> List[str]:
+        """Append URLs that aren't already in the block. Returns newly added URLs."""
+        existing = set(self._multi_get_urls())
+        added = []
+        for url in urls:
+            if url not in existing:
+                added.append(url)
+                existing.add(url)
+        if not added:
+            return []
+        current = self.multi_url_text.get("1.0", "end").strip()
+        block = ("\n" if current else "") + "\n".join(added)
+        self.multi_url_text.insert("end", block)
+        return added
     
     def _on_multi_fetch(self):
         """Fetch info for all URLs in multi mode."""
-        urls = [e.get().strip() for e in self.multi_url_entries if e.get().strip()]
+        urls = self._multi_get_urls()
         if not urls:
-            messagebox.showerror("Error", "Please enter at least one URL.")
+            messagebox.showerror("Error", "Please paste at least one novel URL.")
             return
         
         # Validate all URLs have parsers
-        parsers = []
+        parsers_list = []
         for url in urls:
             parser = get_parser_for_url(url)
             if not parser:
                 messagebox.showerror("Error", f"Unsupported site:\n{url}")
                 return
-            parsers.append((url, parser))
+            parsers_list.append((url, parser))
         
         # Clear old results
         self.multi_novels.clear()
@@ -997,7 +1190,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.multi_result_labels.clear()
         
         # Create result rows
-        for idx, (url, parser) in enumerate(parsers):
+        for idx, (url, parser) in enumerate(parsers_list):
             self.multi_novels.append({
                 'url': url, 'parser': parser,
                 'info': None, 'chapters': [],
@@ -1008,11 +1201,10 @@ class NovelDownloaderApp(ctk.CTk):
         # Disable UI during fetch
         self.multi_fetch_btn.configure(state="disabled", text="Fetching...")
         self.multi_download_btn.configure(state="disabled")
-        self.multi_add_btn.configure(state="disabled")
-        self.multi_remove_btn.configure(state="disabled")
+        self.multi_clear_btn.configure(state="disabled")
         self.mode_switch.configure(state="disabled")
         self.progress_bar.set(0)
-        self._update_status("Fetching novel info...")
+        self._update_status(f"Fetching {len(parsers_list)} novel(s)...")
         
         thread = threading.Thread(target=self._multi_fetch_thread)
         thread.daemon = True
@@ -1103,8 +1295,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         # Re-enable UI
         self.after(0, lambda: self.multi_fetch_btn.configure(state="normal", text="Fetch All"))
-        self.after(0, lambda: self.multi_add_btn.configure(state="normal"))
-        self.after(0, lambda: self.multi_remove_btn.configure(state="normal"))
+        self.after(0, lambda: self.multi_clear_btn.configure(state="normal"))
         self.after(0, lambda: self.mode_switch.configure(state="normal"))
         self.after(0, lambda: self.progress_bar.set(1.0))
         
@@ -1131,8 +1322,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.cancel_requested = False
         self.multi_download_btn.configure(state="disabled")
         self.multi_fetch_btn.configure(state="disabled")
-        self.multi_add_btn.configure(state="disabled")
-        self.multi_remove_btn.configure(state="disabled")
+        self.multi_clear_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self.fetch_btn.configure(state="disabled")
         self.mode_switch.configure(state="disabled")
@@ -1168,16 +1358,8 @@ class NovelDownloaderApp(ctk.CTk):
             ))
             
             try:
-                # Generate output path
-                clean_title = self._create_short_filename(title_for_filename)
-                if not clean_title:
-                    clean_title = "novel"
-                output_path = str(downloads_dir / f"{clean_title}.epub")
-                counter = 1
-                base_path = output_path
-                while os.path.exists(output_path):
-                    output_path = base_path.replace(".epub", f" ({counter}).epub")
-                    counter += 1
+                # Generate output path (full English title)
+                output_path = self._unique_epub_path(downloads_dir, title_for_filename)
                 
                 # Phase 1: Download chapters (with cache + retry pass)
                 book_key = info.source_url if info else novel['url']
@@ -1237,6 +1419,9 @@ class NovelDownloaderApp(ctk.CTk):
                     builder.build(info, chapters, output_path, progress_cb)
                 
                 results.append((title_for_filename, output_path, True, None, failed_ch_count))
+                self._record_successful_download(
+                    info, chapters, novel.get('translated_title'), output_path
+                )
                 status_text = "Done" if not failed_ch_count else f"Done ({failed_ch_count} ch. failed)"
                 self.after(0, lambda i=full_idx, s=status_text: self.multi_result_labels[i]['status'].configure(
                     text=s, text_color="#2B7A3E"
@@ -1270,6 +1455,12 @@ class NovelDownloaderApp(ctk.CTk):
         
         summary += f"\nLocation: {downloads_dir}"
         
+        notify(
+            "Multi-download complete",
+            f"{len(success)}/{len(results)} novels saved"
+            + (f", {len(failed)} failed" if failed else ""),
+        )
+        
         self.after(0, lambda s=summary: self._update_status(
             f"Done! {len(success)}/{len(results)} novels downloaded."
         ))
@@ -1279,11 +1470,1435 @@ class NovelDownloaderApp(ctk.CTk):
         self.is_downloading = False
         self.after(0, lambda: self.multi_download_btn.configure(state="normal"))
         self.after(0, lambda: self.multi_fetch_btn.configure(state="normal"))
-        self.after(0, lambda: self.multi_add_btn.configure(state="normal"))
-        self.after(0, lambda: self.multi_remove_btn.configure(state="normal"))
+        self.after(0, lambda: self.multi_clear_btn.configure(state="normal"))
         self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
         self.after(0, lambda: self.fetch_btn.configure(state="normal"))
         self.after(0, lambda: self.mode_switch.configure(state="normal"))
+    
+    # ------------------------------------------------------------------
+    # Menubar
+    # ------------------------------------------------------------------
+    
+    def _create_menubar(self):
+        """Dark CTk menubar (native Win32 menus can't match the app theme)."""
+        self._menu_popup = None
+        self._menu_buttons = {}
+        
+        # Match CTk window surface (native Win32 menus can't be recolored)
+        bar = ctk.CTkFrame(self, height=32, corner_radius=0, fg_color=("gray92", "gray14"))
+        bar.grid(row=0, column=0, sticky="ew")
+        bar.grid_propagate(False)
+        self._menubar = bar
+        
+        for name in ("File", "Library", "Help"):
+            btn = ctk.CTkButton(
+                bar,
+                text=name,
+                width=64,
+                height=28,
+                corner_radius=4,
+                fg_color="transparent",
+                text_color=("gray10", "gray90"),
+                hover_color=("gray80", "gray25"),
+                font=("", 13),
+                anchor="center",
+            )
+            btn.configure(command=lambda n=name, b=btn: self._menu_toggle(n, b))
+            btn.pack(side="left", padx=(6 if name == "File" else 2, 2), pady=2)
+            self._menu_buttons[name] = btn
+        
+        self.bind("<Escape>", lambda _e: self._menu_close(), add="+")
+        self.bind_all("<Button-1>", self._menu_on_global_click, add="+")
+    
+    def _menu_items_for(self, name: str):
+        """Build (label, command) rows; None = separator."""
+        if name == "File":
+            items = [
+                ("Open books folder", self._menu_open_books_folder),
+                ("Open data folder", self._menu_open_data_folder),
+                ("Open log file", self._menu_open_log_file),
+                None,
+            ]
+            history = self.library_store.get_history()[:12]
+            if history:
+                items.append(("Recent", None))
+                for entry in history:
+                    title = entry.translated_title or entry.title or entry.source_url
+                    if len(title) > 42:
+                        title = title[:39] + "..."
+                    url = entry.source_url
+                    items.append((f"  {title}", lambda u=url: self._load_url_from_history(u)))
+                items.append(None)
+            items.append(("Quit", self._on_close))
+            return items
+        if name == "Library":
+            return [
+                ("Check for updates", self._menu_library_check),
+                ("Update all", self._on_library_update_all),
+                None,
+                ("Sync Now", self._menu_drive_sync_now),
+                ("Open Drive folder", self._on_drive_open_folder),
+            ]
+        return [
+            ("Google Drive setup…", self._menu_drive_setup),
+            ("Check for app updates", self._on_check_updates),
+            None,
+            ("About", self._menu_about),
+        ]
+    
+    def _menu_toggle(self, name: str, button: ctk.CTkButton):
+        if self._menu_popup is not None and getattr(self, "_menu_popup_name", None) == name:
+            self._menu_close()
+            return
+        self._menu_open(name, button)
+    
+    def _menu_open(self, name: str, button: ctk.CTkButton):
+        self._menu_close()
+        items = self._menu_items_for(name)
+        
+        popup = ctk.CTkToplevel(self)
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        self._menu_popup = popup
+        self._menu_popup_name = name
+        
+        frame = ctk.CTkFrame(
+            popup,
+            fg_color=("gray92", "gray20"),
+            corner_radius=6,
+            border_width=1,
+            border_color=("gray70", "gray35"),
+        )
+        frame.pack(fill="both", expand=True)
+        
+        for item in items:
+            if item is None:
+                ctk.CTkFrame(frame, height=1, fg_color=("gray70", "gray40")).pack(
+                    fill="x", padx=8, pady=4
+                )
+                continue
+            label, cmd = item
+            disabled = cmd is None
+            row = ctk.CTkButton(
+                frame,
+                text=label,
+                anchor="w",
+                height=30,
+                corner_radius=4,
+                fg_color="transparent",
+                text_color=("gray50", "gray55") if disabled else ("gray10", "gray90"),
+                hover_color=("gray80", "gray30"),
+                font=("", 13),
+                state="disabled" if disabled else "normal",
+                command=(lambda c=cmd: self._menu_run(c)) if cmd else None,
+            )
+            row.pack(fill="x", padx=4, pady=1)
+        
+        self.update_idletasks()
+        frame.update_idletasks()
+        x = button.winfo_rootx()
+        y = button.winfo_rooty() + button.winfo_height() + 2
+        # Size to content
+        popup.update_idletasks()
+        w = max(200, frame.winfo_reqwidth() + 4)
+        h = frame.winfo_reqheight() + 4
+        popup.geometry(f"{w}x{h}+{x}+{y}")
+        
+        popup.bind("<Escape>", lambda _e: self._menu_close())
+    
+    def _menu_run(self, cmd):
+        self._menu_close()
+        if cmd:
+            cmd()
+    
+    def _menu_close(self):
+        popup = self._menu_popup
+        self._menu_popup = None
+        self._menu_popup_name = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+    
+    def _menu_widget_under(self, widget, ancestor) -> bool:
+        try:
+            w = str(widget)
+            a = str(ancestor)
+            return w == a or w.startswith(a + ".")
+        except Exception:
+            return False
+    
+    def _menu_on_global_click(self, event):
+        """Close dropdown when clicking outside it / the menu buttons."""
+        if self._menu_popup is None:
+            return
+        widget = event.widget
+        if self._menu_widget_under(widget, self._menu_popup):
+            return
+        for btn in self._menu_buttons.values():
+            if self._menu_widget_under(widget, btn):
+                return
+        self.after_idle(self._menu_close)
+    
+    def _reveal_path(self, path: Path, *, create_dir: bool = False):
+        """Open a file or folder in the OS file manager / default app."""
+        path = Path(path)
+        try:
+            if create_dir and not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                messagebox.showinfo("Open", f"Not found yet:\n{path}")
+                return
+            if sys.platform == "win32":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                import subprocess
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as e:
+            messagebox.showerror("Open", str(e))
+    
+    def _menu_open_books_folder(self):
+        self._reveal_path(self._get_downloads_folder(), create_dir=True)
+    
+    def _menu_open_data_folder(self):
+        self._reveal_path(self.data_dir, create_dir=True)
+    
+    def _menu_open_log_file(self):
+        log_path = self.data_dir / "logs" / "novel_downloader.log"
+        if not log_path.exists():
+            messagebox.showinfo("Log file", f"No log yet.\nExpected at:\n{log_path}")
+            return
+        self._reveal_path(log_path)
+    
+    def _load_url_from_history(self, url: str):
+        """Load a history URL into Single mode."""
+        self.url_entry.delete(0, "end")
+        self.url_entry.insert(0, url)
+        if self.multi_mode or self.library_mode:
+            self.mode_switch.set("Single")
+            self._on_mode_change("Single")
+    
+    def _menu_library_check(self):
+        if not self.library_store.get_library():
+            messagebox.showinfo("Library", "No tracked novels yet. Download something first.")
+            return
+        if not self.library_mode:
+            self.mode_switch.set("Library")
+            self._on_mode_change("Library")
+        self._schedule_library_check(reason="manual", force=True)
+    
+    def _menu_drive_sync_now(self):
+        if not self.drive_enabled_var.get():
+            messagebox.showinfo(
+                "Google Drive",
+                "Enable Google Drive sync in the Library tab first.",
+            )
+            return
+        self._on_drive_sync_now()
+    
+    def _menu_drive_setup(self):
+        messagebox.showinfo("Google Drive setup", oauth_setup_instructions())
+    
+    def _menu_about(self):
+        messagebox.showinfo(
+            "About",
+            f"Novel Downloader & Translator\n"
+            f"Version {get_current_version()}\n\n"
+            f"Data folder:\n{self.data_dir}\n\n"
+            f"Books folder:\n{self._get_downloads_folder()}",
+        )
+    
+    # ------------------------------------------------------------------
+    # Recent history
+    # ------------------------------------------------------------------
+    
+    def _show_recent_menu(self):
+        """Popup listing recent downloads; click one to load its URL."""
+        history = self.library_store.get_history()
+        if not history:
+            messagebox.showinfo("Recent", "No download history yet.")
+            return
+        
+        popup = ctk.CTkToplevel(self)
+        popup.title("Recent downloads")
+        popup.geometry("560x420")
+        popup.transient(self)
+        popup.grab_set()
+        
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 560) // 2
+        y = self.winfo_y() + (self.winfo_height() - 420) // 2
+        popup.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(popup, text="Click a novel to load its URL", font=("", 13, "bold")).pack(
+            padx=12, pady=(12, 6), anchor="w"
+        )
+        
+        scroll = ctk.CTkScrollableFrame(popup)
+        scroll.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        def pick(url: str):
+            popup.destroy()
+            self._load_url_from_history(url)
+        
+        for entry in history:
+            title = entry.translated_title or entry.title or entry.source_url
+            if len(title) > 55:
+                title = title[:52] + "..."
+            meta = entry.author or ""
+            if entry.chapter_count:
+                meta = f"{meta} · {entry.chapter_count} ch." if meta else f"{entry.chapter_count} ch."
+            
+            row = ctk.CTkFrame(scroll)
+            row.pack(fill="x", pady=3, padx=2)
+            
+            text_col = ctk.CTkFrame(row, fg_color="transparent")
+            text_col.pack(side="left", fill="x", expand=True, padx=8, pady=6)
+            ctk.CTkLabel(text_col, text=title, font=("", 12, "bold"), anchor="w").pack(fill="x")
+            if meta:
+                ctk.CTkLabel(text_col, text=meta, font=("", 11), text_color="gray", anchor="w").pack(fill="x")
+            
+            ctk.CTkButton(
+                row, text="Load", width=70, height=28,
+                command=lambda u=entry.source_url: pick(u)
+            ).pack(side="right", padx=8, pady=6)
+    
+    # ------------------------------------------------------------------
+    # Library mode
+    # ------------------------------------------------------------------
+    
+    def _refresh_library_ui(self):
+        """Rebuild the library list from the store."""
+        for child in self.library_list_frame.winfo_children():
+            child.destroy()
+        self._library_row_widgets.clear()
+        
+        entries = self.library_store.get_library()
+        if not entries:
+            ctk.CTkLabel(
+                self.library_list_frame,
+                text="No tracked novels yet.\nDownload something in Single or Multi mode and it will appear here.",
+                text_color="gray",
+                justify="left",
+            ).pack(padx=12, pady=20, anchor="w")
+            self._update_library_update_all_btn()
+            return
+        
+        for entry in entries:
+            self._create_library_row(entry)
+        self._update_library_update_all_btn()
+    
+    def _create_library_row(self, entry):
+        row = ctk.CTkFrame(self.library_list_frame)
+        row.pack(fill="x", padx=5, pady=4)
+        row.grid_columnconfigure(0, weight=1)
+        
+        title = entry.translated_title or entry.title or entry.source_url
+        if len(title) > 60:
+            title = title[:57] + "..."
+        
+        when = ""
+        if entry.last_downloaded_at:
+            try:
+                when = time.strftime("%Y-%m-%d", time.localtime(entry.last_downloaded_at))
+            except Exception:
+                when = ""
+        
+        meta_parts = []
+        if entry.author:
+            meta_parts.append(entry.author)
+        if entry.chapter_count:
+            meta_parts.append(f"{entry.chapter_count} chapters")
+        if entry.last_chapter_title:
+            last = entry.last_chapter_title
+            if len(last) > 40:
+                last = last[:37] + "..."
+            meta_parts.append(f"last: {last}")
+        if when:
+            meta_parts.append(when)
+        meta = " · ".join(meta_parts)
+        
+        text_col = ctk.CTkFrame(row, fg_color="transparent")
+        text_col.grid(row=0, column=0, sticky="ew", padx=10, pady=8)
+        ctk.CTkLabel(text_col, text=title, font=("", 13, "bold"), anchor="w").pack(fill="x")
+        if meta:
+            ctk.CTkLabel(text_col, text=meta, font=("", 11), text_color="gray", anchor="w").pack(fill="x")
+        status_label = ctk.CTkLabel(
+            text_col, text="", font=("", 11), text_color="gray", anchor="w"
+        )
+        status_label.pack(fill="x")
+        
+        btns = ctk.CTkFrame(row, fg_color="transparent")
+        btns.grid(row=0, column=1, padx=8, pady=8)
+        
+        update_btn = ctk.CTkButton(
+            btns, text="Update", width=80, height=28,
+            fg_color="#2B7A3E", hover_color="#236332",
+            command=lambda e=entry: self._on_library_update(e),
+        )
+        update_btn.pack(side="left", padx=3)
+        
+        local_missing = not (entry.output_path and Path(entry.output_path).is_file())
+        remote_id = entry.drive_file_id or self._remote_books.get(entry.epub_filename or '')
+        if not remote_id and entry.epub_filename:
+            remote_id = self._remote_books.get(entry.epub_filename)
+        if local_missing and remote_id and self.drive_enabled_var.get():
+            ctk.CTkButton(
+                btns, text="Download EPUB", width=110, height=28,
+                command=lambda e=entry, fid=remote_id: self._on_drive_download_epub(e, fid),
+            ).pack(side="left", padx=3)
+        
+        ctk.CTkButton(
+            btns, text="Open URL", width=80, height=28,
+            fg_color="gray40", hover_color="gray30",
+            command=lambda u=entry.source_url: self._library_open_url(u),
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            btns, text="Remove", width=70, height=28,
+            fg_color="gray40", hover_color="gray30",
+            command=lambda u=entry.source_url: self._on_library_remove(u),
+        ).pack(side="left", padx=3)
+        
+        self._library_row_widgets.append({
+            'url': entry.source_url,
+            'status_label': status_label,
+            'update_btn': update_btn,
+        })
+        self._apply_library_row_status(entry.source_url)
+    
+    def _library_novels_with_updates(self) -> list:
+        urls = []
+        for url, info in self._library_check_status.items():
+            if info.get('state') == 'update' and int(info.get('new_count') or 0) > 0:
+                urls.append(url)
+        return urls
+    
+    def _update_library_update_all_btn(self):
+        n = len(self._library_novels_with_updates())
+        if n:
+            self.library_update_all_btn.configure(
+                state="normal", text=f"Update All ({n})"
+            )
+        else:
+            self.library_update_all_btn.configure(state="disabled", text="Update All")
+    
+    def _apply_library_row_status(self, source_url: str):
+        info = self._library_check_status.get(source_url) or {}
+        state = info.get('state', '')
+        text = ""
+        color = "gray"
+        if state == 'checking':
+            text = "Checking…"
+            color = "orange"
+        elif state == 'update':
+            n = int(info.get('new_count') or 0)
+            total = int(info.get('total') or 0)
+            text = f"{n} new chapter(s)" + (f" · {total} on site" if total else "")
+            color = "#2B7A3E"
+        elif state == 'current':
+            total = int(info.get('total') or 0)
+            text = "Up to date" + (f" · {total} on site" if total else "")
+            color = "gray"
+        elif state == 'error':
+            err = (info.get('error') or 'error')[:60]
+            text = f"Check failed: {err}"
+            color = "red"
+        
+        for row in self._library_row_widgets:
+            if row['url'] == source_url:
+                try:
+                    row['status_label'].configure(text=text, text_color=color)
+                except Exception:
+                    pass
+                break
+    
+    def _schedule_library_check(self, reason: str = "", force: bool = False):
+        """Background-check all library novels for new chapters (TOC only)."""
+        if self._library_checking and not force:
+            return
+        if self.is_downloading:
+            return
+        entries = self.library_store.get_library()
+        if not entries:
+            return
+        if self._library_checking:
+            return
+        
+        self._library_checking = True
+        try:
+            self.library_check_btn.configure(state="disabled", text="Checking…")
+            self.library_check_status_label.configure(text="Checking library…")
+        except Exception:
+            pass
+        
+        for entry in entries:
+            self._library_check_status[entry.source_url] = {
+                'state': 'checking', 'new_count': 0, 'total': 0, 'error': ''
+            }
+            self._apply_library_row_status(entry.source_url)
+        
+        thread = threading.Thread(
+            target=self._library_check_thread,
+            args=(list(entries), reason),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _library_check_thread(self, entries: list, reason: str):
+        with_updates = 0
+        total = len(entries)
+        try:
+            for idx, entry in enumerate(entries):
+                if self.cancel_requested and reason == "manual":
+                    break
+                title = entry.translated_title or entry.title or entry.source_url
+                self.after(0, lambda i=idx, t=total, n=title: self._update_status(
+                    f"Checking library [{i + 1}/{t}]: {n[:40]}"
+                ))
+                self.after(0, lambda i=idx, t=total: self.library_check_status_label.configure(
+                    text=f"Checking {i + 1}/{t}…"
+                ))
+                
+                delay = 1.0
+                try:
+                    parser = get_parser_for_url(entry.source_url)
+                    if not parser:
+                        raise Exception("Unsupported site")
+                    delay = float(getattr(parser, 'request_delay', 1.0) or 1.0)
+                    chapters = parser.get_chapter_list(entry.source_url)
+                    if not chapters:
+                        raise Exception("No chapters found")
+                    new_only, _ = new_chapters_since(
+                        chapters, entry.last_chapter_url, entry.chapter_count
+                    )
+                    if new_only:
+                        with_updates += 1
+                        self._library_check_status[entry.source_url] = {
+                            'state': 'update',
+                            'new_count': len(new_only),
+                            'total': len(chapters),
+                            'error': '',
+                        }
+                    else:
+                        self._library_check_status[entry.source_url] = {
+                            'state': 'current',
+                            'new_count': 0,
+                            'total': len(chapters),
+                            'error': '',
+                        }
+                except Exception as e:
+                    self._library_check_status[entry.source_url] = {
+                        'state': 'error',
+                        'new_count': 0,
+                        'total': 0,
+                        'error': str(e),
+                    }
+                
+                self.after(0, lambda u=entry.source_url: self._apply_library_row_status(u))
+                if idx < total - 1:
+                    time.sleep(min(max(delay, 0.5), 3.0))
+        finally:
+            self.after(0, lambda w=with_updates, t=total, r=reason: self._on_library_check_done(w, t, r))
+    
+    def _on_library_check_done(self, with_updates: int, total: int, reason: str):
+        self._library_checking = False
+        try:
+            self.library_check_btn.configure(state="normal", text="Check updates")
+        except Exception:
+            pass
+        self._update_library_update_all_btn()
+        
+        if with_updates:
+            summary = f"{with_updates}/{total} novel(s) have new chapters"
+            self.library_check_status_label.configure(text=summary, text_color="#2B7A3E")
+            self._update_status(summary)
+            notify("Library updates available", summary)
+        else:
+            summary = f"All {total} novel(s) up to date"
+            self.library_check_status_label.configure(text=summary, text_color="gray")
+            self._update_status(summary)
+    
+    def _on_library_update_all(self):
+        """Update every novel that the last check marked as having new chapters."""
+        if self.is_downloading or self._library_checking:
+            return
+        urls = self._library_novels_with_updates()
+        if not urls:
+            messagebox.showinfo("Update All", "No novels with new chapters. Run Check updates first.")
+            return
+        
+        entries = []
+        for url in urls:
+            entry = self.library_store.get_library_entry(url)
+            if entry:
+                entries.append(entry)
+        if not entries:
+            return
+        
+        if not messagebox.askyesno(
+            "Update All",
+            f"Update {len(entries)} novel(s) with new chapters?\n\n"
+            "Each one rebuilds a full EPUB (cached chapters are reused)."
+        ):
+            return
+        
+        self._save_settings()
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.cancel_btn.configure(state="normal")
+        self.mode_switch.configure(state="disabled")
+        self.library_refresh_btn.configure(state="disabled")
+        self.library_check_btn.configure(state="disabled")
+        self.library_update_all_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        
+        thread = threading.Thread(
+            target=self._library_update_all_thread,
+            args=(entries,),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _library_update_all_thread(self, entries: list):
+        results = []  # (title, ok, detail)
+        total = len(entries)
+        try:
+            for idx, entry in enumerate(entries):
+                if self.cancel_requested:
+                    results.append((
+                        entry.translated_title or entry.title,
+                        False,
+                        "Cancelled",
+                    ))
+                    break
+                
+                display = entry.translated_title or entry.title or "Novel"
+                self.after(0, lambda i=idx, t=total, n=display: self._update_status(
+                    f"Update All [{i + 1}/{t}]: {n[:40]}"
+                ))
+                
+                try:
+                    parser = get_parser_for_url(entry.source_url)
+                    if not parser:
+                        raise Exception("Unsupported site")
+                    
+                    if hasattr(parser, 'fetch_all_parallel'):
+                        info, chapters = parser.fetch_all_parallel(entry.source_url)
+                    else:
+                        info = parser.get_novel_info(entry.source_url)
+                        chapters = parser.get_chapter_list(entry.source_url)
+                    if not chapters:
+                        raise Exception("No chapters found")
+                    
+                    new_only, _ = new_chapters_since(
+                        chapters, entry.last_chapter_url, entry.chapter_count
+                    )
+                    if not new_only:
+                        self._library_check_status[entry.source_url] = {
+                            'state': 'current', 'new_count': 0,
+                            'total': len(chapters), 'error': '',
+                        }
+                        results.append((display, True, "Already up to date"))
+                        continue
+                    
+                    translated_title = entry.translated_title or info.title
+                    if self.translate_var.get() and not entry.translated_title:
+                        try:
+                            translated_title = (
+                                self._make_translator(1).translate_text(info.title)
+                                or info.title
+                            )
+                        except Exception:
+                            translated_title = info.title
+                    
+                    output_path = self._unique_epub_path(
+                        self._get_downloads_folder(), translated_title
+                    )
+                    book_key = info.source_url or entry.source_url
+                    
+                    def set_status(s, _i=idx, _t=total):
+                        self.after(0, lambda text=s, i=_i, t=_t: self._update_status(
+                            f"Update All [{i + 1}/{t}] — {text}"
+                        ))
+                    
+                    def set_progress(f, _i=idx, _t=total):
+                        overall = (_i + f / 2) / _t
+                        self.after(0, lambda p=overall: self.progress_bar.set(p))
+                    
+                    failed_titles = self._download_chapters_with_cache(
+                        parser, chapters, book_key, set_status, set_progress
+                    )
+                    
+                    cleaner = ContentCleaner() if self.clean_var.get() else None
+                    translator = (
+                        self._make_translator(self._get_workers())
+                        if self.translate_var.get() else None
+                    )
+                    
+                    if translator:
+                        builder = TranslatedEPUBBuilder(
+                            cleaner=cleaner, translator=translator
+                        )
+                        
+                        def progress_cb(current, total_steps, status, _i=idx, _t=total):
+                            if self.cancel_requested:
+                                translator.cancel()
+                                return
+                            overall = (_i + 0.5 + (current / total_steps) * 0.5) / _t
+                            self.after(0, lambda p=overall: self.progress_bar.set(p))
+                            self.after(0, lambda s=status, i=_i, t=_t: self._update_status(
+                                f"Update All [{i + 1}/{t}]: {s}"
+                            ))
+                        
+                        builder.build_with_translation(
+                            info, chapters, output_path, progress_cb
+                        )
+                    else:
+                        builder = EPUBBuilder(cleaner=cleaner)
+                        
+                        def progress_cb(current, total_steps, status, _i=idx, _t=total):
+                            overall = (_i + 0.5 + (current / total_steps) * 0.5) / _t
+                            self.after(0, lambda p=overall: self.progress_bar.set(p))
+                            self.after(0, lambda s=status, i=_i, t=_t: self._update_status(
+                                f"Update All [{i + 1}/{t}]: {s}"
+                            ))
+                        
+                        builder.build(info, chapters, output_path, progress_cb)
+                    
+                    self._record_successful_download(
+                        info, chapters, translated_title, output_path
+                    )
+                    self._library_check_status[entry.source_url] = {
+                        'state': 'current',
+                        'new_count': 0,
+                        'total': len(chapters),
+                        'error': '',
+                    }
+                    detail = f"+{len(new_only)} → {Path(output_path).name}"
+                    if failed_titles:
+                        detail += f" ({len(failed_titles)} ch. failed)"
+                    results.append((display, True, detail))
+                except _DownloadCancelled:
+                    results.append((display, False, "Cancelled"))
+                    break
+                except Exception as e:
+                    results.append((display, False, str(e)))
+                    self._library_check_status[entry.source_url] = {
+                        'state': 'error',
+                        'new_count': 0,
+                        'total': 0,
+                        'error': str(e),
+                    }
+        finally:
+            self.after(0, lambda r=results: self._on_library_update_all_done(r))
+    
+    def _on_library_update_all_done(self, results: list):
+        self.is_downloading = False
+        self.cancel_btn.configure(state="disabled")
+        self.mode_switch.configure(state="normal")
+        self.library_refresh_btn.configure(state="normal")
+        self.library_check_btn.configure(state="normal")
+        self.progress_bar.set(1.0)
+        self._refresh_library_ui()
+        self._update_library_update_all_btn()
+        
+        ok = [r for r in results if r[1]]
+        failed = [r for r in results if not r[1]]
+        summary = f"Update All: {len(ok)}/{len(results)} succeeded"
+        if failed:
+            summary += f", {len(failed)} failed"
+        self._update_status(summary)
+        notify("Update All complete", summary)
+        
+        lines = [summary, ""]
+        for title, success, detail in results:
+            short = title[:40] + ("…" if len(title) > 40 else "")
+            mark = "✓" if success else "✗"
+            lines.append(f"{mark} {short}: {detail[:60]}")
+        messagebox.showinfo("Update All complete", "\n".join(lines))
+    
+    def _library_open_url(self, url: str):
+        self.mode_switch.set("Single")
+        self._on_mode_change("Single")
+        self.url_entry.delete(0, "end")
+        self.url_entry.insert(0, url)
+    
+    def _on_library_remove(self, source_url: str):
+        if not messagebox.askyesno("Remove", "Remove this novel from your library?\n(Cached chapters are kept.)"):
+            return
+        self.library_store.remove_library(source_url)
+        self._refresh_library_ui()
+        if self.drive_enabled_var.get() and self.drive_library_var.get():
+            self._schedule_drive_sync(silent=True)
+    
+    def _on_library_update(self, entry):
+        """Check for new chapters and rebuild the full EPUB (cache for old ones)."""
+        if self.is_downloading:
+            return
+        
+        parser = get_parser_for_url(entry.source_url)
+        if not parser:
+            messagebox.showerror("Error", f"Unsupported site:\n{entry.source_url}")
+            return
+        
+        self._save_settings()
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.cancel_btn.configure(state="normal")
+        self.mode_switch.configure(state="disabled")
+        self.library_refresh_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        title = entry.translated_title or entry.title or "novel"
+        self._update_status(f"Checking for new chapters: {title[:40]}...")
+        
+        thread = threading.Thread(
+            target=self._library_update_thread,
+            args=(entry, parser),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _library_update_thread(self, entry, parser):
+        """Background: fetch TOC, find new chapters, rebuild full EPUB."""
+        display = entry.translated_title or entry.title or "Novel"
+        try:
+            url = entry.source_url
+            if hasattr(parser, 'fetch_all_parallel'):
+                info, chapters = parser.fetch_all_parallel(url)
+            else:
+                info = parser.get_novel_info(url)
+                chapters = parser.get_chapter_list(url)
+            
+            if not chapters:
+                raise Exception("No chapters found on source site")
+            
+            new_only, _start = new_chapters_since(
+                chapters, entry.last_chapter_url, entry.chapter_count
+            )
+            
+            if not new_only:
+                notify("Up to date", f"{display} — no new chapters")
+                self.after(0, lambda: self._update_status(f"Up to date: {display}"))
+                self.after(0, lambda: messagebox.showinfo(
+                    "Up to date",
+                    f"No new chapters for:\n{display}\n\n({len(chapters)} chapters on site)"
+                ))
+                return
+            
+            self.after(0, lambda n=len(new_only), t=len(chapters): self._update_status(
+                f"{n} new chapter(s) — rebuilding full EPUB ({t} total, cache for old)..."
+            ))
+            
+            # Prefer stored English title; fall back to a fresh translation of the title
+            translated_title = entry.translated_title or info.title
+            if self.translate_var.get() and not entry.translated_title:
+                try:
+                    translated_title = self._make_translator(1).translate_text(info.title) or info.title
+                except Exception:
+                    translated_title = info.title
+            
+            output_path = self._unique_epub_path(
+                self._get_downloads_folder(), translated_title
+            )
+            book_key = info.source_url or url
+            
+            def set_status(s):
+                self.after(0, lambda t=s: self._update_status(t))
+            
+            def set_progress(f):
+                self.after(0, lambda p=f / 2: self.progress_bar.set(p))
+            
+            try:
+                failed_titles = self._download_chapters_with_cache(
+                    parser, chapters, book_key, set_status, set_progress
+                )
+            except _DownloadCancelled:
+                self.after(0, lambda: self._update_status("Cancelled"))
+                return
+            
+            self.after(0, lambda: self._update_status("Building EPUB..."))
+            
+            cleaner = ContentCleaner() if self.clean_var.get() else None
+            translator = self._make_translator(self._get_workers()) if self.translate_var.get() else None
+            
+            if translator:
+                builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator)
+                
+                def progress_cb(current, total_steps, status):
+                    if self.cancel_requested:
+                        translator.cancel()
+                        return
+                    progress = 0.5 + (current / total_steps) * 0.5
+                    self.after(0, lambda p=progress: self.progress_bar.set(p))
+                    self.after(0, lambda s=status: self._update_status(s))
+                
+                builder.build_with_translation(info, chapters, output_path, progress_cb)
+            else:
+                builder = EPUBBuilder(cleaner=cleaner)
+                
+                def progress_cb(current, total_steps, status):
+                    progress = 0.5 + (current / total_steps) * 0.5
+                    self.after(0, lambda p=progress: self.progress_bar.set(p))
+                    self.after(0, lambda s=status: self._update_status(s))
+                
+                builder.build(info, chapters, output_path, progress_cb)
+            
+            self._record_successful_download(info, chapters, translated_title, output_path)
+            self._library_check_status[entry.source_url] = {
+                'state': 'current',
+                'new_count': 0,
+                'total': len(chapters),
+                'error': '',
+            }
+            
+            new_count = len(new_only)
+            msg = (
+                f"Updated {display}\n"
+                f"{new_count} new chapter(s) · {len(chapters)} total\n\n"
+                f"Saved to:\n{output_path}"
+            )
+            if failed_titles:
+                msg += f"\n\nWarning: {len(failed_titles)} chapter(s) failed."
+            
+            notify("Library update complete", f"{display}: +{new_count} chapters")
+            self.after(0, lambda: self.progress_bar.set(1.0))
+            self.after(0, lambda: self._update_status(f"Updated! +{new_count} → {output_path}"))
+            self.after(0, lambda m=msg: messagebox.showinfo("Library Updated", m))
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.after(0, lambda msg=str(e): self._show_error(f"Library update failed: {msg}"))
+        finally:
+            self.is_downloading = False
+            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+            self.after(0, lambda: self.mode_switch.configure(state="normal"))
+            self.after(0, lambda: self.library_refresh_btn.configure(state="normal"))
+            self.after(0, lambda: self.library_check_btn.configure(state="normal"))
+            self.after(0, self._refresh_library_ui)
+            self.after(0, self._update_library_update_all_btn)
+    
+    # ------------------------------------------------------------------
+    # Google Drive sync
+    # ------------------------------------------------------------------
+    
+    def _update_drive_sync_controls(self):
+        """Enable/disable Drive controls based on master checkbox."""
+        on = bool(self.drive_enabled_var.get())
+        state = "normal" if on else "disabled"
+        for w in (
+            self.drive_connect_btn,
+            self.drive_sync_now_btn,
+            self.drive_open_folder_btn,
+            self.drive_change_folder_btn,
+        ):
+            try:
+                w.configure(state=state)
+            except Exception:
+                pass
+        self._update_drive_status_label()
+        self._update_drive_folder_help()
+    
+    def _update_drive_folder_help(self):
+        name = self.settings.get('drive_folder_name') or 'NovelDownloader'
+        self.drive_folder_help.configure(
+            text=f"Drive folder: My Drive → {name} (library.json + books/). Use Change folder to pick another."
+        )
+    
+    def _update_drive_last_sync_label(self):
+        ts = float(self.settings.get('drive_last_synced_at') or 0)
+        summary = (self.settings.get('drive_last_sync_summary') or "").strip()
+        if not ts:
+            self.drive_last_sync_label.configure(text="Last synced: never")
+            return
+        try:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+        except Exception:
+            when = "?"
+        label = f"Last synced: {when}"
+        if summary:
+            label = f"{summary} · {label}"
+        self.drive_last_sync_label.configure(text=label)
+    
+    def _record_drive_sync_success(self, summary: str):
+        self.settings['drive_last_synced_at'] = time.time()
+        self.settings['drive_last_sync_summary'] = summary
+        from core.settings import update_settings
+        update_settings(
+            drive_last_synced_at=self.settings['drive_last_synced_at'],
+            drive_last_sync_summary=summary,
+        )
+        self._update_drive_last_sync_label()
+    
+    def _update_drive_status_label(self):
+        if not self.drive_enabled_var.get():
+            self.drive_status_label.configure(text="Drive sync off", text_color="gray")
+            self.drive_connect_btn.configure(text="Connect")
+            return
+        if self.drive_sync.is_connected():
+            email = self.drive_sync.connected_email() or "connected"
+            where = self.drive_sync.location_description()
+            self.drive_status_label.configure(
+                text=f"Connected as {email} → {where}",
+                text_color="#2B7A3E",
+            )
+            self.drive_connect_btn.configure(text="Disconnect")
+        else:
+            self.drive_status_label.configure(text="Not connected", text_color="orange")
+            self.drive_connect_btn.configure(text="Connect")
+    
+    def _on_drive_enabled_toggle(self):
+        self._save_settings()
+        self._update_drive_sync_controls()
+        if self.drive_enabled_var.get():
+            if not self.drive_library_var.get() and not self.drive_epubs_var.get():
+                messagebox.showwarning(
+                    "Nothing to sync",
+                    "Enable Sync library and/or Sync EPUBs, or turn Drive sync off."
+                )
+            self._schedule_drive_sync(silent=True)
+        else:
+            self._update_status("Drive sync disabled (local library unchanged)")
+    
+    def _on_drive_option_change(self):
+        self._save_settings()
+        if (
+            self.drive_enabled_var.get()
+            and not self.drive_library_var.get()
+            and not self.drive_epubs_var.get()
+        ):
+            messagebox.showwarning(
+                "Nothing to sync",
+                "Both sync targets are off. Enable at least one, or disable Drive sync."
+            )
+    
+    def _on_drive_change_folder(self):
+        """Dialog to choose a custom My Drive folder name or paste a folder URL."""
+        if not self.drive_enabled_var.get():
+            return
+        
+        popup = ctk.CTkToplevel(self)
+        popup.title("Google Drive folder")
+        popup.geometry("520x280")
+        popup.transient(self)
+        popup.grab_set()
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - 520) // 2
+        y = self.winfo_y() + (self.winfo_height() - 280) // 2
+        popup.geometry(f"+{x}+{y}")
+        
+        ctk.CTkLabel(
+            popup,
+            text="Choose where library.json and books/ are stored on Google Drive.",
+            font=("", 12),
+            wraplength=480,
+            justify="left",
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+        
+        ctk.CTkLabel(popup, text="Folder name in My Drive:", font=("", 12)).pack(
+            padx=16, pady=(8, 2), anchor="w"
+        )
+        name_entry = ctk.CTkEntry(popup, width=460)
+        name_entry.insert(0, self.settings.get('drive_folder_name') or 'NovelDownloader')
+        name_entry.pack(padx=16, pady=(0, 8), anchor="w")
+        
+        ctk.CTkLabel(
+            popup,
+            text="Or paste an existing Drive folder link / id (optional):",
+            font=("", 12),
+        ).pack(padx=16, pady=(4, 2), anchor="w")
+        url_entry = ctk.CTkEntry(
+            popup, width=460, placeholder_text="https://drive.google.com/drive/folders/..."
+        )
+        existing_id = (self.settings.get('drive_folder_id') or '').strip()
+        if existing_id:
+            url_entry.insert(0, f"https://drive.google.com/drive/folders/{existing_id}")
+        url_entry.pack(padx=16, pady=(0, 8), anchor="w")
+        
+        ctk.CTkLabel(
+            popup,
+            text="Tip: leave the link empty to create/reuse the folder name under My Drive.",
+            font=("", 11),
+            text_color="gray",
+            wraplength=480,
+            justify="left",
+        ).pack(padx=16, pady=(0, 10), anchor="w")
+        
+        btn_row = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=(0, 16))
+        
+        def on_default():
+            name_entry.delete(0, "end")
+            name_entry.insert(0, "NovelDownloader")
+            url_entry.delete(0, "end")
+        
+        def on_save():
+            folder_name = name_entry.get().strip() or "NovelDownloader"
+            folder_url = url_entry.get().strip()
+            popup.destroy()
+            
+            def worker():
+                try:
+                    if not self.drive_sync.is_connected():
+                        if not self.drive_sync.try_restore_session():
+                            raise DriveSyncError("Connect to Google Drive first.")
+                    self.drive_sync.set_custom_folder(folder_name, folder_url)
+                    # Reload settings that drive_sync wrote
+                    self.settings = load_settings()
+                    self.after(0, self._update_drive_folder_help)
+                    self.after(0, self._update_drive_status_label)
+                    self.after(0, lambda: self._update_status(
+                        f"Drive folder set to My Drive / {self.drive_sync.configured_folder_name()}"
+                    ))
+                    self.after(0, lambda: self._schedule_drive_sync(silent=False))
+                except Exception as e:
+                    err = str(e)
+                    print(f"Change Drive folder failed: {err}")
+                    self.after(0, lambda msg=err: messagebox.showerror(
+                        "Change folder failed", msg
+                    ))
+            
+            threading.Thread(target=worker, daemon=True).start()
+        
+        ctk.CTkButton(
+            btn_row, text="Use default name", width=130,
+            command=on_default, fg_color="gray40", hover_color="gray30",
+        ).pack(side="left")
+        ctk.CTkButton(btn_row, text="Cancel", width=90, command=popup.destroy,
+                      fg_color="gray40", hover_color="gray30").pack(side="right", padx=4)
+        ctk.CTkButton(btn_row, text="Save", width=90, command=on_save,
+                      fg_color="#2B7A3E", hover_color="#236332").pack(side="right", padx=4)
+    
+    def _on_drive_open_folder(self):
+        import webbrowser
+        link = self.drive_sync.folder_web_link()
+        if not link:
+            if not self.drive_sync.is_connected():
+                messagebox.showinfo("Open folder", "Connect to Google Drive first.")
+                return
+            
+            def worker():
+                try:
+                    self.drive_sync.ensure_folder_layout()
+                    url = self.drive_sync.folder_web_link()
+                    if url:
+                        webbrowser.open(url)
+                    else:
+                        self.after(0, lambda: messagebox.showinfo(
+                            "Open folder",
+                            "Could not resolve the Drive folder yet. Try Sync Now first."
+                        ))
+                except Exception as e:
+                    err = str(e)
+                    print(f"Open folder failed: {err}")
+                    self.after(0, lambda msg=err: messagebox.showerror("Open folder", msg))
+            
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        webbrowser.open(link)
+    
+    def _on_drive_connect(self):
+        if not self.drive_enabled_var.get():
+            return
+        if self.drive_sync.is_connected():
+            self.drive_sync.logout()
+            self._update_drive_status_label()
+            self._update_status("Disconnected from Google Drive")
+            return
+        
+        if not self.drive_sync.client_configured():
+            messagebox.showinfo("Google OAuth setup", oauth_setup_instructions())
+            return
+        
+        self._save_settings()
+        self.drive_connect_btn.configure(state="disabled", text="Signing in...")
+        self._update_status("Opening browser for Google sign-in...")
+        
+        def worker():
+            try:
+                email = self.drive_sync.login()
+                self.after(0, lambda em=email: self._on_drive_login_done(True, em, None))
+            except Exception as e:
+                err = str(e)
+                print(f"Drive connect failed: {err}")
+                self.after(0, lambda msg=err: self._on_drive_login_done(False, "", msg))
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _on_drive_login_done(self, ok: bool, email: str, error: Optional[str]):
+        self.drive_connect_btn.configure(state="normal")
+        self._update_drive_status_label()
+        if ok:
+            where = self.drive_sync.location_description()
+            self._update_status(f"Connected ({email or 'ok'}) → {where}")
+            self._schedule_drive_sync(silent=False)
+        else:
+            self.drive_connect_btn.configure(text="Connect")
+            messagebox.showerror("Google Drive", error or "Sign-in failed")
+            self._update_status("Google sign-in failed")
+    
+    def _on_drive_sync_now(self):
+        if not self.drive_enabled_var.get():
+            return
+        if not self.drive_library_var.get() and not self.drive_epubs_var.get():
+            messagebox.showwarning(
+                "Nothing to sync",
+                "Enable Sync library and/or Sync EPUBs first."
+            )
+            return
+        self._schedule_drive_sync(silent=False)
+    
+    def _drive_startup_sync(self):
+        """Restore token and sync quietly after app launch."""
+        if not self.drive_enabled_var.get():
+            return
+        
+        def worker():
+            try:
+                if self.drive_sync.try_restore_session():
+                    self.after(0, self._update_drive_status_label)
+                    self.after(0, lambda: self._schedule_drive_sync(silent=True))
+                else:
+                    self.after(0, self._update_drive_status_label)
+            except Exception:
+                self.after(0, self._update_drive_status_label)
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _schedule_drive_sync(self, silent: bool = True):
+        if not self.drive_enabled_var.get() or self._drive_syncing:
+            return
+        if not self.drive_library_var.get() and not self.drive_epubs_var.get():
+            return
+        
+        self._drive_syncing = True
+        if not silent:
+            self._update_status("Syncing with Google Drive...")
+            self.drive_sync_now_btn.configure(state="disabled", text="Syncing...")
+        
+        def worker():
+            msg = ""
+            err = None
+            try:
+                if not self.drive_sync.is_connected():
+                    if not self.drive_sync.try_restore_session():
+                        raise DriveSyncError("Not connected. Click Connect first.")
+                
+                self.drive_sync.reset_layout_cache()
+                self.drive_sync.ensure_folder_layout()
+                where = self.drive_sync.location_description()
+                novel_count = 0
+                uploaded = 0
+                
+                if self.drive_library_var.get():
+                    merged = self.drive_sync.sync_library_with_store(self.library_store)
+                    novel_count = len(merged.library)
+                
+                if self.drive_epubs_var.get():
+                    self._remote_books = self.drive_sync.list_remote_books()
+                    # Upload local EPUBs missing from *this* Drive location
+                    for entry in self.library_store.get_library():
+                        local = entry.output_path
+                        if not local or not Path(local).is_file():
+                            continue
+                        name = entry.epub_filename or Path(local).name
+                        if name in self._remote_books:
+                            # Refresh stored id for current location
+                            if entry.drive_file_id != self._remote_books[name]:
+                                self.library_store.update_drive_file(
+                                    entry.source_url,
+                                    drive_file_id=self._remote_books[name],
+                                    epub_filename=name,
+                                )
+                            continue
+                        file_id = self.drive_sync.upload_epub(local, name)
+                        self.library_store.update_drive_file(
+                            entry.source_url,
+                            drive_file_id=file_id,
+                            epub_filename=name,
+                        )
+                        self._remote_books[name] = file_id
+                        uploaded += 1
+                    if self.drive_library_var.get() and uploaded:
+                        self.drive_sync.push_library(self.library_store.get_data())
+                
+                parts = []
+                if self.drive_library_var.get():
+                    parts.append(f"{novel_count} novel(s) in library.json")
+                if self.drive_epubs_var.get():
+                    parts.append(
+                        f"{uploaded} EPUB uploaded"
+                        if uploaded
+                        else f"{len(self._remote_books)} EPUB(s) on Drive"
+                    )
+                msg = f"Synced to {where}: " + ", ".join(parts)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                err = str(e)
+            
+            self.after(0, lambda m=msg, er=err, si=silent: self._on_drive_sync_done(m, er, si))
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _on_drive_sync_done(self, msg: str, err: Optional[str], silent: bool):
+        self._drive_syncing = False
+        self.drive_sync_now_btn.configure(state="normal", text="Sync Now")
+        self._update_drive_status_label()
+        self._refresh_library_ui()
+        if err:
+            print(f"Drive sync failed: {err}")
+            self._update_status(f"Drive sync failed: {err[:120]}")
+            if not silent:
+                messagebox.showerror("Google Drive sync", err)
+        else:
+            self._record_drive_sync_success(msg)
+            self._update_status(msg)
+            if not silent:
+                notify("Drive sync", msg)
+    
+    def _schedule_drive_push_after_download(self, source_url: str, output_path: str):
+        if not self.drive_enabled_var.get():
+            return
+        if not self.drive_library_var.get() and not self.drive_epubs_var.get():
+            return
+        
+        def worker():
+            try:
+                if not self.drive_sync.is_connected():
+                    if not self.drive_sync.try_restore_session():
+                        return
+                
+                epub_name = Path(output_path).name if output_path else ""
+                if self.drive_epubs_var.get() and output_path and Path(output_path).is_file():
+                    file_id = self.drive_sync.upload_epub(output_path, epub_name)
+                    if source_url:
+                        self.library_store.update_drive_file(
+                            source_url,
+                            drive_file_id=file_id,
+                            epub_filename=epub_name,
+                            output_path=output_path,
+                        )
+                        self._remote_books[epub_name] = file_id
+                
+                if self.drive_library_var.get():
+                    self.drive_sync.push_library(self.library_store.get_data())
+                
+                summary = f"Saved + synced to {self.drive_sync.location_description()}"
+                if epub_name:
+                    summary += f": {epub_name}"
+                self.after(0, lambda: self._record_drive_sync_success(summary))
+                self.after(0, lambda: self._update_status(summary))
+            except Exception as e:
+                err = str(e)
+                print(f"Drive push after download failed: {err}")
+                self.after(0, lambda msg=err: self._update_status(
+                    f"Saved locally (Drive sync failed: {msg[:60]})"
+                ))
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _on_drive_download_epub(self, entry, file_id: str):
+        if self.is_downloading:
+            return
+        title = entry.translated_title or entry.title or "novel"
+        dest_name = entry.epub_filename or f"{safe_filename(title)}.epub"
+        dest = self._get_downloads_folder() / dest_name
+        # Avoid clobbering
+        if dest.exists():
+            dest = Path(self._unique_epub_path(self._get_downloads_folder(), title))
+        
+        self._update_status(f"Downloading from Drive: {dest.name}...")
+        
+        def worker():
+            try:
+                path = self.drive_sync.download_epub(file_id, str(dest))
+                self.library_store.update_drive_file(
+                    entry.source_url,
+                    drive_file_id=file_id,
+                    epub_filename=dest.name,
+                    output_path=path,
+                )
+                self.after(0, lambda p=path: self._update_status(f"Downloaded from Drive: {p}"))
+                self.after(0, lambda n=dest.name: notify("Download complete", n))
+                self.after(0, self._refresh_library_ui)
+                self.after(0, lambda p=path: messagebox.showinfo(
+                    "Downloaded", f"EPUB saved to:\n{p}"
+                ))
+            except Exception as e:
+                err = str(e)
+                print(f"Drive download failed: {err}")
+                self.after(0, lambda msg=err: messagebox.showerror(
+                    "Drive download failed", msg
+                ))
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    # ------------------------------------------------------------------
+    # Clipboard watcher
+    # ------------------------------------------------------------------
+    
+    def _on_clipboard_toggle(self):
+        self._save_settings()
+        if self.clipboard_var.get():
+            self._update_status("Clipboard watcher on — copy a novel URL to queue it")
+            # Ignore whatever is currently on the clipboard so we only catch fresh copies
+            try:
+                self._clipboard_last = self.clipboard_get()
+            except Exception:
+                self._clipboard_last = ""
+    
+    def _poll_clipboard(self):
+        """Periodic clipboard check; queues novel URLs when the watcher is enabled."""
+        try:
+            if self.clipboard_var.get() and not self.is_downloading:
+                try:
+                    text = self.clipboard_get()
+                except Exception:
+                    text = None
+                
+                if text and text != self._clipboard_last:
+                    self._clipboard_last = text
+                    if looks_like_url(text):
+                        urls = extract_urls(text)
+                        fresh = [u for u in urls if u not in self._clipboard_seen_urls]
+                        if fresh:
+                            for u in fresh:
+                                self._clipboard_seen_urls.add(u)
+                            # Cap memory of seen URLs
+                            if len(self._clipboard_seen_urls) > 200:
+                                self._clipboard_seen_urls = set(list(self._clipboard_seen_urls)[-100:])
+                            self._handle_clipboard_urls(fresh)
+        except Exception:
+            pass
+        finally:
+            self.after(1500, self._poll_clipboard)
+    
+    def _handle_clipboard_urls(self, urls: List[str]):
+        """Add clipboard URLs to the multi block (and single field if empty)."""
+        if not urls:
+            return
+        
+        added = self._multi_append_urls(urls)
+        if not added:
+            return
+        
+        # If single URL box is empty, fill with the first new URL for convenience
+        if not self.url_entry.get().strip():
+            self.url_entry.insert(0, added[0])
+        
+        label = added[0] if len(added) == 1 else f"{len(added)} URLs"
+        self._update_status(f"Queued from clipboard: {label}")
+        
+        # Show the Multi queue so the user sees what was added
+        if not self.multi_mode and not self.is_downloading:
+            if self.library_mode or not self.chapters:
+                self.mode_switch.set("Multi")
+                self._on_mode_change("Multi")
     
     def _load_cover(self, url: str, generation: int):
         """Load cover image from URL in background."""
@@ -1439,7 +3054,7 @@ class NovelDownloaderApp(ctk.CTk):
 
 
 def main():
-    log_path = setup_logging(get_app_dir())
+    log_path = setup_logging(get_data_dir())
     print(f"Logging to: {log_path}")
     app = NovelDownloaderApp()
     app.mainloop()
