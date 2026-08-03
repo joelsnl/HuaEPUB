@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Callable
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.1.1"
+__version__ = "2.1.2"
 
 # GitHub repository info
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -84,10 +84,12 @@ def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = Non
         response.raise_for_status()
         release_data = response.json()
         
-        # Get latest version (remove 'v' prefix if present)
-        latest_version = release_data.get('tag_name', '').lstrip('v')
-        release_notes = release_data.get('body', 'No release notes available.')
-        release_url = release_data.get('html_url', '')
+        # Get latest version (remove 'v' prefix if present).
+        # GitHub returns body: null when notes were never set — .get(key, default)
+        # does NOT fall back in that case, so use `or`.
+        latest_version = (release_data.get('tag_name') or '').lstrip('v')
+        release_notes = (release_data.get('body') or '').strip() or 'No release notes available.'
+        release_url = release_data.get('html_url') or ''
         
         if not latest_version:
             return (False, __version__, "Could not determine latest version.")
@@ -101,7 +103,11 @@ def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = Non
             has_update = latest_version != __version__
         
         if has_update:
-            message = f"New version {latest_version} available!\n\nRelease notes:\n{release_notes[:500]}..."
+            notes_preview = (
+                release_notes if len(release_notes) <= 500
+                else release_notes[:500] + '...'
+            )
+            message = f"New version {latest_version} available!\n\nRelease notes:\n{notes_preview}"
             if callback:
                 callback(True, latest_version, message)
             return (True, latest_version, message)
