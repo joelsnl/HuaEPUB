@@ -13,6 +13,7 @@ New features ported from fixTranslate.py:
 import os
 import io
 import re
+import time
 import hashlib
 from typing import List, Optional, Callable, Tuple, Dict
 from pathlib import Path
@@ -21,6 +22,7 @@ from ebooklib import epub
 
 from core.parser import Chapter, NovelInfo, create_http_session
 from core.cleaner import ContentCleaner, is_chinese, count_chinese_chars
+from core.utils import format_eta
 
 # Shared session for image downloads (curl_cffi impersonation when available)
 _http_session = create_http_session()
@@ -388,14 +390,54 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         if all_texts:
             texts_to_translate = [t[2] for t in all_texts]
             
+            # ETA state: clock starts when a pass actually begins translating
+            # (not during retry cooldown), and resets each retry pass.
+            pass_start: Optional[float] = time.monotonic()
+            retry_pass_num = 0
+            
             def translate_progress(completed, total):
-                nonlocal current_step
-                if progress_callback:
-                    pct = (completed / total) * len(chapters)
+                nonlocal current_step, pass_start
+                if not progress_callback or total <= 0:
+                    return
+                if pass_start is None:
+                    pass_start = time.monotonic()
+                
+                eta = ""
+                # Concurrent workers finish in bursts — wait for enough samples.
+                min_samples = min(20, max(3, total // 10))
+                if completed >= min_samples and completed < total:
+                    elapsed = time.monotonic() - pass_start
+                    if elapsed > 0:
+                        rate = completed / elapsed
+                        eta = f"  (ETA {format_eta((total - completed) / rate)})"
+                
+                pct = (completed / total) * len(chapters)
+                if retry_pass_num > 0:
+                    status = f"Retry pass {retry_pass_num}: {completed}/{total}{eta}"
+                else:
+                    status = f"Translating: {completed}/{total}{eta}"
+                progress_callback(int(len(chapters) + pct), total_steps, status)
+            
+            def on_retry_pass(pass_number, remaining, total_segments, cooldown):
+                nonlocal pass_start, retry_pass_num
+                retry_pass_num = pass_number
+                # Don't count the cooldown toward ETA — clock starts on first
+                # progress tick after work resumes.
+                pass_start = None
+                if not progress_callback:
+                    return
+                if cooldown > 0:
                     progress_callback(
-                        int(len(chapters) + pct), 
-                        total_steps, 
-                        f"Translating: {completed}/{total}"
+                        current_step,
+                        total_steps,
+                        f"Retry pass {pass_number}: cooling down {int(cooldown)}s "
+                        f"({remaining} left)...",
+                    )
+                else:
+                    progress_callback(
+                        current_step,
+                        total_steps,
+                        f"Retry pass {pass_number}: retrying {remaining} segments...",
                     )
             
             # Use multi-pass retry if available, fall back to single-pass
@@ -405,6 +447,7 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                     translate_progress,
                     is_chinese_fn=lambda t: is_chinese(t),
                     count_chinese_fn=lambda t: count_chinese_chars(t),
+                    pass_callback=on_retry_pass,
                 )
             else:
                 translated = self.translator.translate_texts(texts_to_translate, translate_progress)
