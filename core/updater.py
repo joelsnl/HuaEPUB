@@ -16,6 +16,7 @@ import tempfile
 import subprocess
 import threading
 import stat
+import time
 from pathlib import Path
 from typing import Optional, Tuple, Callable, Set
 
@@ -29,11 +30,25 @@ from core.branding import (
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 # GitHub repository info (repo path kept for update continuity)
 GITHUB_REPO = "joelsnl/novelDownloader"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+# Set when a frozen Windows update already swapped the on-disk exe and the
+# GUI should relaunch that path after showing the success dialog.
+_pending_relaunch_exe: Optional[Path] = None
+
+
+def get_pending_relaunch() -> Optional[Path]:
+    """Executable path to start after a successful in-place Windows update."""
+    return _pending_relaunch_exe
+
+
+def clear_pending_relaunch():
+    global _pending_relaunch_exe
+    _pending_relaunch_exe = None
 
 
 def get_current_version() -> str:
@@ -298,12 +313,17 @@ except Exception:
 def _launch_replacement_script(script_path: Path):
     """Run the replacement helper in the background."""
     if sys.platform == 'win32':
-        # DETACHED_PROCESS keeps the helper alive after the GUI exits.
-        creationflags = subprocess.CREATE_NO_WINDOW | getattr(
-            subprocess, "DETACHED_PROCESS", 0x00000008
+        # Break away from the GUI job so the helper is not killed on exit.
+        creationflags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
         )
+        # Launch via cmd start so the process is not a direct child of the GUI.
         subprocess.Popen(
             [
+                'cmd', '/c', 'start', '', '/b',
                 'powershell',
                 '-NoProfile',
                 '-ExecutionPolicy', 'Bypass',
@@ -529,8 +549,12 @@ def _update_frozen_from_asset(
         os.chmod(temp_new_exe, os.stat(temp_new_exe).st_mode | stat.S_IEXEC)
 
     if progress_callback:
-        progress_callback(90, 100, "Scheduling replacement...")
+        progress_callback(90, 100, "Installing update...")
 
+    if sys.platform == 'win32':
+        return _finalize_frozen_update_windows(temp_new_exe, old_exe, progress_callback)
+
+    # POSIX: replace after this process exits
     script_path = _create_replacement_helper(temp_new_exe, old_exe, app_dir, os.getpid())
     _launch_replacement_script(script_path)
 
@@ -541,6 +565,109 @@ def _update_frozen_from_asset(
         "Update downloaded and verified!\n\n"
         "The application will now close to apply the update,\n"
         "then reopen automatically."
+    )
+
+
+def _cleanup_update_sidecars(app_dir: Path):
+    for name in (
+        "_update_helper.ps1",
+        "_update_helper.py",
+        "_update_helper.json",
+        "_update_helper.log",
+    ):
+        try:
+            (app_dir / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _swap_running_exe_windows(new_exe: Path, old_exe: Path) -> Path:
+    """
+    Replace a running Windows executable in place.
+
+    Renaming the running image is allowed on Windows; deleting it is not.
+    Previous helpers that waited until after exit were often never started
+    (child process torn down with the GUI), which left `_new_*.exe` behind.
+    """
+    app_dir = old_exe.parent
+    backup = app_dir / "_update_backup.exe"
+    last_err: Optional[BaseException] = None
+
+    for _ in range(40):
+        try:
+            if backup.exists():
+                backup.unlink()
+            # Move the running binary aside, then put the new one in its place.
+            os.replace(str(old_exe), str(backup))
+            os.replace(str(new_exe), str(old_exe))
+            return backup
+        except OSError as e:
+            last_err = e
+            # Roll back if we moved old aside but failed to place new.
+            if not old_exe.exists() and backup.exists() and not new_exe.exists():
+                # new already consumed somehow — don't clobber
+                pass
+            elif not old_exe.exists() and backup.exists():
+                try:
+                    os.replace(str(backup), str(old_exe))
+                except OSError:
+                    pass
+            time.sleep(0.25)
+
+    raise OSError(f"Could not replace running executable: {last_err}")
+
+
+def _finalize_frozen_update_windows(
+    new_exe: Path,
+    old_exe: Path,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> Tuple[bool, str]:
+    """Swap on-disk exe while still running; GUI will relaunch after the dialog."""
+    global _pending_relaunch_exe
+    clear_pending_relaunch()
+    try:
+        backup = _swap_running_exe_windows(new_exe, old_exe)
+    except OSError as e:
+        # Fall back to post-exit helper if in-process swap is blocked.
+        print(f"In-process swap failed ({e}); scheduling post-exit helper")
+        script_path = _create_replacement_helper(new_exe, old_exe, old_exe.parent, os.getpid())
+        _launch_replacement_script(script_path)
+        if progress_callback:
+            progress_callback(100, 100, "Update ready!")
+        return (True,
+            "Update downloaded and verified!\n\n"
+            "The application will now close to apply the update,\n"
+            "then reopen automatically."
+        )
+
+    _cleanup_update_sidecars(old_exe.parent)
+
+    # Delete backup after a short delay in a fully detached cmd (best-effort).
+    try:
+        creationflags = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+        )
+        subprocess.Popen(
+            ["cmd", "/c", f'timeout /t 5 /nobreak >nul & del /f /q "{backup}"'],
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+    _pending_relaunch_exe = old_exe
+    if progress_callback:
+        progress_callback(100, 100, "Update ready!")
+
+    return (True,
+        "Update installed!\n\n"
+        "The application will restart on the new version."
     )
 
 

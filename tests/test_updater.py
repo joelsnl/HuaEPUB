@@ -143,6 +143,20 @@ class TestReplacementHelper:
         assert Path(script).exists()
 
 
+class TestSwapRunningExeWindows:
+    def test_renames_then_replaces(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        old_exe = tmp_path / "NovelDownloader.exe"
+        new_exe = tmp_path / "_new_NovelDownloader.exe"
+        old_exe.write_bytes(b"old-bytes")
+        new_exe.write_bytes(b"new-bytes")
+
+        backup = updater._swap_running_exe_windows(new_exe, old_exe)
+        assert old_exe.read_bytes() == b"new-bytes"
+        assert backup.read_bytes() == b"old-bytes"
+        assert not new_exe.exists()
+
+
 class TestPlatformAssetPreference:
     def test_prefers_huaepub_zip(self, monkeypatch):
         monkeypatch.setattr(updater.sys, "platform", "win32")
