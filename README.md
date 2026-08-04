@@ -1,6 +1,6 @@
 # Novel Downloader & Translator
 
-**Current version: 2.2.0**
+**Current version: 2.2.1**
 
 A Python application for downloading Chinese web novels and translating them to English EPUBs. Run it from source on **Windows, macOS, or Linux** (any OS with Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 

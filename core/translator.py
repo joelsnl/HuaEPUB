@@ -9,14 +9,28 @@ Persistent retry system:
 - Stall detection: if no progress for 3+ passes, switches to maximum backoff
 - Cache is cleared for failed entries before each retry so fresh requests are made
 - Cancellable at any point via cancel() method
+
+HTTP: each worker thread keeps a Session (curl_cffi when available) so TCP/TLS
+connections are reused. On Windows, urllib3 IPv6 is disabled for translate
+requests — broken AAAA routes otherwise add multi-second stalls per call.
 """
 
 import re
+import sys
 import requests
 import time
 import threading
 import concurrent.futures
-from typing import List, Tuple, Dict, Optional, Callable
+from typing import List, Tuple, Dict, Optional, Callable, Any
+
+# Windows often has broken/slow IPv6; urllib3 tries AAAA first and burns the
+# connect timeout per address. Prefer IPv4 for requests-based translate calls.
+if sys.platform == "win32":
+    try:
+        import urllib3.util.connection as _urllib3_conn
+        _urllib3_conn.HAS_IPV6 = False
+    except Exception:
+        pass
 
 
 class GoogleTranslator:
@@ -52,13 +66,30 @@ class GoogleTranslator:
     ):
         self.source_lang = source_lang
         self.target_lang = target_lang
-        self.max_workers = max_workers
+        # Windows + many cold TLS handshakes thrashes; allow concurrency once
+        # sessions reuse connections, but soft-cap the first pass socket burst.
+        if sys.platform == "win32" and max_workers > 100:
+            self.max_workers = 100
+        else:
+            self.max_workers = max_workers
         self.request_timeout = request_timeout
+        # (connect, read) — short connect avoids long IPv6 black-hole waits
+        self._timeout = (min(5, request_timeout), request_timeout)
         self.max_retries = max_retries
         self.request_interval = request_interval
         self.backend = backend if backend in ('google', 'libretranslate') else 'google'
-        self.libretranslate_url = libretranslate_url.rstrip('/')
         self.persistent_cache = persistent_cache
+        if self.backend == 'libretranslate':
+            from core.security import UnsafeURLError, validate_libretranslate_url
+            try:
+                # Literal / scheme checks at init; DNS checked per-request
+                self.libretranslate_url = validate_libretranslate_url(
+                    libretranslate_url, resolve_dns=False
+                )
+            except UnsafeURLError as e:
+                raise ValueError(f"Invalid LibreTranslate URL: {e}") from e
+        else:
+            self.libretranslate_url = (libretranslate_url or '').rstrip('/')
         
         # Statistics
         self.stats = {
@@ -76,6 +107,7 @@ class GoogleTranslator:
         self.cache_lock = threading.Lock()
         self.stats_lock = threading.Lock()
         self.progress_lock = threading.Lock()
+        self._thread_local = threading.local()
         
         # Progress tracking
         self.completed = 0
@@ -93,6 +125,32 @@ class GoogleTranslator:
         """Request cancellation of ongoing translation."""
         self._cancel_requested = True
     
+    def _get_http_session(self) -> Any:
+        """
+        Per-thread HTTP session with connection reuse.
+        Prefer curl_cffi (Chrome TLS) to match the rest of the app.
+        """
+        sess = getattr(self._thread_local, "session", None)
+        if sess is not None:
+            return sess
+        try:
+            from curl_cffi.requests import Session as CurlSession
+            sess = CurlSession(impersonate="chrome120")
+            self._thread_local.http_backend = "curl_cffi"
+        except ImportError:
+            sess = requests.Session()
+            sess.headers.update({"User-Agent": self.USER_AGENT})
+            try:
+                from requests.adapters import HTTPAdapter
+                adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=0)
+                sess.mount("https://", adapter)
+                sess.mount("http://", adapter)
+            except Exception:
+                pass
+            self._thread_local.http_backend = "requests"
+        self._thread_local.session = sess
+        return sess
+    
     # ------------------------------------------------------------------
     # Backend requests
     # ------------------------------------------------------------------
@@ -107,21 +165,23 @@ class GoogleTranslator:
             'dj': '1',
             'q': text
         }
+        session = self._get_http_session()
+        headers = {'User-Agent': self.USER_AGENT}
         
         # Use GET for short texts, POST for long texts
         if len(text) <= 1800:
-            response = requests.get(
+            response = session.get(
                 self.ENDPOINT,
                 params=params,
-                headers={'User-Agent': self.USER_AGENT},
-                timeout=self.request_timeout
+                headers=headers,
+                timeout=self._timeout,
             )
         else:
-            response = requests.post(
+            response = session.post(
                 self.ENDPOINT,
                 data=params,
-                headers={'User-Agent': self.USER_AGENT},
-                timeout=self.request_timeout
+                headers=headers,
+                timeout=self._timeout,
             )
         
         response.raise_for_status()
@@ -135,9 +195,15 @@ class GoogleTranslator:
     
     def _request_libretranslate(self, text: str) -> str:
         """Translate via a LibreTranslate server."""
+        from core.security import UnsafeURLError, validate_fetch_url
+        try:
+            validate_fetch_url(self.libretranslate_url, allow_http=True, resolve_dns=True)
+        except UnsafeURLError as e:
+            raise ValueError(f"Blocked LibreTranslate URL: {e}") from e
         # LibreTranslate uses plain ISO codes ('zh', not 'zh-CN')
         source = self.source_lang.split('-')[0]
-        response = requests.post(
+        session = self._get_http_session()
+        response = session.post(
             f'{self.libretranslate_url}/translate',
             json={
                 'q': text,
@@ -146,7 +212,7 @@ class GoogleTranslator:
                 'format': 'text',
             },
             headers={'User-Agent': self.USER_AGENT},
-            timeout=self.request_timeout
+            timeout=self._timeout,
         )
         response.raise_for_status()
         return response.json().get('translatedText', '')

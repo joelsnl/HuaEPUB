@@ -1,5 +1,6 @@
 """Offline tests for core.translator.GoogleTranslator (no network)."""
 
+import sys
 import time as _time
 
 import pytest
@@ -120,14 +121,38 @@ class TestBackends:
             def json(self):
                 return {'translatedText': 'Hello'}
 
-        def fake_post(url, json=None, headers=None, timeout=None):
-            captured['url'] = url
-            captured['json'] = json
-            return FakeResponse()
+        class FakeSession:
+            def post(self, url, json=None, headers=None, timeout=None, data=None):
+                captured['url'] = url
+                captured['json'] = json
+                return FakeResponse()
 
-        import core.translator
-        monkeypatch.setattr(core.translator.requests, 'post', fake_post)
+            def get(self, *a, **k):
+                raise AssertionError('unexpected GET')
+
+        monkeypatch.setattr(t, '_get_http_session', lambda: FakeSession())
+        # Skip live DNS for the fake host used in this unit test
+        monkeypatch.setattr(
+            'core.security.validate_fetch_url',
+            lambda *a, **k: None,
+        )
 
         assert t._request_translation('你好') == 'Hello'
         assert captured['url'] == 'https://lt.example/translate'
         assert captured['json']['source'] == 'zh'  # zh-CN mapped to plain ISO code
+
+
+class TestHttpSession:
+    def test_session_reused_in_same_thread(self):
+        t = make_translator()
+        a = t._get_http_session()
+        b = t._get_http_session()
+        assert a is b
+
+    def test_windows_soft_caps_high_workers(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        # Re-import path: GoogleTranslator reads sys.platform at init
+        import core.translator as tr
+        monkeypatch.setattr(tr.sys, 'platform', 'win32')
+        t = tr.GoogleTranslator(max_workers=200)
+        assert t.max_workers == 100

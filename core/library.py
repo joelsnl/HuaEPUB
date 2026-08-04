@@ -367,6 +367,23 @@ class LibraryStore:
                 return True
             return False
 
+    def clear(
+        self,
+        *,
+        clear_library: bool = True,
+        clear_history: bool = False,
+    ):
+        """
+        Wipe tracked library and/or recent history.
+        Does not touch EPUB files or the chapter/translation cache.
+        """
+        with self._lock:
+            if clear_library:
+                self._data.library = []
+            if clear_history:
+                self._data.history = []
+            self._save()
+
 
 def new_chapters_since(chapters, last_chapter_url: str, last_chapter_count: int = 0):
     """

@@ -64,6 +64,21 @@ class TestCleanHtml:
         assert '<center>' not in cleaned
         assert 'text-align:center' in cleaned
 
+    def test_strips_event_handlers_and_javascript_urls(self):
+        cleaner = make_cleaner()
+        html = '<div><p onclick="alert(1)">正文</p><a href="javascript:alert(1)">x</a></div>'
+        cleaned = cleaner.clean_html(html)
+        assert 'onclick' not in cleaned
+        assert 'javascript:' not in cleaned
+        assert '正文' in cleaned
+
+    def test_unwraps_disallowed_tags(self):
+        cleaner = make_cleaner()
+        html = '<div><custom>keep me</custom></div>'
+        cleaned = cleaner.clean_html(html)
+        assert '<custom>' not in cleaned
+        assert 'keep me' in cleaned
+
 
 class TestSelfClosingTags:
     def test_fix_self_closing(self):

@@ -112,6 +112,12 @@ class BaseParser(ABC):
         Fetch a page and return BeautifulSoup object.
         Handles 429 errors with longer waits (like WebToEpub).
         """
+        from core.security import UnsafeURLError, validate_fetch_url
+        try:
+            validate_fetch_url(url, allow_http=True)
+        except UnsafeURLError as e:
+            raise ValueError(f"Blocked URL: {e}") from e
+
         last_error = None
         rate_limit_retry = 0  # Track 429 retries separately
         
@@ -156,6 +162,12 @@ class BaseParser(ABC):
     
     def fetch_html(self, url: str, retries: int = 3) -> str:
         """Fetch page and return raw HTML string with 429 handling."""
+        from core.security import UnsafeURLError, validate_fetch_url
+        try:
+            validate_fetch_url(url, allow_http=True)
+        except UnsafeURLError as e:
+            raise ValueError(f"Blocked URL: {e}") from e
+
         last_error = None
         rate_limit_retry = 0
         

@@ -109,6 +109,24 @@ class TestLibraryStore:
         assert entry.epub_filename == "Book.epub"
         assert entry.chapter_count == 6
 
+    def test_clear_library_keeps_history_by_default(self, tmp_path):
+        path = tmp_path / "library.json"
+        store = LibraryStore(path)
+        store.add_history(source_url="http://x/a", title="A")
+        store.upsert_library(source_url="http://x/a", title="A", chapter_count=1)
+        store.clear(clear_library=True, clear_history=False)
+        assert store.get_library() == []
+        assert len(store.get_history()) == 1
+
+    def test_clear_both(self, tmp_path):
+        path = tmp_path / "library.json"
+        store = LibraryStore(path)
+        store.add_history(source_url="http://x/a", title="A")
+        store.upsert_library(source_url="http://x/a", title="A", chapter_count=1)
+        store.clear(clear_library=True, clear_history=True)
+        assert store.get_library() == []
+        assert store.get_history() == []
+
 
 class TestMergeLibrary:
     def test_newer_cursor_wins(self):

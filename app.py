@@ -11,8 +11,9 @@ import os
 import sys
 import time
 import threading
+import re
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 from typing import List, Optional
 from io import BytesIO
@@ -111,6 +112,13 @@ class NovelDownloaderApp(ctk.CTk):
         self._clipboard_last = ""
         self._clipboard_seen_urls = set()
         
+        # Coalesced progress/status UI (worker threads → main thread, ~10 Hz)
+        self._pending_progress: Optional[float] = None
+        self._pending_status: Optional[str] = None
+        self._progress_flush_scheduled = False
+        self._last_progress_flush = 0.0
+        self._PROGRESS_MIN_INTERVAL_MS = 100
+        
         # Create UI
         self._create_ui()
         
@@ -122,7 +130,7 @@ class NovelDownloaderApp(ctk.CTk):
             self.after(2000, self._auto_check_updates)  # Check after 2 seconds
         
         # Start clipboard polling loop (no-op while checkbox is off)
-        self.after(1500, self._poll_clipboard)
+        self.after(3000, self._poll_clipboard)
         
         # Restore Drive session / optional startup sync
         if self.settings.get('drive_sync_enabled'):
@@ -272,7 +280,7 @@ class NovelDownloaderApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Select None", width=90, command=self._select_none).pack(side="left", padx=4)
         ctk.CTkButton(btn_frame, text="Invert", width=70, command=self._invert_selection).pack(side="left", padx=4)
         
-        # Range selection (e.g. chapters 200-450 without clicking checkboxes)
+        # Range selection (e.g. chapters 200-450 without scrolling the list)
         ctk.CTkLabel(btn_frame, text="Range:").pack(side="left", padx=(15, 2))
         self.range_from_entry = ctk.CTkEntry(btn_frame, width=55, placeholder_text="from")
         self.range_from_entry.pack(side="left", padx=2)
@@ -284,13 +292,27 @@ class NovelDownloaderApp(ctk.CTk):
         self.selected_label = ctk.CTkLabel(btn_frame, text="Selected: 0")
         self.selected_label.pack(side="right", padx=10)
         
-        # Chapter listbox with checkboxes
-        self.chapter_frame = ctk.CTkScrollableFrame(self.list_frame)
-        self.chapter_frame.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
-        self.chapter_frame.grid_columnconfigure(0, weight=1)
+        # Native Treeview for chapters (CTkCheckBox x N destroys resize performance)
+        self._setup_chapter_tree_style()
+        tree_wrap = tk.Frame(self.list_frame, bg="#2b2b2b", highlightthickness=0)
+        tree_wrap.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        tree_wrap.grid_columnconfigure(0, weight=1)
+        tree_wrap.grid_rowconfigure(0, weight=1)
         
-        self.chapter_vars: List[ctk.BooleanVar] = []
-        self.chapter_checkboxes: List[ctk.CTkCheckBox] = []
+        self.chapter_scroll = ttk.Scrollbar(tree_wrap, orient="vertical")
+        self.chapter_tree = ttk.Treeview(
+            tree_wrap,
+            show="tree",
+            selectmode="extended",
+            style="Chapter.Treeview",
+            yscrollcommand=self.chapter_scroll.set,
+        )
+        self.chapter_scroll.configure(command=self.chapter_tree.yview)
+        self.chapter_tree.grid(row=0, column=0, sticky="nsew")
+        self.chapter_scroll.grid(row=0, column=1, sticky="ns")
+        self.chapter_tree.bind("<<TreeviewSelect>>", lambda _e: self._update_selected_count())
+        self.chapter_tree.bind("<Control-a>", self._tree_select_all_event)
+        self.chapter_tree.bind("<Control-A>", self._tree_select_all_event)
         
         # === Multi Mode UI (hidden by default) ===
         self.multi_frame = ctk.CTkFrame(self)
@@ -419,6 +441,12 @@ class NovelDownloaderApp(ctk.CTk):
             fg_color="#2B7A3E", hover_color="#236332",
         )
         self.drive_sync_now_btn.pack(side="right", padx=3)
+        self.library_reset_btn = ctk.CTkButton(
+            sync_row1, text="Reset library", width=100, height=28,
+            command=self._on_reset_library,
+            fg_color="gray40", hover_color="gray30",
+        )
+        self.library_reset_btn.pack(side="right", padx=3)
         
         sync_row2 = ctk.CTkFrame(sync_panel, fg_color="transparent")
         sync_row2.pack(fill="x", padx=8, pady=(0, 4))
@@ -504,12 +532,14 @@ class NovelDownloaderApp(ctk.CTk):
         ctk.CTkCheckBox(left_opts, text="Use chapter cache (resume)", variable=self.use_cache_var).pack(anchor="w", pady=2)
         
         self.clipboard_var = ctk.BooleanVar(value=bool(self.settings.get('clipboard_watcher', False)))
-        ctk.CTkCheckBox(
+        self.clipboard_cb = ctk.CTkCheckBox(
             left_opts,
             text="Watch clipboard for URLs",
             variable=self.clipboard_var,
             command=self._on_clipboard_toggle,
-        ).pack(anchor="w", pady=2)
+        )
+        self.clipboard_cb.pack(anchor="w", pady=2)
+        self._refresh_clipboard_label()
         
         # Right side - translator backend + workers
         right_opts = ctk.CTkFrame(top_row, fg_color="transparent")
@@ -524,7 +554,11 @@ class NovelDownloaderApp(ctk.CTk):
         
         ctk.CTkLabel(right_opts, text="Translation Workers:").pack(side="left", padx=5)
         self.workers_entry = ctk.CTkEntry(right_opts, width=60)
-        self.workers_entry.insert(0, str(self.settings.get('workers', 200)))
+        default_workers = self.settings.get('workers', 200)
+        # Windows soft-caps at 100 inside GoogleTranslator; show that as default for new installs
+        if default_workers == 200 and sys.platform == "win32":
+            default_workers = 100
+        self.workers_entry.insert(0, str(default_workers))
         self.workers_entry.pack(side="left", padx=5)
         
         # Bottom row - output folder
@@ -685,17 +719,81 @@ class NovelDownloaderApp(ctk.CTk):
         finally:
             self.after(0, lambda: self.fetch_btn.configure(state="normal"))
     
+    def _setup_chapter_tree_style(self):
+        """Dark ttk theme so the chapter list matches CustomTkinter chrome."""
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure(
+            "Chapter.Treeview",
+            background="#2b2b2b",
+            foreground="#e8e8e8",
+            fieldbackground="#2b2b2b",
+            borderwidth=0,
+            rowheight=22,
+            font=("", 11),
+        )
+        style.map(
+            "Chapter.Treeview",
+            background=[("selected", "#1f6aa5")],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Chapter.Treeview.Heading",
+            background="#333333",
+            foreground="#e8e8e8",
+            relief="flat",
+        )
+    
+    def _clear_chapter_tree(self):
+        """Drop Treeview rows so resize stays fast in other modes."""
+        tree = getattr(self, "chapter_tree", None)
+        if tree is None:
+            return
+        children = tree.get_children()
+        if children:
+            tree.delete(*children)
+        self._update_selected_count()
+    
+    def _populate_chapter_tree(self, *, select_all: bool = True):
+        """Fill the chapter Treeview from self.chapters."""
+        tree = self.chapter_tree
+        tree.delete(*tree.get_children())
+        for idx, chapter in enumerate(self.chapters):
+            title = chapter.title
+            if len(title) > 60:
+                title = title[:57] + "..."
+            tree.insert("", "end", iid=str(idx), text=f"{idx + 1}. {title}")
+        if select_all and self.chapters:
+            tree.selection_set(tree.get_children())
+        self._update_selected_count()
+    
+    def _selected_chapter_indices(self) -> List[int]:
+        """Indices of selected chapters (sorted)."""
+        out = []
+        for iid in self.chapter_tree.selection():
+            try:
+                out.append(int(iid))
+            except ValueError:
+                continue
+        out.sort()
+        return out
+    
+    def _tree_select_all_event(self, event=None):
+        self._select_all()
+        return "break"
+    
     def _update_chapter_list(self):
         """Update UI with fetched chapters."""
         if not self.novel_info:
             return
         
-        # Update info labels
         self.title_label.configure(text=self.novel_info.title)
         self.author_label.configure(text=self.novel_info.author)
         self.chapters_label.configure(text=str(len(self.chapters)))
         
-        # Load cover image in background
         if self.novel_info.cover_url:
             thread = threading.Thread(
                 target=self._load_cover,
@@ -704,7 +802,6 @@ class NovelDownloaderApp(ctk.CTk):
             thread.daemon = True
             thread.start()
         
-        # Translate title in background
         thread = threading.Thread(
             target=self._translate_title,
             args=(self.novel_info.title, self._fetch_generation)
@@ -712,72 +809,48 @@ class NovelDownloaderApp(ctk.CTk):
         thread.daemon = True
         thread.start()
         
-        # Clear existing checkboxes
-        for cb in self.chapter_checkboxes:
-            cb.destroy()
-        self.chapter_vars.clear()
-        self.chapter_checkboxes.clear()
-        
-        # Add chapter checkboxes in batches so the UI doesn't freeze
-        # on novels with thousands of chapters
         self._list_generation += 1
         self.download_btn.configure(state="disabled")
         self._update_status(f"Loading {len(self.chapters)} chapters...")
-        self._add_chapter_rows(0, self._list_generation)
-    
-    def _add_chapter_rows(self, start: int, generation: int, batch_size: int = 100):
-        """Create chapter checkboxes in batches to keep the UI responsive."""
-        if generation != self._list_generation:
-            return  # A newer fetch replaced this list
-        
-        end = min(start + batch_size, len(self.chapters))
-        for idx in range(start, end):
-            chapter = self.chapters[idx]
-            var = ctk.BooleanVar(value=True)
-            self.chapter_vars.append(var)
-            
-            cb = ctk.CTkCheckBox(
-                self.chapter_frame,
-                text=f"{idx + 1}. {chapter.title[:60]}{'...' if len(chapter.title) > 60 else ''}",
-                variable=var,
-                command=self._update_selected_count
-            )
-            cb.grid(row=idx, column=0, padx=5, pady=2, sticky="w")
-            self.chapter_checkboxes.append(cb)
-        
-        if end < len(self.chapters):
-            self._update_status(f"Loading chapters... {end}/{len(self.chapters)}")
-            self.after(1, lambda: self._add_chapter_rows(end, generation, batch_size))
-        else:
-            self._update_selected_count()
-            self.download_btn.configure(state="normal")
-            self._update_status(f"Found {len(self.chapters)} chapters. Ready to download.")
+        self._populate_chapter_tree(select_all=True)
+        self.download_btn.configure(state="normal")
+        self._update_status(f"Found {len(self.chapters)} chapters. Ready to download.")
     
     def _update_selected_count(self):
         """Update the selected count label."""
-        count = sum(1 for var in self.chapter_vars if var.get())
+        try:
+            count = len(self.chapter_tree.selection())
+        except Exception:
+            count = 0
         self.selected_label.configure(text=f"Selected: {count}")
     
     def _select_all(self):
-        for var in self.chapter_vars:
-            var.set(True)
+        children = self.chapter_tree.get_children()
+        if children:
+            self.chapter_tree.selection_set(children)
         self._update_selected_count()
     
     def _select_none(self):
-        for var in self.chapter_vars:
-            var.set(False)
+        children = self.chapter_tree.get_children()
+        if children:
+            self.chapter_tree.selection_remove(children)
         self._update_selected_count()
     
     def _invert_selection(self):
-        for var in self.chapter_vars:
-            var.set(not var.get())
+        children = self.chapter_tree.get_children()
+        if not children:
+            return
+        selected = set(self.chapter_tree.selection())
+        to_select = [c for c in children if c not in selected]
+        self.chapter_tree.selection_set(to_select)
         self._update_selected_count()
     
     def _select_range(self):
         """Select only the chapters in the From-To range (1-based, inclusive)."""
-        if not self.chapter_vars:
+        children = self.chapter_tree.get_children()
+        if not children:
             return
-        n = len(self.chapter_vars)
+        n = len(children)
         try:
             start = int(self.range_from_entry.get())
         except ValueError:
@@ -788,9 +861,58 @@ class NovelDownloaderApp(ctk.CTk):
             end = n
         start = max(1, min(start, n))
         end = max(start, min(end, n))
-        for i, var in enumerate(self.chapter_vars):
-            var.set(start - 1 <= i <= end - 1)
+        self.chapter_tree.selection_set(children[start - 1:end])
         self._update_selected_count()
+    
+    # ------------------------------------------------------------------
+    # Progress / status coalescing (keeps UI smooth under load)
+    # ------------------------------------------------------------------
+    
+    def _ui_progress(
+        self,
+        fraction: Optional[float] = None,
+        status: Optional[str] = None,
+        *,
+        force: bool = False,
+    ):
+        """Thread-safe: queue progress/status; coalesce to ~10 Hz unless force."""
+        self.after(0, lambda: self._coalesce_progress(fraction, status, force))
+    
+    def _coalesce_progress(
+        self,
+        fraction: Optional[float],
+        status: Optional[str],
+        force: bool,
+    ):
+        if fraction is not None:
+            self._pending_progress = fraction
+        if status is not None:
+            self._pending_status = status
+        if force:
+            self._flush_progress()
+            return
+        if self._progress_flush_scheduled:
+            return
+        elapsed_ms = (time.monotonic() - self._last_progress_flush) * 1000.0
+        delay = max(0, int(self._PROGRESS_MIN_INTERVAL_MS - elapsed_ms))
+        self._progress_flush_scheduled = True
+        self.after(delay, self._flush_progress)
+    
+    def _flush_progress(self):
+        self._progress_flush_scheduled = False
+        self._last_progress_flush = time.monotonic()
+        if self._pending_progress is not None:
+            try:
+                self.progress_bar.set(self._pending_progress)
+            except Exception:
+                pass
+            self._pending_progress = None
+        if self._pending_status is not None:
+            try:
+                self.status_label.configure(text=self._pending_status)
+            except Exception:
+                pass
+            self._pending_status = None
     
     # ------------------------------------------------------------------
     # Output folder
@@ -824,10 +946,8 @@ class NovelDownloaderApp(ctk.CTk):
         if not self.chapters or not self.novel_info:
             return
         
-        # Get selected chapters
-        selected_chapters = [
-            self.chapters[i] for i, var in enumerate(self.chapter_vars) if var.get()
-        ]
+        indices = self._selected_chapter_indices()
+        selected_chapters = [self.chapters[i] for i in indices if 0 <= i < len(self.chapters)]
         
         if not selected_chapters:
             messagebox.showwarning("Warning", "Please select at least one chapter")
@@ -837,7 +957,18 @@ class NovelDownloaderApp(ctk.CTk):
         title_for_filename = self.translated_title if self.translated_title else self.novel_info.title
         
         downloads_dir = self._get_downloads_folder()
-        output_path = self._unique_epub_path(downloads_dir, title_for_filename)
+        # Overwrite same novel file when re-downloading / updating
+        preferred = ""
+        if self.novel_info and self.novel_info.source_url:
+            entry = self.library_store.get_library_entry(self.novel_info.source_url)
+            if entry:
+                preferred = entry.epub_filename or entry.output_path or ""
+        output_path = self._epub_path(
+            downloads_dir,
+            title_for_filename,
+            preferred_name=Path(preferred).name if preferred else "",
+            preferred_path=preferred,
+        )
         
         print(f"Auto-saving to: {output_path}")
         
@@ -872,16 +1003,40 @@ class NovelDownloaderApp(ctk.CTk):
                 print(f"Warning: chosen output folder unavailable: {custom}")
         return get_default_books_dir()
     
+    def _epub_path(
+        self,
+        folder: Path,
+        title: str,
+        *,
+        preferred_name: str = "",
+        preferred_path: str = "",
+    ) -> str:
+        """
+        Canonical EPUB path for a novel. Rebuilds/updates overwrite the same file
+        (no ' (1)' copies) so local books and Drive stay in sync by filename.
+        """
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        name = (preferred_name or "").strip()
+        if not name and preferred_path:
+            try:
+                name = Path(preferred_path).name
+            except Exception:
+                name = ""
+        if name and name.lower().endswith(".epub"):
+            # Strip accidental ' (N)' suffixes from older unique-path runs
+            stem = Path(name).stem
+            stem = re.sub(r" \(\d+\)$", "", stem)
+            name = f"{stem}.epub"
+        else:
+            name = f"{safe_filename(title)}.epub"
+
+        return str(folder / name)
+
     def _unique_epub_path(self, folder: Path, title: str) -> str:
-        """Full English title filename; add (N) suffix if the file already exists."""
-        clean_title = safe_filename(title)
-        output_path = str(folder / f"{clean_title}.epub")
-        counter = 1
-        base_path = output_path
-        while os.path.exists(output_path):
-            output_path = base_path.replace(".epub", f" ({counter}).epub")
-            counter += 1
-        return output_path
+        """Back-compat alias: same as _epub_path (overwrites)."""
+        return self._epub_path(folder, title)
     
     def _record_successful_download(
         self,
@@ -1016,15 +1171,15 @@ class NovelDownloaderApp(ctk.CTk):
             try:
                 failed_chapters = self._download_chapters_with_cache(
                     self.parser, chapters, book_key,
-                    set_status=lambda s: self.after(0, lambda t=s: self._update_status(t)),
-                    set_progress=lambda f: self.after(0, lambda p=f / 2: self.progress_bar.set(p)),
+                    set_status=lambda s: self._ui_progress(status=s),
+                    set_progress=lambda f: self._ui_progress(fraction=f / 2),
                 )
             except _DownloadCancelled:
-                self.after(0, lambda: self._update_status("Cancelled"))
+                self._ui_progress(status="Cancelled", force=True)
                 return
             
             # Phase 2: Build EPUB
-            self.after(0, lambda: self._update_status("Building EPUB..."))
+            self._ui_progress(status="Building EPUB...", force=True)
             
             # Create cleaner and translator
             cleaner = ContentCleaner() if self.clean_var.get() else None
@@ -1042,8 +1197,7 @@ class NovelDownloaderApp(ctk.CTk):
                         translator.cancel()
                         return
                     progress = 0.5 + (current / total_steps) * 0.5
-                    self.after(0, lambda p=progress: self.progress_bar.set(p))
-                    self.after(0, lambda s=status: self._update_status(s))
+                    self._ui_progress(progress, status)
                 
                 builder.build_with_translation(
                     self.novel_info,
@@ -1056,8 +1210,7 @@ class NovelDownloaderApp(ctk.CTk):
                 
                 def progress_cb(current, total_steps, status):
                     progress = 0.5 + (current / total_steps) * 0.5
-                    self.after(0, lambda p=progress: self.progress_bar.set(p))
-                    self.after(0, lambda s=status: self._update_status(s))
+                    self._ui_progress(progress, status)
                 
                 builder.build(
                     self.novel_info,
@@ -1084,8 +1237,7 @@ class NovelDownloaderApp(ctk.CTk):
             title_note = self.translated_title or (self.novel_info.title if self.novel_info else "Novel")
             notify("Download complete", f"{title_note}\nSaved to {Path(output_path).name}")
             
-            self.after(0, lambda: self.progress_bar.set(1.0))
-            self.after(0, lambda: self._update_status(f"Done! Saved to: {output_path}"))
+            self._ui_progress(1.0, f"Done! Saved to: {output_path}", force=True)
             self.after(0, lambda m=success_msg: messagebox.showinfo("Success", m))
             
         except Exception as e:
@@ -1130,6 +1282,7 @@ class NovelDownloaderApp(ctk.CTk):
         self.download_btn.pack_forget()
         
         if self.library_mode:
+            self._clear_chapter_tree()
             self.library_frame.grid(row=2, column=0, rowspan=2, padx=10, pady=5, sticky="nsew")
             self._refresh_library_ui()
             self._update_drive_status_label()
@@ -1137,12 +1290,17 @@ class NovelDownloaderApp(ctk.CTk):
                 self._schedule_drive_sync(silent=True)
             self._schedule_library_check(reason="library_tab")
         elif self.multi_mode:
+            self._clear_chapter_tree()
             self.multi_frame.grid(row=2, column=0, rowspan=2, padx=10, pady=5, sticky="nsew")
         else:
             self.single_url_frame.grid()
             self.info_frame.grid()
             self.list_frame.grid()
             self.download_btn.pack(side="left", padx=5)
+            # Restore chapter rows if we already fetched (cleared when leaving Single)
+            if self.chapters and not self.chapter_tree.get_children():
+                self._populate_chapter_tree(select_all=True)
+                self.download_btn.configure(state="normal")
     
     def _multi_clear_urls(self):
         """Clear the multi-mode URL block."""
@@ -1358,20 +1516,28 @@ class NovelDownloaderApp(ctk.CTk):
             ))
             
             try:
-                # Generate output path (full English title)
-                output_path = self._unique_epub_path(downloads_dir, title_for_filename)
+                # Generate output path (overwrite same novel file)
+                preferred = ""
+                if info and info.source_url:
+                    lib_entry = self.library_store.get_library_entry(info.source_url)
+                    if lib_entry:
+                        preferred = lib_entry.epub_filename or lib_entry.output_path or ""
+                output_path = self._epub_path(
+                    downloads_dir,
+                    title_for_filename,
+                    preferred_name=Path(preferred).name if preferred else "",
+                    preferred_path=preferred,
+                )
                 
                 # Phase 1: Download chapters (with cache + retry pass)
                 book_key = info.source_url if info else novel['url']
                 
                 def set_status(s, _ni=novel_idx, _tn=total_novels):
-                    self.after(0, lambda t=s, ni=_ni, tn=_tn: self._update_status(
-                        f"Novel {ni + 1}/{tn} — {t}"
-                    ))
+                    self._ui_progress(status=f"Novel {_ni + 1}/{_tn} — {s}")
                 
                 def set_progress(f, _ni=novel_idx, _tn=total_novels):
                     overall = (_ni + f / 2) / _tn
-                    self.after(0, lambda p=overall: self.progress_bar.set(p))
+                    self._ui_progress(fraction=overall)
                 
                 try:
                     failed_titles = self._download_chapters_with_cache(
@@ -1382,9 +1548,10 @@ class NovelDownloaderApp(ctk.CTk):
                 failed_ch_count = len(failed_titles)
                 
                 # Phase 2: Build EPUB
-                self.after(0, lambda ni=novel_idx, tn=total_novels: self._update_status(
-                    f"Novel {ni + 1}/{tn}: Building EPUB..."
-                ))
+                self._ui_progress(
+                    status=f"Novel {novel_idx + 1}/{total_novels}: Building EPUB...",
+                    force=True,
+                )
                 
                 cleaner = ContentCleaner() if self.clean_var.get() else None
                 translator = None
@@ -1400,10 +1567,7 @@ class NovelDownloaderApp(ctk.CTk):
                             translator.cancel()
                             return
                         overall = (_ni + 0.5 + (current / total_steps) * 0.5) / _tn
-                        self.after(0, lambda p=overall: self.progress_bar.set(p))
-                        self.after(0, lambda s=status, ni=_ni, tn=_tn: self._update_status(
-                            f"Novel {ni + 1}/{tn}: {s}"
-                        ))
+                        self._ui_progress(overall, f"Novel {_ni + 1}/{_tn}: {status}")
                     
                     builder.build_with_translation(info, chapters, output_path, progress_cb)
                 else:
@@ -1411,10 +1575,7 @@ class NovelDownloaderApp(ctk.CTk):
                     
                     def progress_cb(current, total_steps, status, _ni=novel_idx, _tn=total_novels):
                         overall = (_ni + 0.5 + (current / total_steps) * 0.5) / _tn
-                        self.after(0, lambda p=overall: self.progress_bar.set(p))
-                        self.after(0, lambda s=status, ni=_ni, tn=_tn: self._update_status(
-                            f"Novel {ni + 1}/{tn}: {s}"
-                        ))
+                        self._ui_progress(overall, f"Novel {_ni + 1}/{_tn}: {status}")
                     
                     builder.build(info, chapters, output_path, progress_cb)
                 
@@ -1538,6 +1699,8 @@ class NovelDownloaderApp(ctk.CTk):
                 None,
                 ("Sync Now", self._menu_drive_sync_now),
                 ("Open Drive folder", self._on_drive_open_folder),
+                None,
+                ("Reset library…", self._on_reset_library),
             ]
         return [
             ("Google Drive setup…", self._menu_drive_setup),
@@ -2115,19 +2278,20 @@ class NovelDownloaderApp(ctk.CTk):
                         except Exception:
                             translated_title = info.title
                     
-                    output_path = self._unique_epub_path(
-                        self._get_downloads_folder(), translated_title
+                    output_path = self._epub_path(
+                        self._get_downloads_folder(),
+                        translated_title,
+                        preferred_name=entry.epub_filename or "",
+                        preferred_path=entry.output_path or "",
                     )
                     book_key = info.source_url or entry.source_url
                     
                     def set_status(s, _i=idx, _t=total):
-                        self.after(0, lambda text=s, i=_i, t=_t: self._update_status(
-                            f"Update All [{i + 1}/{t}] — {text}"
-                        ))
+                        self._ui_progress(status=f"Update All [{_i + 1}/{_t}] — {s}")
                     
                     def set_progress(f, _i=idx, _t=total):
                         overall = (_i + f / 2) / _t
-                        self.after(0, lambda p=overall: self.progress_bar.set(p))
+                        self._ui_progress(fraction=overall)
                     
                     failed_titles = self._download_chapters_with_cache(
                         parser, chapters, book_key, set_status, set_progress
@@ -2149,10 +2313,7 @@ class NovelDownloaderApp(ctk.CTk):
                                 translator.cancel()
                                 return
                             overall = (_i + 0.5 + (current / total_steps) * 0.5) / _t
-                            self.after(0, lambda p=overall: self.progress_bar.set(p))
-                            self.after(0, lambda s=status, i=_i, t=_t: self._update_status(
-                                f"Update All [{i + 1}/{t}]: {s}"
-                            ))
+                            self._ui_progress(overall, f"Update All [{_i + 1}/{_t}]: {status}")
                         
                         builder.build_with_translation(
                             info, chapters, output_path, progress_cb
@@ -2162,10 +2323,7 @@ class NovelDownloaderApp(ctk.CTk):
                         
                         def progress_cb(current, total_steps, status, _i=idx, _t=total):
                             overall = (_i + 0.5 + (current / total_steps) * 0.5) / _t
-                            self.after(0, lambda p=overall: self.progress_bar.set(p))
-                            self.after(0, lambda s=status, i=_i, t=_t: self._update_status(
-                                f"Update All [{i + 1}/{t}]: {s}"
-                            ))
+                            self._ui_progress(overall, f"Update All [{_i + 1}/{_t}]: {status}")
                         
                         builder.build(info, chapters, output_path, progress_cb)
                     
@@ -2235,6 +2393,90 @@ class NovelDownloaderApp(ctk.CTk):
         if self.drive_enabled_var.get() and self.drive_library_var.get():
             self._schedule_drive_sync(silent=True)
     
+    def _on_reset_library(self):
+        """Clear tracked library locally and push empty library.json to Drive if connected."""
+        if self.is_downloading or self._library_checking or self._drive_syncing:
+            messagebox.showinfo("Reset library", "Wait for the current download/sync to finish.")
+            return
+        
+        n = len(self.library_store.get_library())
+        h = len(self.library_store.get_history())
+        if n == 0 and h == 0:
+            messagebox.showinfo("Reset library", "Library and history are already empty.")
+            return
+        
+        if not messagebox.askyesno(
+            "Reset library",
+            "Clear all tracked novels from your local library?\n\n"
+            "If Google Drive sync is connected, the remote library.json "
+            "will also be cleared.\n\n"
+            "EPUB files and chapter cache are NOT deleted.",
+            icon="warning",
+        ):
+            return
+        
+        clear_history = False
+        if h:
+            clear_history = messagebox.askyesno(
+                "Also clear history?",
+                f"Also clear Recent download history ({h} item(s))?",
+            )
+        
+        self.library_store.clear(clear_library=True, clear_history=clear_history)
+        self._library_check_status.clear()
+        self._remote_books.clear()
+        self._refresh_library_ui()
+        self.library_check_status_label.configure(text="Library reset", text_color="gray")
+        
+        drive_msg = ""
+        if self.drive_enabled_var.get():
+            def worker():
+                try:
+                    if not self.drive_sync.is_connected():
+                        if not self.drive_sync.try_restore_session():
+                            self.after(0, lambda: self._update_status(
+                                "Local library cleared (Drive not connected)"
+                            ))
+                            return
+                    # Always push empty library so the next sync does not pull old entries back
+                    self.drive_sync.push_library(self.library_store.get_data())
+                    where = self.drive_sync.location_description()
+                    self.after(0, lambda: self._record_drive_sync_success(
+                        f"Library reset locally and on Drive ({where})"
+                    ))
+                    self.after(0, lambda: self._update_status(
+                        f"Library reset (local + Drive → {where})"
+                    ))
+                    self.after(0, lambda: notify(
+                        "Library reset",
+                        f"Cleared locally and on Drive ({where})",
+                    ))
+                except Exception as e:
+                    err = str(e)
+                    print(f"Drive library reset failed: {err}")
+                    self.after(0, lambda msg=err: messagebox.showwarning(
+                        "Drive reset incomplete",
+                        f"Local library was cleared, but Drive update failed:\n{msg}\n\n"
+                        "Connect and Sync Now (or Reset again) when online.",
+                    ))
+                    self.after(0, lambda: self._update_status(
+                        "Local library cleared (Drive update failed)"
+                    ))
+            
+            self._update_status("Clearing Drive library…")
+            threading.Thread(target=worker, daemon=True).start()
+            drive_msg = "\nUpdating Google Drive…"
+        else:
+            self._update_status("Library reset (local only)")
+        
+        messagebox.showinfo(
+            "Library reset",
+            f"Cleared {n} tracked novel(s)"
+            + (" and history." if clear_history else ".")
+            + drive_msg
+            + "\n\nEPUB files on disk were kept.",
+        )
+    
     def _on_library_update(self, entry):
         """Check for new chapters and rebuild the full EPUB (cache for old ones)."""
         if self.is_downloading:
@@ -2301,26 +2543,29 @@ class NovelDownloaderApp(ctk.CTk):
                 except Exception:
                     translated_title = info.title
             
-            output_path = self._unique_epub_path(
-                self._get_downloads_folder(), translated_title
+            output_path = self._epub_path(
+                self._get_downloads_folder(),
+                translated_title,
+                preferred_name=entry.epub_filename or "",
+                preferred_path=entry.output_path or "",
             )
             book_key = info.source_url or url
             
             def set_status(s):
-                self.after(0, lambda t=s: self._update_status(t))
+                self._ui_progress(status=s)
             
             def set_progress(f):
-                self.after(0, lambda p=f / 2: self.progress_bar.set(p))
+                self._ui_progress(fraction=f / 2)
             
             try:
                 failed_titles = self._download_chapters_with_cache(
                     parser, chapters, book_key, set_status, set_progress
                 )
             except _DownloadCancelled:
-                self.after(0, lambda: self._update_status("Cancelled"))
+                self._ui_progress(status="Cancelled", force=True)
                 return
             
-            self.after(0, lambda: self._update_status("Building EPUB..."))
+            self._ui_progress(status="Building EPUB...", force=True)
             
             cleaner = ContentCleaner() if self.clean_var.get() else None
             translator = self._make_translator(self._get_workers()) if self.translate_var.get() else None
@@ -2333,8 +2578,7 @@ class NovelDownloaderApp(ctk.CTk):
                         translator.cancel()
                         return
                     progress = 0.5 + (current / total_steps) * 0.5
-                    self.after(0, lambda p=progress: self.progress_bar.set(p))
-                    self.after(0, lambda s=status: self._update_status(s))
+                    self._ui_progress(progress, status)
                 
                 builder.build_with_translation(info, chapters, output_path, progress_cb)
             else:
@@ -2342,8 +2586,7 @@ class NovelDownloaderApp(ctk.CTk):
                 
                 def progress_cb(current, total_steps, status):
                     progress = 0.5 + (current / total_steps) * 0.5
-                    self.after(0, lambda p=progress: self.progress_bar.set(p))
-                    self.after(0, lambda s=status: self._update_status(s))
+                    self._ui_progress(progress, status)
                 
                 builder.build(info, chapters, output_path, progress_cb)
             
@@ -2365,8 +2608,7 @@ class NovelDownloaderApp(ctk.CTk):
                 msg += f"\n\nWarning: {len(failed_titles)} chapter(s) failed."
             
             notify("Library update complete", f"{display}: +{new_count} chapters")
-            self.after(0, lambda: self.progress_bar.set(1.0))
-            self.after(0, lambda: self._update_status(f"Updated! +{new_count} → {output_path}"))
+            self._ui_progress(1.0, f"Updated! +{new_count} → {output_path}", force=True)
             self.after(0, lambda m=msg: messagebox.showinfo("Library Updated", m))
             
         except Exception as e:
@@ -2806,11 +3048,12 @@ class NovelDownloaderApp(ctk.CTk):
         if self.is_downloading:
             return
         title = entry.translated_title or entry.title or "novel"
-        dest_name = entry.epub_filename or f"{safe_filename(title)}.epub"
-        dest = self._get_downloads_folder() / dest_name
-        # Avoid clobbering
-        if dest.exists():
-            dest = Path(self._unique_epub_path(self._get_downloads_folder(), title))
+        dest = Path(self._epub_path(
+            self._get_downloads_folder(),
+            title,
+            preferred_name=entry.epub_filename or "",
+            preferred_path=entry.output_path or "",
+        ))
         
         self._update_status(f"Downloading from Drive: {dest.name}...")
         
@@ -2842,8 +3085,17 @@ class NovelDownloaderApp(ctk.CTk):
     # Clipboard watcher
     # ------------------------------------------------------------------
     
+    def _refresh_clipboard_label(self):
+        if not hasattr(self, 'clipboard_cb'):
+            return
+        if self.clipboard_var.get():
+            self.clipboard_cb.configure(text="Watch clipboard for URLs (active)")
+        else:
+            self.clipboard_cb.configure(text="Watch clipboard for URLs")
+
     def _on_clipboard_toggle(self):
         self._save_settings()
+        self._refresh_clipboard_label()
         if self.clipboard_var.get():
             self._update_status("Clipboard watcher on — copy a novel URL to queue it")
             # Ignore whatever is currently on the clipboard so we only catch fresh copies
@@ -2853,30 +3105,37 @@ class NovelDownloaderApp(ctk.CTk):
                 self._clipboard_last = ""
     
     def _poll_clipboard(self):
-        """Periodic clipboard check; queues novel URLs when the watcher is enabled."""
+        """Periodic clipboard check; only processes URL-like clipboard text."""
         try:
             if self.clipboard_var.get() and not self.is_downloading:
+                # Skip when minimized / unmapped — avoids needless OS clipboard churn
                 try:
-                    text = self.clipboard_get()
+                    visible = self.winfo_viewable() and self.state() != "iconic"
                 except Exception:
-                    text = None
-                
-                if text and text != self._clipboard_last:
-                    self._clipboard_last = text
-                    if looks_like_url(text):
-                        urls = extract_urls(text)
-                        fresh = [u for u in urls if u not in self._clipboard_seen_urls]
-                        if fresh:
-                            for u in fresh:
-                                self._clipboard_seen_urls.add(u)
-                            # Cap memory of seen URLs
-                            if len(self._clipboard_seen_urls) > 200:
-                                self._clipboard_seen_urls = set(list(self._clipboard_seen_urls)[-100:])
-                            self._handle_clipboard_urls(fresh)
+                    visible = True
+                if visible:
+                    try:
+                        text = self.clipboard_get()
+                    except Exception:
+                        text = None
+                    
+                    if text and text != self._clipboard_last:
+                        self._clipboard_last = text
+                        # Ignore non-URL clipboard noise (passwords, snippets, etc.)
+                        if looks_like_url(text):
+                            from core.security import is_fetch_url_safe
+                            urls = [u for u in extract_urls(text) if is_fetch_url_safe(u)]
+                            fresh = [u for u in urls if u not in self._clipboard_seen_urls]
+                            if fresh:
+                                for u in fresh:
+                                    self._clipboard_seen_urls.add(u)
+                                if len(self._clipboard_seen_urls) > 200:
+                                    self._clipboard_seen_urls = set(list(self._clipboard_seen_urls)[-100:])
+                                self._handle_clipboard_urls(fresh)
         except Exception:
             pass
         finally:
-            self.after(1500, self._poll_clipboard)
+            self.after(3000, self._poll_clipboard)
     
     def _handle_clipboard_urls(self, urls: List[str]):
         """Add clipboard URLs to the multi block (and single field if empty)."""
@@ -2903,6 +3162,8 @@ class NovelDownloaderApp(ctk.CTk):
     def _load_cover(self, url: str, generation: int):
         """Load cover image from URL in background."""
         try:
+            from core.security import UnsafeURLError, validate_fetch_url
+            validate_fetch_url(url, allow_http=True)
             print(f"Loading cover from: {url}")
             response = http_session.get(url, timeout=15)
             response.raise_for_status()

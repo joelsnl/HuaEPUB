@@ -153,6 +153,13 @@ class DriveSync:
         if not path.exists() or Credentials is None:
             return None
         try:
+            # Tighten perms on older installs
+            try:
+                import os
+                import stat as stat_mod
+                os.chmod(path, stat_mod.S_IRUSR | stat_mod.S_IWUSR)
+            except Exception:
+                pass
             creds = Credentials.from_authorized_user_file(str(path), scopes)
             if not self._creds_have_scopes(creds, scopes):
                 # Old token from hidden app-data mode — force a fresh browser login
@@ -182,7 +189,8 @@ class DriveSync:
 
     def _save_token(self, creds: Credentials):
         try:
-            token_path().write_text(creds.to_json(), encoding="utf-8")
+            from core.security import write_secret_file
+            write_secret_file(token_path(), creds.to_json())
         except Exception:
             pass
 

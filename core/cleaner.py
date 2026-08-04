@@ -45,7 +45,24 @@ SELF_CLOSING_BAD_TAGS = {
 }
 
 # Elements to remove entirely
-REMOVE_ELEMENTS = {'script', 'embed', 'object', 'form', 'input', 'button', 'textarea'}
+REMOVE_ELEMENTS = {
+    'script', 'embed', 'object', 'form', 'input', 'button', 'textarea',
+    'iframe', 'link', 'base', 'applet', 'noscript',
+}
+
+# After cleaning, only these tags may remain in chapter bodies (others unwrapped)
+ALLOWED_CONTENT_TAGS = {
+    'html', 'head', 'body', 'title', 'meta',  # structure for full XHTML path
+    'p', 'br', 'div', 'span', 'section', 'article',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'em', 'strong', 'b', 'i', 'u', 's', 'sub', 'sup', 'small',
+    'blockquote', 'ul', 'ol', 'li', 'hr',
+    'a', 'img',
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+}
+
+# Attributes kept on content tags (event handlers and javascript: always stripped)
+ALLOWED_ATTRS = {'href', 'src', 'alt', 'title', 'class', 'id', 'colspan', 'rowspan', 'style'}
 
 # Invisible characters to remove
 INVISIBLE_CHARS = '\u200b\u200c\u200d\ufeff\u00ad\u2060\u180e\u200e\u200f\u202a\u202b\u202c\u202d\u202e'
@@ -131,6 +148,8 @@ class ContentCleaner:
             'duplicate_ids_removed': 0,
             'comments_fixed': 0,
             'br_converted': 0,
+            'attrs_stripped': 0,
+            'tags_unwrapped': 0,
         }
     
     def reset_stats(self):
@@ -358,7 +377,8 @@ class ContentCleaner:
         # Optional: convert br sequences to paragraphs
         if self.convert_br_to_p:
             self._convert_br_runs_to_paragraphs(root, use_ns=True)
-        
+
+        self._sanitize_allowed_markup(root)
         return root
     
     @staticmethod
@@ -367,6 +387,81 @@ class ContentCleaner:
         if not isinstance(tag, str):
             return None
         return tag.split('}')[-1] if '}' in tag else tag
+
+    def _sanitize_style(self, value: str) -> Optional[str]:
+        """Drop styles that can execute script."""
+        if not value:
+            return None
+        lowered = value.lower()
+        if any(bad in lowered for bad in (
+            'expression(', 'javascript:', 'vbscript:', '-moz-binding', 'behavior:'
+        )):
+            return None
+        return value
+
+    def _sanitize_url_attr(self, value: str) -> Optional[str]:
+        if not value:
+            return None
+        v = value.strip()
+        lowered = v.lower()
+        if lowered.startswith(('javascript:', 'vbscript:', 'data:text/html')):
+            return None
+        if lowered.startswith(('#', '/', 'http://', 'https://', 'mailto:')):
+            return v
+        if '://' not in v and not lowered.startswith('data:'):
+            return v
+        return None
+
+    def _sanitize_allowed_markup(self, root: etree._Element):
+        """Unwrap disallowed tags and strip dangerous attributes."""
+        for elem in list(reversed(list(root.iter()))):
+            local = self._local_tag(elem.tag)
+            if local is None:
+                continue
+
+            if local not in ALLOWED_CONTENT_TAGS:
+                parent = elem.getparent()
+                if parent is None:
+                    continue
+                idx = list(parent).index(elem)
+                if elem.text:
+                    if idx == 0:
+                        parent.text = (parent.text or '') + elem.text
+                    else:
+                        parent[idx - 1].tail = (parent[idx - 1].tail or '') + elem.text
+                children = list(elem)
+                for offset, child in enumerate(children):
+                    parent.insert(idx + offset, child)
+                idx2 = list(parent).index(elem)
+                if elem.tail:
+                    if idx2 == 0:
+                        parent.text = (parent.text or '') + elem.tail
+                    else:
+                        parent[idx2 - 1].tail = (parent[idx2 - 1].tail or '') + elem.tail
+                parent.remove(elem)
+                self.stats['tags_unwrapped'] += 1
+                continue
+
+            for attr in list(elem.attrib.keys()):
+                attr_l = attr.lower()
+                if attr_l.startswith('on') or attr_l not in ALLOWED_ATTRS:
+                    del elem.attrib[attr]
+                    self.stats['attrs_stripped'] += 1
+                    continue
+                if attr_l in ('href', 'src'):
+                    cleaned = self._sanitize_url_attr(elem.get(attr) or '')
+                    if cleaned is None:
+                        del elem.attrib[attr]
+                        self.stats['attrs_stripped'] += 1
+                    else:
+                        elem.set(attr, cleaned)
+                elif attr_l == 'style':
+                    cleaned = self._sanitize_style(elem.get(attr) or '')
+                    if cleaned is None:
+                        del elem.attrib[attr]
+                        self.stats['attrs_stripped'] += 1
+                    else:
+                        elem.set(attr, cleaned)
     
     def _convert_br_runs_to_paragraphs(self, root: etree._Element, use_ns: bool = False):
         """
@@ -560,7 +655,8 @@ class ContentCleaner:
         # Convert br-separated text into proper paragraphs
         if self.convert_br_to_p:
             self._convert_br_runs_to_paragraphs(root)
-        
+
+        self._sanitize_allowed_markup(root)
         return root
     
     # ========================================================================

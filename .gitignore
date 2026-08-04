@@ -25,5 +25,8 @@ library.json
 logs/
 _update_helper.sh
 _update_helper.bat
+_update_helper.ps1
+_update_helper.py
+_update_helper.json
 google_oauth_client.json
 google_token.json

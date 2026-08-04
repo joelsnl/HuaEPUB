@@ -1,5 +1,6 @@
 """Tests for core.updater."""
 
+import hashlib
 import sys
 import types
 
@@ -51,3 +52,56 @@ class TestCheckForUpdatesNullBody:
         assert has_update is True
         assert latest == '9.9.9'
         assert 'No release notes available.' in message
+
+
+class TestRequireChecksum:
+    def test_fails_closed_without_sums(self):
+        class Sess:
+            def get(self, *a, **k):
+                raise AssertionError("should not download sums when absent")
+
+        release = {"assets": [{"name": "NovelDownloader-windows.zip", "browser_download_url": "https://x"}]}
+        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", b"data")
+        assert ok is False
+        assert "SHA256SUMS" in msg
+
+    def test_mismatch(self):
+        class Resp:
+            def raise_for_status(self):
+                return None
+            text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  NovelDownloader-windows.zip\n"
+
+        class Sess:
+            def get(self, *a, **k):
+                return Resp()
+
+        release = {
+            "assets": [
+                {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
+            ]
+        }
+        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", b"data")
+        assert ok is False
+        assert "checksum mismatch" in msg.lower()
+
+    def test_ok(self):
+        payload = b"hello-update"
+        digest = hashlib.sha256(payload).hexdigest()
+
+        class Resp:
+            def raise_for_status(self):
+                return None
+            text = f"{digest}  NovelDownloader-windows.zip\n"
+
+        class Sess:
+            def get(self, *a, **k):
+                return Resp()
+
+        release = {
+            "assets": [
+                {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
+            ]
+        }
+        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", payload)
+        assert ok is True
+        assert msg == digest

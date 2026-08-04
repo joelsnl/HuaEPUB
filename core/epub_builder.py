@@ -228,6 +228,12 @@ class EPUBBuilder:
     
     def _download_image(self, url: str) -> Optional[bytes]:
         """Download an image and return bytes using curl_cffi."""
+        from core.security import UnsafeURLError, validate_fetch_url
+        try:
+            validate_fetch_url(url, allow_http=True)
+        except UnsafeURLError as e:
+            print(f"  Blocked cover URL: {e}")
+            return None
         try:
             response = _http_session.get(url, timeout=30)
             response.raise_for_status()
