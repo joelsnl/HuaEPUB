@@ -68,6 +68,8 @@ class TestSettings:
 
         settings._migration_done = False
         monkeypatch.setattr(settings, 'get_app_dir', lambda: install)
+        # Avoid picking up a real ~/.noveldownloader on the developer machine
+        monkeypatch.setattr(settings, 'LEGACY_DATA_DIR_NAME', '.__huaepub_legacy_absent__')
 
         # Call real get_data_dir logic via migration helper
         settings._migrate_legacy_data(data)
@@ -81,3 +83,21 @@ class TestSettings:
         settings._migration_done = False
         settings._migrate_legacy_data(data)
         assert json.loads((data / 'settings.json').read_text())['workers'] == 99
+
+    def test_migrates_from_legacy_home_data_dir(self, tmp_path, monkeypatch):
+        home = tmp_path / 'fake_home'
+        legacy = home / '.noveldownloader'
+        data = tmp_path / '.huaepub'
+        legacy.mkdir(parents=True)
+        data.mkdir()
+        (legacy / 'settings.json').write_text(json.dumps({'workers': 77}))
+        (legacy / 'library.json').write_text('{"history":[],"library":[]}')
+
+        settings._migration_done = False
+        monkeypatch.setattr(settings.Path, 'home', staticmethod(lambda: home))
+        monkeypatch.setattr(settings, 'get_app_dir', lambda: tmp_path / 'empty_install')
+        (tmp_path / 'empty_install').mkdir()
+
+        settings._migrate_legacy_data(data)
+        assert json.loads((data / 'settings.json').read_text())['workers'] == 77
+        assert (data / 'library.json').exists()

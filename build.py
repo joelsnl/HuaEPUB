@@ -9,6 +9,9 @@ import subprocess
 import shutil
 from pathlib import Path
 
+from core.branding import EXE_BASENAME
+
+
 def build():
     """Build the application using PyInstaller."""
     
@@ -17,13 +20,13 @@ def build():
     
     # Determine OS-specific settings
     separator = ';' if sys.platform == 'win32' else ':'
-    exe_name = "NovelDownloader.exe" if sys.platform == 'win32' else "NovelDownloader"
+    exe_name = f"{EXE_BASENAME}.exe" if sys.platform == 'win32' else EXE_BASENAME
     
     # Check if PyInstaller is installed
     try:
         import PyInstaller
     except ImportError:
-        print("PyInstaller not found. Installing...")
+        print("Installing PyInstaller...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
     
     # Clean previous builds
@@ -33,14 +36,18 @@ def build():
             print(f"Cleaning {folder}...")
             shutil.rmtree(folder_path)
     
-    spec_file = script_dir / "NovelDownloader.spec"
+    spec_file = script_dir / f"{EXE_BASENAME}.spec"
     if spec_file.exists():
         spec_file.unlink()
+    # Remove legacy spec if present
+    legacy_spec = script_dir / "NovelDownloader.spec"
+    if legacy_spec.exists():
+        legacy_spec.unlink()
     
     # PyInstaller arguments
     args = [
         'pyinstaller',
-        '--name=NovelDownloader',
+        f'--name={EXE_BASENAME}',
         '--onefile',                    # Single executable
         '--windowed',                   # No console window
         '--noconfirm',                  # Overwrite without asking

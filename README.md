@@ -1,10 +1,10 @@
-# Novel Downloader & Translator
+# HuaEPUB
 
-**Current version: 2.2.2**
+**Current version: 2.3.0**
 
-A Python application for downloading Chinese web novels and translating them to English EPUBs. Run it from source on **Windows, macOS, or Linux** (any OS with Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
+Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
-Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another project of mine).
+Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dteviot) and fixTranslate.py.
 
 <img width="898" height="729" alt="image" src="https://github.com/user-attachments/assets/1a40bb3c-a92b-4c7b-a210-7fd50562a887" />
 
@@ -22,9 +22,9 @@ Based on WebToEpub extension (by dteviot) and fixTranslate.py (from another proj
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA and cancel support; failed chapters are retried at the end of the run
-- **Custom output folder** and persistent settings in `~/.noveldownloader/`
+- **Custom output folder** and persistent settings in `~/.huaepub/` (migrates from `~/.noveldownloader/` if present)
 - **Auto-updater** — downloads prebuilt, checksum-verified release builds when available
-- **Log file** (`~/.noveldownloader/logs/novel_downloader.log`) for diagnosing issues
+- **Log file** (`~/.huaepub/logs/huaepub.log`) for diagnosing issues
 
 ## Installation
 
@@ -46,11 +46,11 @@ Works on Windows, macOS, and Linux.
 ### Option 2: Prebuilt Executables (Windows, macOS & Linux)
 
 Download the latest release from the [Releases](https://github.com/joelsnl/novelDownloader/releases) page:
-- `NovelDownloader-windows.zip`
-- `NovelDownloader-macos.zip`
-- `NovelDownloader-linux.zip`
+- `HuaEPUB-windows.zip`
+- `HuaEPUB-macos.zip`
+- `HuaEPUB-linux.zip`
 
-Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in-app updater uses these same builds.
+Each zip includes `HuaEPUB` plus a legacy `NovelDownloader` binary (same build) so older in-app updaters still work. Each release also includes `SHA256SUMS.txt`.
 
 ### Option 3: Build Standalone Executable Yourself
 
@@ -64,8 +64,8 @@ Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in
    python build.py
    ```
 3. Find the executable in `dist/`:
-   - **Windows:** `NovelDownloader.exe`
-   - **macOS / Linux:** `NovelDownloader`
+   - **Windows:** `HuaEPUB.exe`
+   - **macOS / Linux:** `HuaEPUB`
 
 ## Usage
 
@@ -86,7 +86,7 @@ Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in
    - ✅ Use chapter cache (resume) - Reuses chapters downloaded in previous runs
    - Translator - Google (default) or LibreTranslate (server URL configurable in `settings.json`)
    - Translation Workers - Number of concurrent translation requests (default: 200)
-   - Save to - Output folder (defaults to `~/.noveldownloader/books`)
+   - Save to - Output folder (defaults to `~/.huaepub/books`)
 
 5. **Download**: Click "Download EPUB" — saved automatically to the chosen folder
 
@@ -102,19 +102,19 @@ Each release also includes `SHA256SUMS.txt` so downloads can be verified. The in
 
 Library mode tracks novels you've downloaded so you can **Update** them for new chapters on any machine that shares the same library.
 
-**Local data** (always used): `~/.noveldownloader/` (`settings.json`, `library.json`, `cache.db`, logs).
+**Local data** (always used): `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, logs).
 
 **Optional Drive sync** (Library tab):
 
 1. Create a Google Cloud project, enable the **Google Drive API**, and create an OAuth client ID of type **Desktop app**
 2. Download the client JSON and save it as:
-   - Windows: `C:\Users\<you>\.noveldownloader\google_oauth_client.json`
-   - macOS / Linux: `~/.noveldownloader/google_oauth_client.json`
+   - Windows: `C:\Users\<you>\.huaepub\google_oauth_client.json`
+   - macOS / Linux: `~/.huaepub/google_oauth_client.json`
 3. In the app: open **Library** → enable **Sync with Google Drive** → **Connect** (browser login)
 4. Choose what to sync (any combo):
    - **Sync library** — `library.json` (tracked novels + last-downloaded chapter cursors)
    - **Sync EPUBs** — files under Drive `books/`
-Files are stored in a visible Drive folder (default **My Drive → NovelDownloader**, with `library.json` + `books/`). Use **Change folder** to pick another folder name or paste a Drive folder link, and **Open folder** to jump there.
+Files are stored in a visible Drive folder (default **My Drive → HuaEPUB**, with `library.json` + `books/`). Use **Change folder** to pick another folder name or paste a Drive folder link, and **Open folder** to jump there.
 
 Sync is offline-first: if Drive is unreachable, downloads and the local library still work. Use **Sync Now** to pull/merge/push on demand. After a download, the app pushes in the background when sync is enabled.
 
@@ -175,6 +175,7 @@ python -m pytest tests/
 ├── requirements.txt    # Python dependencies
 ├── build.py            # PyInstaller build script
 ├── core/
+│   ├── branding.py     # Product name + legacy aliases
 │   ├── parser.py       # Base parser class + registry
 │   ├── cleaner.py      # Watermark/ad removal
 │   ├── translator.py   # Translation (Google / LibreTranslate)

@@ -61,8 +61,8 @@ class TestRequireChecksum:
             def get(self, *a, **k):
                 raise AssertionError("should not download sums when absent")
 
-        release = {"assets": [{"name": "NovelDownloader-windows.zip", "browser_download_url": "https://x"}]}
-        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", b"data")
+        release = {"assets": [{"name": "HuaEPUB-windows.zip", "browser_download_url": "https://x"}]}
+        ok, msg = updater._require_checksum(Sess(), release, "HuaEPUB-windows.zip", b"data")
         assert ok is False
         assert "SHA256SUMS" in msg
 
@@ -70,7 +70,7 @@ class TestRequireChecksum:
         class Resp:
             def raise_for_status(self):
                 return None
-            text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  NovelDownloader-windows.zip\n"
+            text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  HuaEPUB-windows.zip\n"
 
         class Sess:
             def get(self, *a, **k):
@@ -81,7 +81,7 @@ class TestRequireChecksum:
                 {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
             ]
         }
-        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", b"data")
+        ok, msg = updater._require_checksum(Sess(), release, "HuaEPUB-windows.zip", b"data")
         assert ok is False
         assert "checksum mismatch" in msg.lower()
 
@@ -92,7 +92,7 @@ class TestRequireChecksum:
         class Resp:
             def raise_for_status(self):
                 return None
-            text = f"{digest}  NovelDownloader-windows.zip\n"
+            text = f"{digest}  HuaEPUB-windows.zip\n"
 
         class Sess:
             def get(self, *a, **k):
@@ -103,7 +103,7 @@ class TestRequireChecksum:
                 {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
             ]
         }
-        ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", payload)
+        ok, msg = updater._require_checksum(Sess(), release, "HuaEPUB-windows.zip", payload)
         assert ok is True
         assert msg == digest
 
@@ -111,8 +111,8 @@ class TestRequireChecksum:
 class TestReplacementHelper:
     def test_windows_helper_retries_and_avoids_stop(self, tmp_path, monkeypatch):
         monkeypatch.setattr(updater.sys, "platform", "win32")
-        new_exe = tmp_path / "_new_NovelDownloader.exe"
-        old_exe = tmp_path / "NovelDownloader.exe"
+        new_exe = tmp_path / "_new_HuaEPUB.exe"
+        old_exe = tmp_path / "HuaEPUB.exe"
         new_exe.write_bytes(b"new")
         old_exe.write_bytes(b"old")
 
@@ -130,8 +130,8 @@ class TestReplacementHelper:
 
     def test_posix_helper_retries(self, tmp_path, monkeypatch):
         monkeypatch.setattr(updater.sys, "platform", "linux")
-        new_exe = tmp_path / "_new_NovelDownloader"
-        old_exe = tmp_path / "NovelDownloader"
+        new_exe = tmp_path / "_new_HuaEPUB"
+        old_exe = tmp_path / "HuaEPUB"
         new_exe.write_bytes(b"new")
         old_exe.write_bytes(b"old")
 
@@ -141,3 +141,16 @@ class TestReplacementHelper:
         assert "for i in range(1, 91)" in text
         assert "os.spawnv" in text
         assert Path(script).exists()
+
+
+class TestPlatformAssetPreference:
+    def test_prefers_huaepub_zip(self, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        release = {
+            "assets": [
+                {"name": "NovelDownloader-windows.zip", "browser_download_url": "https://old"},
+                {"name": "HuaEPUB-windows.zip", "browser_download_url": "https://new"},
+            ]
+        }
+        asset = updater._find_platform_asset(release)
+        assert asset["name"] == "HuaEPUB-windows.zip"

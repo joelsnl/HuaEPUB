@@ -18,14 +18,17 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset: NovelDownloader-windows.zip
-            exe: NovelDownloader.exe
+            asset: HuaEPUB-windows.zip
+            exe: HuaEPUB.exe
+            legacy_exe: NovelDownloader.exe
           - os: macos-latest
-            asset: NovelDownloader-macos.zip
-            exe: NovelDownloader
+            asset: HuaEPUB-macos.zip
+            exe: HuaEPUB
+            legacy_exe: NovelDownloader
           - os: ubuntu-latest
-            asset: NovelDownloader-linux.zip
-            exe: NovelDownloader
+            asset: HuaEPUB-linux.zip
+            exe: HuaEPUB
+            legacy_exe: NovelDownloader
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -44,12 +47,16 @@ jobs:
 
       - name: Zip executable (Windows)
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path "dist/${{ matrix.exe }}" -DestinationPath "${{ matrix.asset }}"
         shell: pwsh
+        run: |
+          Copy-Item "dist/${{ matrix.exe }}" "dist/${{ matrix.legacy_exe }}"
+          Compress-Archive -Path "dist/${{ matrix.exe }}","dist/${{ matrix.legacy_exe }}" -DestinationPath "${{ matrix.asset }}"
 
       - name: Zip executable (macOS / Linux)
         if: runner.os != 'Windows'
-        run: cd dist && zip "../${{ matrix.asset }}" "${{ matrix.exe }}"
+        run: |
+          cp "dist/${{ matrix.exe }}" "dist/${{ matrix.legacy_exe }}"
+          cd dist && zip "../${{ matrix.asset }}" "${{ matrix.exe }}" "${{ matrix.legacy_exe }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -71,14 +78,16 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           curl -fsSL \
             "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.zip" \
-            -o novelDownloader-source.zip
-          sha256sum NovelDownloader-*.zip novelDownloader-source.zip > SHA256SUMS.txt
+            -o HuaEPUB-source.zip
+          # Legacy alias so older source updaters still find a checksummed archive
+          cp HuaEPUB-source.zip novelDownloader-source.zip
+          sha256sum HuaEPUB-*.zip novelDownloader-source.zip > SHA256SUMS.txt
 
       - name: Attach assets to release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            NovelDownloader-*.zip
+            HuaEPUB-*.zip
             novelDownloader-source.zip
             SHA256SUMS.txt

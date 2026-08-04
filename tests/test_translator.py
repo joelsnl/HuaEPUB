@@ -1,6 +1,5 @@
 """Offline tests for core.translator.GoogleTranslator (no network)."""
 
-import sys
 import time as _time
 
 import pytest
@@ -149,10 +148,6 @@ class TestHttpSession:
         b = t._get_http_session()
         assert a is b
 
-    def test_windows_soft_caps_high_workers(self, monkeypatch):
-        monkeypatch.setattr(sys, 'platform', 'win32')
-        # Re-import path: GoogleTranslator reads sys.platform at init
-        import core.translator as tr
-        monkeypatch.setattr(tr.sys, 'platform', 'win32')
-        t = tr.GoogleTranslator(max_workers=200)
-        assert t.max_workers == 100
+    def test_respects_requested_worker_count(self):
+        t = GoogleTranslator(max_workers=200)
+        assert t.max_workers == 200

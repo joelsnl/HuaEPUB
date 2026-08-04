@@ -2,12 +2,12 @@
 """
 Optional Google Drive sync for library metadata and EPUB files.
 
-Offline-first: local ~/.noveldownloader/ is always usable. Drive is opt-in.
+Offline-first: local ~/.huaepub/ is always usable. Drive is opt-in.
 Auth uses browser OAuth (loopback) via google-auth-oauthlib.
 
-Client config: ~/.noveldownloader/google_oauth_client.json
+Client config: ~/.huaepub/google_oauth_client.json
   (Desktop OAuth client JSON downloaded from Google Cloud Console)
-Token cache: ~/.noveldownloader/google_token.json
+Token cache: ~/.huaepub/google_token.json
 """
 
 from __future__ import annotations
@@ -29,11 +29,12 @@ from core.library import (
     merge_library,
 )
 from core.settings import get_data_dir, get_setting, set_setting
+from core.branding import DRIVE_FOLDER_NAME
 
 OAUTH_CLIENT_FILE = "google_oauth_client.json"
 TOKEN_FILE = "google_token.json"
 BOOKS_FOLDER_NAME = "books"
-CUSTOM_ROOT_FOLDER_NAME = "NovelDownloader"
+CUSTOM_ROOT_FOLDER_NAME = DRIVE_FOLDER_NAME
 
 # Always sync into a visible My Drive folder (not hidden appDataFolder)
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
@@ -92,7 +93,7 @@ class DriveSync:
         self._lock = threading.RLock()
         self._creds: Optional[Credentials] = None
         self._service = None
-        self._root_id: Optional[str] = None  # NovelDownloader folder id
+        self._root_id: Optional[str] = None  # Drive root folder id
         self._books_id: Optional[str] = None
         self._email: str = ""
 
@@ -205,7 +206,7 @@ class DriveSync:
                     return (
                         f"Google Drive access denied (HTTP {status}).\n"
                         "Click Disconnect, then Connect again and approve Drive access "
-                        "so files can be saved to My Drive → NovelDownloader."
+                        f"so files can be saved to My Drive → {CUSTOM_ROOT_FOLDER_NAME}."
                     )
                 return f"Google Drive API error (HTTP {status}): {body[:300]}"
         except Exception:

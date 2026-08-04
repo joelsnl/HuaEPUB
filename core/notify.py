@@ -7,12 +7,14 @@ import subprocess
 import sys
 
 
+from core.branding import APP_NAME, APP_TITLE
+
 def notify(title: str, message: str):
     """
     Show a desktop notification. Best-effort; never raises.
     Windows: PowerShell toast. macOS: osascript. Linux: notify-send.
     """
-    title = (title or "Novel Downloader").strip()
+    title = (title or APP_TITLE).strip()
     message = (message or "").strip()
     if not message:
         return
@@ -46,7 +48,7 @@ $template = @"
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml($template)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("NovelDownloader").Show($toast)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("{APP_NAME}").Show($toast)
 """
     subprocess.Popen(
         ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],

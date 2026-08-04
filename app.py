@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Author: joelsnl and Anthropic Claude
 """
-Novel Downloader & Translator
-A standalone GUI application for downloading and translating web novels to EPUB.
+HuaEPUB
+A standalone GUI application for downloading Chinese web novels and building English EPUBs.
 
 Based on WebToEpub extension and fixTranslate.py
 """
@@ -38,6 +38,7 @@ from core.settings import (
     load_settings, save_settings, get_app_dir, get_data_dir, get_default_books_dir,
 )
 from core.cache import NovelCache
+from core.branding import APP_TITLE, DRIVE_FOLDER_NAME, LOG_FILE_NAME
 from core.logger import setup_logging
 from core.utils import format_eta, safe_filename, extract_urls, looks_like_url
 from core.library import LibraryStore, new_chapters_since
@@ -63,17 +64,17 @@ class _DownloadCancelled(Exception):
     pass
 
 
-class NovelDownloaderApp(ctk.CTk):
+class HuaEPUBApp(ctk.CTk):
     """Main application window."""
     
     def __init__(self):
         super().__init__()
         
-        self.title(f"Novel Downloader & Translator v{get_current_version()}")
+        self.title(f"{APP_TITLE} v{get_current_version()}")
         self.geometry("900x700")
         self.minsize(800, 600)
         
-        # Get directories: install dir (updater) vs user data (~/.noveldownloader)
+        # Get directories: install dir (updater) vs user data (~/.huaepub)
         self.app_dir = get_app_dir()
         self.data_dir = get_data_dir()
         
@@ -554,11 +555,7 @@ class NovelDownloaderApp(ctk.CTk):
         
         ctk.CTkLabel(right_opts, text="Translation Workers:").pack(side="left", padx=5)
         self.workers_entry = ctk.CTkEntry(right_opts, width=60)
-        default_workers = self.settings.get('workers', 200)
-        # Windows soft-caps at 100 inside GoogleTranslator; show that as default for new installs
-        if default_workers == 200 and sys.platform == "win32":
-            default_workers = 100
-        self.workers_entry.insert(0, str(default_workers))
+        self.workers_entry.insert(0, str(self.settings.get('workers', 200)))
         self.workers_entry.pack(side="left", padx=5)
         
         # Bottom row - output folder
@@ -928,7 +925,7 @@ class NovelDownloaderApp(ctk.CTk):
             self._save_settings()
     
     def _reset_output_dir(self):
-        """Reset to ~/.noveldownloader/books."""
+        """Reset to ~/.huaepub/books."""
         self.output_dir = ''
         self._update_output_dir_label()
         self._save_settings()
@@ -990,7 +987,7 @@ class NovelDownloaderApp(ctk.CTk):
         thread.start()
     
     def _get_downloads_folder(self) -> Path:
-        """Get the output folder: user-chosen folder if set, else ~/.noveldownloader/books."""
+        """Get the output folder: user-chosen folder if set, else ~/.huaepub/books."""
         custom = (self.output_dir or '').strip()
         if custom:
             path = Path(custom)
@@ -1831,7 +1828,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._reveal_path(self.data_dir, create_dir=True)
     
     def _menu_open_log_file(self):
-        log_path = self.data_dir / "logs" / "novel_downloader.log"
+        log_path = self.data_dir / "logs" / LOG_FILE_NAME
         if not log_path.exists():
             messagebox.showinfo("Log file", f"No log yet.\nExpected at:\n{log_path}")
             return
@@ -1869,7 +1866,7 @@ class NovelDownloaderApp(ctk.CTk):
     def _menu_about(self):
         messagebox.showinfo(
             "About",
-            f"Novel Downloader & Translator\n"
+            f"{APP_TITLE}\n"
             f"Version {get_current_version()}\n\n"
             f"Data folder:\n{self.data_dir}\n\n"
             f"Books folder:\n{self._get_downloads_folder()}",
@@ -2646,7 +2643,7 @@ class NovelDownloaderApp(ctk.CTk):
         self._update_drive_folder_help()
     
     def _update_drive_folder_help(self):
-        name = self.settings.get('drive_folder_name') or 'NovelDownloader'
+        name = self.settings.get('drive_folder_name') or DRIVE_FOLDER_NAME
         self.drive_folder_help.configure(
             text=f"Drive folder: My Drive → {name} (library.json + books/). Use Change folder to pick another."
         )
@@ -2745,7 +2742,7 @@ class NovelDownloaderApp(ctk.CTk):
             padx=16, pady=(8, 2), anchor="w"
         )
         name_entry = ctk.CTkEntry(popup, width=460)
-        name_entry.insert(0, self.settings.get('drive_folder_name') or 'NovelDownloader')
+        name_entry.insert(0, self.settings.get('drive_folder_name') or DRIVE_FOLDER_NAME)
         name_entry.pack(padx=16, pady=(0, 8), anchor="w")
         
         ctk.CTkLabel(
@@ -2775,11 +2772,11 @@ class NovelDownloaderApp(ctk.CTk):
         
         def on_default():
             name_entry.delete(0, "end")
-            name_entry.insert(0, "NovelDownloader")
+            name_entry.insert(0, DRIVE_FOLDER_NAME)
             url_entry.delete(0, "end")
         
         def on_save():
-            folder_name = name_entry.get().strip() or "NovelDownloader"
+            folder_name = name_entry.get().strip() or DRIVE_FOLDER_NAME
             folder_url = url_entry.get().strip()
             popup.destroy()
             
@@ -3317,7 +3314,7 @@ class NovelDownloaderApp(ctk.CTk):
 def main():
     log_path = setup_logging(get_data_dir())
     print(f"Logging to: {log_path}")
-    app = NovelDownloaderApp()
+    app = HuaEPUBApp()
     app.mainloop()
 
 

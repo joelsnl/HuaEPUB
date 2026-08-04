@@ -66,12 +66,7 @@ class GoogleTranslator:
     ):
         self.source_lang = source_lang
         self.target_lang = target_lang
-        # Windows + many cold TLS handshakes thrashes; allow concurrency once
-        # sessions reuse connections, but soft-cap the first pass socket burst.
-        if sys.platform == "win32" and max_workers > 100:
-            self.max_workers = 100
-        else:
-            self.max_workers = max_workers
+        self.max_workers = max_workers
         self.request_timeout = request_timeout
         # (connect, read) — short connect avoids long IPv6 black-hole waits
         self._timeout = (min(5, request_timeout), request_timeout)

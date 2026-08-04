@@ -7,7 +7,7 @@ Persistent download history and reading library.
   can pull only new chapters and rebuild a complete EPUB (old chapters
   come from the chapter cache).
 
-Stored as library.json in ~/.noveldownloader/. Never raises to callers.
+Stored as library.json in ~/.huaepub/. Never raises to callers.
 Optional Google Drive sync merges remote copies via merge_library().
 """
 

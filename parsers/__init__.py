@@ -1,6 +1,6 @@
 # Author: joelsnl and Anthropic Claude
 """
-Site parsers for Novel Downloader
+Site parsers for HuaEPUB
 Import this module to register all parsers
 """
 

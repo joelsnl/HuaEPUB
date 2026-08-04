@@ -1,4 +1,4 @@
-# Novel Downloader - Requirements
+# HuaEPUB - Requirements
 # Install with: pip install -r requirements.txt
 
 # HTTP requests with Chrome TLS fingerprinting

@@ -22,9 +22,13 @@ class TestDriveSyncHelpers:
         sync = DriveSync()
         assert sync.is_connected() is False
 
-    def test_location_description(self):
+    def test_location_description(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.drive_sync.get_setting",
+            lambda key, *a, **k: "HuaEPUB" if key == "drive_folder_name" else "",
+        )
         sync = DriveSync()
-        assert "NovelDownloader" in sync.location_description()
+        assert "HuaEPUB" in sync.location_description()
 
     def test_parse_folder_id(self):
         assert DriveSync.parse_folder_id(

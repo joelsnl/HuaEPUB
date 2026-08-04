@@ -2,7 +2,7 @@
 """
 SQLite-backed persistent caches.
 
-Two caches in one database file (cache.db in ~/.noveldownloader/):
+Two caches in one database file (cache.db in ~/.huaepub/):
 
 - chapters: successfully downloaded chapter HTML, keyed by chapter URL.
   Lets a cancelled/failed run resume without re-downloading, and makes

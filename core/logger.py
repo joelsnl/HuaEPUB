@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+from core.branding import LOG_FILE_NAME
+
 MAX_LOG_BYTES = 1024 * 1024  # rotate at 1 MB, keep one previous file
 
 
@@ -51,10 +53,10 @@ class _Tee:
 
 def setup_logging(data_dir: Path) -> Path:
     """
-    Tee stdout/stderr to data_dir/logs/novel_downloader.log.
+    Tee stdout/stderr to data_dir/logs/huaepub.log.
     Returns the log file path. Never raises.
     """
-    log_path = data_dir / 'logs' / 'novel_downloader.log'
+    log_path = data_dir / 'logs' / LOG_FILE_NAME
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 

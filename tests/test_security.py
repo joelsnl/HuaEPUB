@@ -60,11 +60,11 @@ class TestSafeExtractZip:
     def test_extracts_safe_member(self, tmp_path):
         zip_path = tmp_path / "ok.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("NovelDownloader.exe", b"MZ")
+            zf.writestr("HuaEPUB.exe", b"MZ")
             zf.writestr("readme.txt", b"hi")
         out = tmp_path / "out"
-        written = safe_extract_zip(zip_path, out, allowed_names={"NovelDownloader.exe"})
-        assert any(p.name == "NovelDownloader.exe" for p in written)
+        written = safe_extract_zip(zip_path, out, allowed_names={"HuaEPUB.exe"})
+        assert any(p.name == "HuaEPUB.exe" for p in written)
         assert not (out / "readme.txt").exists()
 
 

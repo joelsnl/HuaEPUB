@@ -1,6 +1,6 @@
 # Author: joelsnl and Anthropic Claude
 """
-Core modules for Novel Downloader
+Core modules for HuaEPUB
 """
 
 from core.parser import BaseParser, Chapter, NovelInfo, get_parser_for_url, get_supported_sites, cleanup_browser

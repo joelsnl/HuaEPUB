@@ -2,7 +2,8 @@
 """
 Persistent application settings.
 
-User data (settings, cache, library, logs) lives in ~/.noveldownloader/.
+User data (settings, cache, library, logs) lives in ~/.huaepub/
+(migrated automatically from ~/.noveldownloader/ when present).
 The install/executable directory is separate (see get_app_dir) and is only
 used for the auto-updater and as a migration source for older installs.
 
@@ -18,9 +19,14 @@ import threading
 from pathlib import Path
 from typing import Any, Dict
 
+from core.branding import (
+    DATA_DIR_NAME,
+    DRIVE_FOLDER_NAME,
+    LEGACY_DATA_DIR_NAME,
+)
+
 SETTINGS_FILE = "settings.json"
 LEGACY_UPDATER_SETTINGS_FILE = "updater_settings.json"
-DATA_DIR_NAME = ".noveldownloader"
 
 # Files/dirs that used to live next to the app and should move into the data dir
 _MIGRATE_FILES = (
@@ -38,7 +44,7 @@ DEFAULTS: Dict[str, Any] = {
     'translate': True,
     'clean': True,
     'workers': 200,
-    # '' means "use ~/.noveldownloader/books"
+    # '' means "use ~/.huaepub/books"
     'output_dir': '',
     # 'google' or 'libretranslate'
     'translation_backend': 'google',
@@ -52,7 +58,7 @@ DEFAULTS: Dict[str, Any] = {
     'drive_sync_library': True,
     'drive_sync_epubs': True,
     # Visible My Drive folder: create/reuse by name, or pin a folder id/URL
-    'drive_folder_name': 'NovelDownloader',
+    'drive_folder_name': DRIVE_FOLDER_NAME,
     'drive_folder_id': '',
     'drive_library_hash': '',
     'drive_last_synced_at': 0.0,
@@ -80,8 +86,9 @@ def get_app_dir() -> Path:
 
 def get_data_dir() -> Path:
     """
-    Per-user data directory: ~/.noveldownloader/
-    Created on first use. Migrates legacy files from the install dir once.
+    Per-user data directory: ~/.huaepub/
+    Created on first use. Migrates from ~/.noveldownloader/ and from the
+    install dir once.
     """
     data_dir = Path.home() / DATA_DIR_NAME
     try:
@@ -93,7 +100,7 @@ def get_data_dir() -> Path:
 
 
 def get_default_books_dir() -> Path:
-    """Default EPUB output folder: ~/.noveldownloader/books/"""
+    """Default EPUB output folder: ~/.huaepub/books/"""
     books = get_data_dir() / "books"
     try:
         books.mkdir(parents=True, exist_ok=True)
@@ -104,8 +111,10 @@ def get_default_books_dir() -> Path:
 
 def _migrate_legacy_data(data_dir: Path):
     """
-    One-time copy of settings/cache/library/logs from the old install-dir
-    location into ~/.noveldownloader/. Never overwrites newer data-dir files.
+    One-time copy of settings/cache/library/logs from:
+      1) ~/.noveldownloader/ (pre-HuaEPUB data dir)
+      2) the old install-dir location
+    Never overwrites files that already exist in the new data dir.
     """
     global _migration_done
     if _migration_done:
@@ -113,30 +122,35 @@ def _migrate_legacy_data(data_dir: Path):
     _migration_done = True
 
     try:
+        legacy_home = Path.home() / LEGACY_DATA_DIR_NAME
+        if legacy_home.is_dir() and legacy_home.resolve() != data_dir.resolve():
+            _copy_migrate(legacy_home, data_dir)
+
         old_dir = get_app_dir()
-        # Skip if install dir IS the data dir somehow, or doesn't exist
-        if old_dir.resolve() == data_dir.resolve():
-            return
-
-        for name in _MIGRATE_FILES:
-            src = old_dir / name
-            dst = data_dir / name
-            if src.is_file() and not dst.exists():
-                try:
-                    shutil.copy2(src, dst)
-                except Exception:
-                    pass
-
-        for name in _MIGRATE_DIRS:
-            src = old_dir / name
-            dst = data_dir / name
-            if src.is_dir() and not dst.exists():
-                try:
-                    shutil.copytree(src, dst)
-                except Exception:
-                    pass
+        if old_dir.resolve() != data_dir.resolve():
+            _copy_migrate(old_dir, data_dir)
     except Exception:
         pass
+
+
+def _copy_migrate(src_root: Path, data_dir: Path):
+    for name in _MIGRATE_FILES:
+        src = src_root / name
+        dst = data_dir / name
+        if src.is_file() and not dst.exists():
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+
+    for name in _MIGRATE_DIRS:
+        src = src_root / name
+        dst = data_dir / name
+        if src.is_dir() and not dst.exists():
+            try:
+                shutil.copytree(src, dst)
+            except Exception:
+                pass
 
 
 def get_settings_path() -> Path:

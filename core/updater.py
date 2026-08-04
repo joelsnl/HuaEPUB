@@ -1,6 +1,6 @@
 # Author: joelsnl and Anthropic Claude
 """
-Auto-updater for Novel Downloader
+Auto-updater for HuaEPUB
 Checks GitHub releases for updates and can download/install them.
 Supports both source installations and compiled executables.
 
@@ -17,18 +17,23 @@ import subprocess
 import threading
 import stat
 from pathlib import Path
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, Set
 
+from core.branding import (
+    EXE_BASENAME,
+    LEGACY_EXE_BASENAME,
+    LEGACY_SOURCE_ASSET_NAME,
+    SOURCE_ASSET_NAME,
+    UPDATER_USER_AGENT,
+)
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.2.2"
+__version__ = "2.3.0"
 
-# GitHub repository info
+# GitHub repository info (repo path kept for update continuity)
 GITHUB_REPO = "joelsnl/novelDownloader"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-
-SOURCE_ASSET_NAME = "novelDownloader-source.zip"
 
 
 def get_current_version() -> str:
@@ -56,6 +61,17 @@ def get_executable_path() -> Optional[Path]:
     return None
 
 
+def _exe_basenames() -> Tuple[str, ...]:
+    """Preferred then legacy executable basenames for this platform."""
+    if sys.platform == 'win32':
+        return (f"{EXE_BASENAME}.exe", f"{LEGACY_EXE_BASENAME}.exe")
+    return (EXE_BASENAME, LEGACY_EXE_BASENAME)
+
+
+def _allowed_exe_names() -> Set[str]:
+    return set(_exe_basenames())
+
+
 def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = None) -> Tuple[bool, str, str]:
     """
     Check GitHub for updates.
@@ -71,7 +87,7 @@ def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = Non
             import requests
             session = requests.Session()
             session.headers.update({
-                'User-Agent': 'NovelDownloader-Updater/1.0',
+                'User-Agent': UPDATER_USER_AGENT,
                 'Accept': 'application/vnd.github.v3+json'
             })
 
@@ -328,11 +344,18 @@ def _find_platform_asset(release_data: dict) -> Optional[dict]:
     else:
         wanted = 'linux'
 
-    for asset in release_data.get('assets', []):
-        name = asset.get('name', '').lower()
-        if wanted in name and name.endswith('.zip'):
-            return asset
-    return None
+    assets = list(release_data.get('assets', []))
+    # Prefer HuaEPUB-* zips; fall back to any platform zip (legacy NovelDownloader-*).
+    preferred = []
+    fallback = []
+    for asset in assets:
+        name = (asset.get('name') or '').lower()
+        if wanted in name and name.endswith('.zip') and 'source' not in name:
+            if EXE_BASENAME.lower() in name:
+                preferred.append(asset)
+            else:
+                fallback.append(asset)
+    return (preferred or fallback or [None])[0]
 
 
 def _get_expected_checksum(session, release_data: dict, asset_name: str) -> Optional[str]:
@@ -396,8 +419,8 @@ def download_update(
     Download the latest version from GitHub and install it.
 
     Frozen builds: platform zip + required SHA256 verification.
-    Source installs: novelDownloader-source.zip + required SHA256 verification.
-    Never falls back to an unsigned main-branch zip.
+    Source installs: HuaEPUB-source.zip (or legacy novelDownloader-source.zip)
+    + required SHA256 verification. Never falls back to an unsigned main-branch zip.
     """
     try:
         if progress_callback:
@@ -409,7 +432,7 @@ def download_update(
         except ImportError:
             import requests
             session = requests.Session()
-            session.headers.update({'User-Agent': 'NovelDownloader-Updater/1.0'})
+            session.headers.update({'User-Agent': UPDATER_USER_AGENT})
 
         api_response = session.get(GITHUB_API_URL, timeout=15)
         api_response.raise_for_status()
@@ -428,7 +451,10 @@ def download_update(
                 session, release_data, asset, app_dir, progress_callback
             )
 
-        source_asset = _find_asset(release_data, SOURCE_ASSET_NAME)
+        source_asset = (
+            _find_asset(release_data, SOURCE_ASSET_NAME)
+            or _find_asset(release_data, LEGACY_SOURCE_ASSET_NAME)
+        )
         if not source_asset:
             return (False,
                 f"No '{SOURCE_ASSET_NAME}' in the latest release.\n"
@@ -467,8 +493,6 @@ def _update_frozen_from_asset(
     if not ok:
         return (False, msg)
 
-    exe_name = 'NovelDownloader.exe' if sys.platform == 'win32' else 'NovelDownloader'
-
     old_exe = get_executable_path()
     if not old_exe:
         return (False, "Could not determine current executable path.")
@@ -476,21 +500,28 @@ def _update_frozen_from_asset(
     if progress_callback:
         progress_callback(80, 100, "Extracting update...")
 
-    temp_new_exe = app_dir / f'_new_{exe_name}'
+    # Stage next to the running binary using its current filename so legacy
+    # NovelDownloader.exe installs still replace in place.
+    temp_new_exe = app_dir / f'_new_{old_exe.name}'
+    allowed = _allowed_exe_names()
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         zip_path = temp_path / (asset_name or 'update.zip')
         zip_path.write_bytes(data)
 
-        safe_extract_zip(zip_path, temp_path, allowed_names={exe_name})
+        safe_extract_zip(zip_path, temp_path, allowed_names=allowed)
 
         new_exe = None
-        for candidate in temp_path.rglob(exe_name):
-            if candidate.is_file():
-                new_exe = candidate
+        for preferred in _exe_basenames():
+            for candidate in temp_path.rglob(preferred):
+                if candidate.is_file():
+                    new_exe = candidate
+                    break
+            if new_exe is not None:
                 break
         if new_exe is None:
-            return (False, f"Executable '{exe_name}' not found inside {asset_name}")
+            names = ", ".join(_exe_basenames())
+            return (False, f"Executable ({names}) not found inside {asset_name}")
 
         shutil.copy2(new_exe, temp_new_exe)
 
