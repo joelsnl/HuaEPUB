@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.3.1**
+**Current version: 2.4.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -13,7 +13,7 @@ Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dtevi
 - **Download novels** from supported sites (currently: twkan.com, 69shuba.com, uukanshu.cc)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
-- **Library mode** — track novels, pull only new chapters, rebuild full EPUBs (cache reuses old chapters)
+- **Library mode** — cover-grid or list shelf, track novels, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
 - **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default)
 - **Remove watermarks** and ads automatically
 - **Translate to English** using Google Translate (free, concurrent) or a LibreTranslate server

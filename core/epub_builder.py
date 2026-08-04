@@ -42,8 +42,10 @@ VOLUME_PREFIX_RE = re.compile(
 class EPUBBuilder:
     """Build EPUB files from novel chapters."""
     
-    def __init__(self, cleaner: Optional[ContentCleaner] = None):
+    def __init__(self, cleaner: Optional[ContentCleaner] = None, image_cache=None):
         self.cleaner = cleaner or ContentCleaner()
+        # Optional NovelCache — cover bytes stay local-only
+        self.image_cache = image_cache
     
     def build(
         self,
@@ -234,10 +236,22 @@ class EPUBBuilder:
         except UnsafeURLError as e:
             print(f"  Blocked cover URL: {e}")
             return None
+        if self.image_cache is not None:
+            cached = self.image_cache.get_cover(cover_url=url)
+            if cached:
+                return cached
         try:
             response = _http_session.get(url, timeout=30)
             response.raise_for_status()
-            return response.content
+            data = response.content
+            if data and self.image_cache is not None:
+                ctype = ""
+                try:
+                    ctype = response.headers.get("content-type", "") or ""
+                except Exception:
+                    pass
+                self.image_cache.put_cover(data, cover_url=url, content_type=ctype)
+            return data
         except Exception as e:
             print(f"  Image download error: {e}")
             return None
@@ -313,8 +327,9 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         cleaner: Optional[ContentCleaner] = None,
         translator=None,
         verify_translation: bool = True,
+        image_cache=None,
     ):
-        super().__init__(cleaner)
+        super().__init__(cleaner, image_cache=image_cache)
         self.translator = translator
         self.verify_translation = verify_translation
         

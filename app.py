@@ -15,7 +15,7 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from io import BytesIO
 
 import customtkinter as ctk
@@ -104,10 +104,15 @@ class HuaEPUBApp(ctk.CTk):
         self.multi_novels: List[dict] = []  # [{url, parser, info, chapters, status, translated_title}]
         self.multi_result_labels: List[dict] = []  # UI labels for each novel row
         self._library_row_widgets: List[dict] = []
+        self._library_cover_images: list = []  # keep CTkImage refs alive
         self._library_check_status: dict = {}  # source_url -> {state, new_count, total, error}
         self._library_checking = False
         self._drive_syncing = False
         self._remote_books: dict = {}  # filename -> drive file id
+        self._library_view = self.settings.get('library_view', 'grid') or 'grid'
+        self._library_filter = self.settings.get('library_filter', 'all') or 'all'
+        self._drive_panel_expanded = bool(self.settings.get('drive_panel_expanded', False))
+        self._library_reflow_after = None
         
         # Clipboard watcher
         self._clipboard_last = ""
@@ -175,6 +180,9 @@ class HuaEPUBApp(ctk.CTk):
         self.settings['translation_backend'] = (
             'libretranslate' if self.backend_menu.get() == 'LibreTranslate' else 'google'
         )
+        self.settings['library_view'] = getattr(self, '_library_view', 'grid')
+        self.settings['library_filter'] = getattr(self, '_library_filter', 'all')
+        self.settings['drive_panel_expanded'] = bool(getattr(self, '_drive_panel_expanded', False))
         save_settings(self.settings)
     
     def _get_workers(self) -> int:
@@ -375,14 +383,35 @@ class HuaEPUBApp(ctk.CTk):
         
         lib_header = ctk.CTkFrame(self.library_frame, fg_color="transparent")
         lib_header.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        
+        header_left = ctk.CTkFrame(lib_header, fg_color="transparent")
+        header_left.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            lib_header,
-            text="Your library — auto-checks for new chapters; Update rebuilds the full EPUB (cache reuses old chapters).",
+            header_left,
+            text="Your library — covers & TOC snapshots stay on this device; Drive only syncs library.json + EPUBs.",
             font=("", 12),
             text_color="gray",
-            wraplength=520,
+            wraplength=420,
             justify="left",
         ).pack(side="left", padx=5)
+        
+        self.library_view_seg = ctk.CTkSegmentedButton(
+            lib_header,
+            values=["Grid", "List"],
+            width=140,
+            command=self._on_library_view_change,
+        )
+        self.library_view_seg.set("Grid" if self._library_view != "list" else "List")
+        self.library_view_seg.pack(side="right", padx=3)
+        
+        self.library_filter_seg = ctk.CTkSegmentedButton(
+            lib_header,
+            values=["All", "Updates"],
+            width=150,
+            command=self._on_library_filter_change,
+        )
+        self.library_filter_seg.set("Updates" if self._library_filter == "updates" else "All")
+        self.library_filter_seg.pack(side="right", padx=3)
         
         self.library_update_all_btn = ctk.CTkButton(
             lib_header, text="Update All", width=95, height=28,
@@ -408,40 +437,52 @@ class HuaEPUBApp(ctk.CTk):
         )
         self.library_check_status_label.pack(side="right", padx=8)
         
-        # Google Drive sync panel
-        sync_panel = ctk.CTkFrame(self.library_frame)
-        sync_panel.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="ew")
-        sync_panel.grid_columnconfigure(1, weight=1)
+        # Compact / expandable Google Drive sync panel
+        self.drive_sync_panel = ctk.CTkFrame(self.library_frame)
+        self.drive_sync_panel.grid(row=1, column=0, padx=5, pady=(0, 5), sticky="ew")
         
-        sync_row1 = ctk.CTkFrame(sync_panel, fg_color="transparent")
-        sync_row1.pack(fill="x", padx=8, pady=(8, 4))
+        self.drive_summary_row = ctk.CTkFrame(self.drive_sync_panel, fg_color="transparent")
+        self.drive_summary_row.pack(fill="x", padx=8, pady=6)
+        
+        self.drive_expand_btn = ctk.CTkButton(
+            self.drive_summary_row, text="▸ Drive", width=70, height=26,
+            command=self._toggle_drive_panel,
+            fg_color="gray40", hover_color="gray30",
+        )
+        self.drive_expand_btn.pack(side="left", padx=(0, 8))
         
         self.drive_enabled_var = ctk.BooleanVar(
             value=bool(self.settings.get('drive_sync_enabled', False))
         )
         ctk.CTkCheckBox(
-            sync_row1,
-            text="Sync with Google Drive",
+            self.drive_summary_row,
+            text="Sync",
             variable=self.drive_enabled_var,
             command=self._on_drive_enabled_toggle,
-        ).pack(side="left", padx=(0, 12))
+            width=60,
+        ).pack(side="left", padx=(0, 8))
         
         self.drive_status_label = ctk.CTkLabel(
-            sync_row1, text="Drive sync off", font=("", 11), text_color="gray"
+            self.drive_summary_row, text="Drive sync off", font=("", 11), text_color="gray"
         )
         self.drive_status_label.pack(side="left", padx=5)
         
-        self.drive_connect_btn = ctk.CTkButton(
-            sync_row1, text="Connect", width=90, height=28,
-            command=self._on_drive_connect,
-        )
-        self.drive_connect_btn.pack(side="right", padx=3)
         self.drive_sync_now_btn = ctk.CTkButton(
-            sync_row1, text="Sync Now", width=90, height=28,
+            self.drive_summary_row, text="Sync Now", width=90, height=26,
             command=self._on_drive_sync_now,
             fg_color="#2B7A3E", hover_color="#236332",
         )
         self.drive_sync_now_btn.pack(side="right", padx=3)
+        self.drive_connect_btn = ctk.CTkButton(
+            self.drive_summary_row, text="Connect", width=90, height=26,
+            command=self._on_drive_connect,
+        )
+        self.drive_connect_btn.pack(side="right", padx=3)
+        
+        self.drive_details = ctk.CTkFrame(self.drive_sync_panel, fg_color="transparent")
+        
+        sync_row1 = ctk.CTkFrame(self.drive_details, fg_color="transparent")
+        sync_row1.pack(fill="x", padx=8, pady=(0, 4))
         self.library_reset_btn = ctk.CTkButton(
             sync_row1, text="Reset library", width=100, height=28,
             command=self._on_reset_library,
@@ -449,7 +490,7 @@ class HuaEPUBApp(ctk.CTk):
         )
         self.library_reset_btn.pack(side="right", padx=3)
         
-        sync_row2 = ctk.CTkFrame(sync_panel, fg_color="transparent")
+        sync_row2 = ctk.CTkFrame(self.drive_details, fg_color="transparent")
         sync_row2.pack(fill="x", padx=8, pady=(0, 4))
         
         self.drive_library_var = ctk.BooleanVar(
@@ -483,7 +524,7 @@ class HuaEPUBApp(ctk.CTk):
         )
         self.drive_open_folder_btn.pack(side="right", padx=3)
         
-        sync_row3 = ctk.CTkFrame(sync_panel, fg_color="transparent")
+        sync_row3 = ctk.CTkFrame(self.drive_details, fg_color="transparent")
         sync_row3.pack(fill="x", padx=8, pady=(0, 8))
         self.drive_folder_help = ctk.CTkLabel(
             sync_row3,
@@ -504,13 +545,80 @@ class HuaEPUBApp(ctk.CTk):
         )
         self.drive_last_sync_label.pack(side="right", padx=(10, 0))
         
+        self._apply_drive_panel_visibility()
         self._update_drive_sync_controls()
         self._update_drive_folder_help()
         self._update_drive_last_sync_label()
         
-        self.library_list_frame = ctk.CTkScrollableFrame(self.library_frame, label_text="Tracked novels")
-        self.library_list_frame.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
-        self.library_list_frame.grid_columnconfigure(0, weight=1)
+        # Shelf body: grid scroll OR tree list
+        self.library_body = ctk.CTkFrame(self.library_frame, fg_color="transparent")
+        self.library_body.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
+        self.library_body.grid_columnconfigure(0, weight=1)
+        self.library_body.grid_rowconfigure(0, weight=1)
+        
+        self.library_list_frame = ctk.CTkScrollableFrame(
+            self.library_body, label_text="Tracked novels"
+        )
+        self.library_list_frame.grid(row=0, column=0, sticky="nsew")
+        self.library_list_frame.bind("<Configure>", self._on_library_grid_configure)
+        
+        self.library_tree_frame = ctk.CTkFrame(self.library_body, fg_color="transparent")
+        self.library_tree_frame.grid_columnconfigure(0, weight=1)
+        self.library_tree_frame.grid_rowconfigure(0, weight=1)
+        
+        self._setup_library_tree_style()
+        self.library_tree = ttk.Treeview(
+            self.library_tree_frame,
+            columns=("chapters", "status", "updated"),
+            show="headings",
+            style="Library.Treeview",
+            selectmode="browse",
+        )
+        self.library_tree.heading("chapters", text="Chapters")
+        self.library_tree.heading("status", text="Status")
+        self.library_tree.heading("updated", text="Updated")
+        # Treeview needs a tree column for title — use show="tree headings"
+        self.library_tree.configure(show="tree headings")
+        self.library_tree.heading("#0", text="Title")
+        self.library_tree.column("#0", width=320, stretch=True)
+        self.library_tree.column("chapters", width=80, stretch=False, anchor="center")
+        self.library_tree.column("status", width=180, stretch=False)
+        self.library_tree.column("updated", width=100, stretch=False, anchor="center")
+        self.library_tree_scroll = ttk.Scrollbar(
+            self.library_tree_frame, orient="vertical", command=self.library_tree.yview
+        )
+        self.library_tree.configure(yscrollcommand=self.library_tree_scroll.set)
+        self.library_tree.grid(row=0, column=0, sticky="nsew")
+        self.library_tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.library_tree.bind("<Double-1>", self._on_library_tree_activate)
+        self.library_tree.bind("<Button-3>", self._on_library_tree_menu)
+        self.library_tree.bind("<<TreeviewSelect>>", self._on_library_tree_select)
+        
+        lib_actions = ctk.CTkFrame(self.library_body, fg_color="transparent")
+        lib_actions.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ctk.CTkButton(
+            lib_actions, text="Update", width=80, height=28,
+            fg_color="#2B7A3E", hover_color="#236332",
+            command=self._on_library_selected_update,
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            lib_actions, text="Open URL", width=80, height=28,
+            fg_color="gray40", hover_color="gray30",
+            command=self._on_library_selected_open,
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            lib_actions, text="Remove", width=70, height=28,
+            fg_color="gray40", hover_color="gray30",
+            command=self._on_library_selected_remove,
+        ).pack(side="left", padx=3)
+        self.library_download_epub_btn = ctk.CTkButton(
+            lib_actions, text="Download EPUB", width=110, height=28,
+            command=self._on_library_selected_download_epub,
+        )
+        self.library_download_epub_btn.pack(side="left", padx=3)
+        
+        self._selected_library_url: Optional[str] = None
+        self._apply_library_view_visibility()
         
         # === Options Section ===
         options_frame = ctk.CTkFrame(self)
@@ -704,6 +812,11 @@ class HuaEPUBApp(ctk.CTk):
                 print("Fetching chapter list...")
                 self.chapters = self.parser.get_chapter_list(url)
                 print(f"Got {len(self.chapters)} chapters")
+            
+            try:
+                self.cache.put_chapter_list(url, self.chapters)
+            except Exception:
+                pass
             
             # Update UI in main thread
             self.after(0, self._update_chapter_list)
@@ -1187,7 +1300,7 @@ class HuaEPUBApp(ctk.CTk):
 
             # Build EPUB
             if translator:
-                builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator)
+                builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator, image_cache=self.cache)
                 
                 def progress_cb(current, total_steps, status):
                     if self.cancel_requested:
@@ -1203,7 +1316,7 @@ class HuaEPUBApp(ctk.CTk):
                     progress_cb
                 )
             else:
-                builder = EPUBBuilder(cleaner=cleaner)
+                builder = EPUBBuilder(cleaner=cleaner, image_cache=self.cache)
                 
                 def progress_cb(current, total_steps, status):
                     progress = 0.5 + (current / total_steps) * 0.5
@@ -1417,6 +1530,10 @@ class HuaEPUBApp(ctk.CTk):
                 novel['info'] = info
                 novel['chapters'] = chapters
                 novel['status'] = 'fetched'
+                try:
+                    self.cache.put_chapter_list(url, chapters)
+                except Exception:
+                    pass
                 
                 # Translate title
                 try:
@@ -1557,7 +1674,7 @@ class HuaEPUBApp(ctk.CTk):
                     translator = self._make_translator(self._get_workers())
 
                 if translator:
-                    builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator)
+                    builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator, image_cache=self.cache)
                     
                     def progress_cb(current, total_steps, status, _ni=novel_idx, _tn=total_novels):
                         if self.cancel_requested:
@@ -1568,7 +1685,7 @@ class HuaEPUBApp(ctk.CTk):
                     
                     builder.build_with_translation(info, chapters, output_path, progress_cb)
                 else:
-                    builder = EPUBBuilder(cleaner=cleaner)
+                    builder = EPUBBuilder(cleaner=cleaner, image_cache=self.cache)
                     
                     def progress_cb(current, total_steps, status, _ni=novel_idx, _tn=total_novels):
                         overall = (_ni + 0.5 + (current / total_steps) * 0.5) / _tn
@@ -1932,103 +2049,364 @@ class HuaEPUBApp(ctk.CTk):
     # ------------------------------------------------------------------
     
     def _refresh_library_ui(self):
-        """Rebuild the library list from the store."""
+        """Rebuild the library shelf from the store (grid or list)."""
+        self._library_row_widgets.clear()
+        self._library_cover_images.clear()
+        
+        entries = self._filtered_library_entries()
+        if self._library_view == "list":
+            self._render_library_tree(entries)
+        else:
+            self._render_library_grid(entries)
+        self._update_library_update_all_btn()
+        self._update_library_download_btn()
+    
+    def _filtered_library_entries(self) -> list:
+        entries = list(self.library_store.get_library())
+        if self._library_filter == "updates":
+            entries = [
+                e for e in entries
+                if (self._library_check_status.get(e.source_url) or {}).get("state") == "update"
+                and int((self._library_check_status.get(e.source_url) or {}).get("new_count") or 0) > 0
+            ]
+        return entries
+    
+    def _on_library_view_change(self, value: str):
+        self._library_view = "list" if value == "List" else "grid"
+        self._apply_library_view_visibility()
+        self._refresh_library_ui()
+        self._save_settings()
+    
+    def _on_library_filter_change(self, value: str):
+        self._library_filter = "updates" if value == "Updates" else "all"
+        self._refresh_library_ui()
+        self._save_settings()
+    
+    def _apply_library_view_visibility(self):
+        if self._library_view == "list":
+            self.library_list_frame.grid_remove()
+            self.library_tree_frame.grid(row=0, column=0, sticky="nsew")
+        else:
+            self.library_tree_frame.grid_remove()
+            self.library_list_frame.grid(row=0, column=0, sticky="nsew")
+    
+    def _toggle_drive_panel(self):
+        self._drive_panel_expanded = not self._drive_panel_expanded
+        self._apply_drive_panel_visibility()
+        self._save_settings()
+    
+    def _apply_drive_panel_visibility(self):
+        if self._drive_panel_expanded:
+            self.drive_details.pack(fill="x", after=self.drive_summary_row)
+            self.drive_expand_btn.configure(text="▾ Drive")
+        else:
+            self.drive_details.pack_forget()
+            self.drive_expand_btn.configure(text="▸ Drive")
+    
+    def _setup_library_tree_style(self):
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure(
+            "Library.Treeview",
+            background="#2b2b2b",
+            foreground="#e8e8e8",
+            fieldbackground="#2b2b2b",
+            borderwidth=0,
+            rowheight=26,
+            font=("", 11),
+        )
+        style.map(
+            "Library.Treeview",
+            background=[("selected", "#1f6aa5")],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Library.Treeview.Heading",
+            background="#333333",
+            foreground="#e8e8e8",
+            relief="flat",
+        )
+    
+    def _library_status_text(self, source_url: str) -> Tuple[str, str]:
+        info = self._library_check_status.get(source_url) or {}
+        state = info.get("state", "")
+        if state == "checking":
+            return "Checking…", "orange"
+        if state == "update":
+            n = int(info.get("new_count") or 0)
+            total = int(info.get("total") or 0)
+            text = f"{n} new" + (f" · {total} on site" if total else "")
+            return text, "#2B7A3E"
+        if state == "current":
+            total = int(info.get("total") or 0)
+            return ("Up to date" + (f" · {total}" if total else ""), "gray")
+        if state == "error":
+            err = (info.get("error") or "error")[:50]
+            return f"Failed: {err}", "red"
+        return "", "gray"
+    
+    def _on_library_grid_configure(self, _event=None):
+        if self._library_view != "grid":
+            return
+        if self._library_reflow_after is not None:
+            try:
+                self.after_cancel(self._library_reflow_after)
+            except Exception:
+                pass
+        self._library_reflow_after = self.after(120, self._reflow_library_grid)
+    
+    def _reflow_library_grid(self):
+        self._library_reflow_after = None
+        if self._library_view != "grid":
+            return
+        tiles = [w for w in self._library_row_widgets if w.get("kind") == "tile"]
+        if not tiles:
+            return
+        width = max(self.library_list_frame.winfo_width(), 200)
+        cols = max(1, width // 150)
+        for i, row in enumerate(tiles):
+            widget = row.get("frame")
+            if widget is None:
+                continue
+            try:
+                widget.grid(row=i // cols, column=i % cols, padx=6, pady=6, sticky="n")
+            except Exception:
+                pass
+    
+    def _render_library_grid(self, entries: list):
         for child in self.library_list_frame.winfo_children():
             child.destroy()
         self._library_row_widgets.clear()
+        self._library_cover_images.clear()
         
-        entries = self.library_store.get_library()
         if not entries:
+            msg = (
+                "No novels with updates. Run Check updates, or switch filter to All."
+                if self._library_filter == "updates"
+                else "No tracked novels yet.\nDownload something in Single or Multi mode and it will appear here."
+            )
             ctk.CTkLabel(
                 self.library_list_frame,
-                text="No tracked novels yet.\nDownload something in Single or Multi mode and it will appear here.",
+                text=msg,
                 text_color="gray",
                 justify="left",
             ).pack(padx=12, pady=20, anchor="w")
-            self._update_library_update_all_btn()
             return
         
         for entry in entries:
-            self._create_library_row(entry)
-        self._update_library_update_all_btn()
+            self._create_library_tile(entry)
+        self.after(50, self._reflow_library_grid)
     
-    def _create_library_row(self, entry):
-        row = ctk.CTkFrame(self.library_list_frame)
-        row.pack(fill="x", padx=5, pady=4)
-        row.grid_columnconfigure(0, weight=1)
+    def _create_library_tile(self, entry):
+        tile = ctk.CTkFrame(self.library_list_frame, width=132, height=220)
+        tile.grid_propagate(False)
+        
+        cover_lbl = ctk.CTkLabel(tile, text="No cover", width=110, height=150)
+        cover_lbl.pack(padx=8, pady=(8, 4))
         
         title = entry.translated_title or entry.title or entry.source_url
-        if len(title) > 60:
-            title = title[:57] + "..."
+        if len(title) > 28:
+            title = title[:25] + "…"
+        ctk.CTkLabel(
+            tile, text=title, font=("", 11, "bold"), wraplength=116, justify="center"
+        ).pack(padx=4)
         
-        when = ""
-        if entry.last_downloaded_at:
-            try:
-                when = time.strftime("%Y-%m-%d", time.localtime(entry.last_downloaded_at))
-            except Exception:
-                when = ""
+        status_label = ctk.CTkLabel(tile, text="", font=("", 10), text_color="gray")
+        status_label.pack(padx=4, pady=(2, 6))
         
-        meta_parts = []
-        if entry.author:
-            meta_parts.append(entry.author)
-        if entry.chapter_count:
-            meta_parts.append(f"{entry.chapter_count} chapters")
-        if entry.last_chapter_title:
-            last = entry.last_chapter_title
-            if len(last) > 40:
-                last = last[:37] + "..."
-            meta_parts.append(f"last: {last}")
-        if when:
-            meta_parts.append(when)
-        meta = " · ".join(meta_parts)
+        def select(_e=None, u=entry.source_url):
+            self._selected_library_url = u
+            self._update_library_download_btn()
         
-        text_col = ctk.CTkFrame(row, fg_color="transparent")
-        text_col.grid(row=0, column=0, sticky="ew", padx=10, pady=8)
-        ctk.CTkLabel(text_col, text=title, font=("", 13, "bold"), anchor="w").pack(fill="x")
-        if meta:
-            ctk.CTkLabel(text_col, text=meta, font=("", 11), text_color="gray", anchor="w").pack(fill="x")
-        status_label = ctk.CTkLabel(
-            text_col, text="", font=("", 11), text_color="gray", anchor="w"
-        )
-        status_label.pack(fill="x")
+        def menu(event, e=entry):
+            self._selected_library_url = e.source_url
+            self._show_library_entry_menu(e, event.x_root, event.y_root)
         
-        btns = ctk.CTkFrame(row, fg_color="transparent")
-        btns.grid(row=0, column=1, padx=8, pady=8)
-        
-        update_btn = ctk.CTkButton(
-            btns, text="Update", width=80, height=28,
-            fg_color="#2B7A3E", hover_color="#236332",
-            command=lambda e=entry: self._on_library_update(e),
-        )
-        update_btn.pack(side="left", padx=3)
-        
-        local_missing = not (entry.output_path and Path(entry.output_path).is_file())
-        remote_id = entry.drive_file_id or self._remote_books.get(entry.epub_filename or '')
-        if not remote_id and entry.epub_filename:
-            remote_id = self._remote_books.get(entry.epub_filename)
-        if local_missing and remote_id and self.drive_enabled_var.get():
-            ctk.CTkButton(
-                btns, text="Download EPUB", width=110, height=28,
-                command=lambda e=entry, fid=remote_id: self._on_drive_download_epub(e, fid),
-            ).pack(side="left", padx=3)
-        
-        ctk.CTkButton(
-            btns, text="Open URL", width=80, height=28,
-            fg_color="gray40", hover_color="gray30",
-            command=lambda u=entry.source_url: self._library_open_url(u),
-        ).pack(side="left", padx=3)
-        ctk.CTkButton(
-            btns, text="Remove", width=70, height=28,
-            fg_color="gray40", hover_color="gray30",
-            command=lambda u=entry.source_url: self._on_library_remove(u),
-        ).pack(side="left", padx=3)
+        for w in (tile, cover_lbl, status_label):
+            w.bind("<Button-1>", select)
+            w.bind("<Double-Button-1>", lambda _e, ent=entry: self._on_library_update(ent))
+            w.bind("<Button-3>", menu)
         
         self._library_row_widgets.append({
-            'url': entry.source_url,
-            'status_label': status_label,
-            'update_btn': update_btn,
+            "kind": "tile",
+            "url": entry.source_url,
+            "frame": tile,
+            "status_label": status_label,
+            "cover_label": cover_lbl,
         })
         self._apply_library_row_status(entry.source_url)
+        self._load_library_cover_async(entry, cover_lbl)
+    
+    def _render_library_tree(self, entries: list):
+        tree = self.library_tree
+        tree.delete(*tree.get_children())
+        self._library_row_widgets.clear()
+        
+        if not entries:
+            return
+        
+        for entry in entries:
+            title = entry.translated_title or entry.title or entry.source_url
+            when = ""
+            if entry.last_downloaded_at:
+                try:
+                    when = time.strftime("%Y-%m-%d", time.localtime(entry.last_downloaded_at))
+                except Exception:
+                    when = ""
+            status, _ = self._library_status_text(entry.source_url)
+            iid = entry.source_url
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                text=title[:80],
+                values=(entry.chapter_count or "", status, when),
+            )
+            self._library_row_widgets.append({
+                "kind": "tree",
+                "url": entry.source_url,
+            })
+    
+    def _on_library_tree_select(self, _event=None):
+        sel = self.library_tree.selection()
+        self._selected_library_url = sel[0] if sel else None
+        self._update_library_download_btn()
+    
+    def _on_library_tree_activate(self, _event=None):
+        entry = self._selected_library_entry()
+        if entry:
+            self._on_library_update(entry)
+    
+    def _on_library_tree_menu(self, event):
+        row = self.library_tree.identify_row(event.y)
+        if row:
+            self.library_tree.selection_set(row)
+            self._selected_library_url = row
+            entry = self.library_store.get_library_entry(row)
+            if entry:
+                self._show_library_entry_menu(entry, event.x_root, event.y_root)
+    
+    def _selected_library_entry(self):
+        url = self._selected_library_url
+        if not url:
+            return None
+        return self.library_store.get_library_entry(url)
+    
+    def _show_library_entry_menu(self, entry, x: int, y: int):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Update", command=lambda e=entry: self._on_library_update(e))
+        menu.add_command(label="Open URL", command=lambda u=entry.source_url: self._library_open_url(u))
+        local_missing = not (entry.output_path and Path(entry.output_path).is_file())
+        remote_id = entry.drive_file_id or self._remote_books.get(entry.epub_filename or "")
+        if local_missing and remote_id and self.drive_enabled_var.get():
+            menu.add_command(
+                label="Download EPUB",
+                command=lambda e=entry, fid=remote_id: self._on_drive_download_epub(e, fid),
+            )
+        menu.add_separator()
+        menu.add_command(
+            label="Remove",
+            command=lambda u=entry.source_url: self._on_library_remove(u),
+        )
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+    
+    def _on_library_selected_update(self):
+        entry = self._selected_library_entry()
+        if entry:
+            self._on_library_update(entry)
+    
+    def _on_library_selected_open(self):
+        entry = self._selected_library_entry()
+        if entry:
+            self._library_open_url(entry.source_url)
+    
+    def _on_library_selected_remove(self):
+        entry = self._selected_library_entry()
+        if entry:
+            self._on_library_remove(entry.source_url)
+    
+    def _on_library_selected_download_epub(self):
+        entry = self._selected_library_entry()
+        if not entry:
+            return
+        remote_id = entry.drive_file_id or self._remote_books.get(entry.epub_filename or "")
+        if remote_id:
+            self._on_drive_download_epub(entry, remote_id)
+    
+    def _update_library_download_btn(self):
+        btn = getattr(self, "library_download_epub_btn", None)
+        if btn is None:
+            return
+        entry = self._selected_library_entry()
+        show = False
+        if entry and self.drive_enabled_var.get():
+            local_missing = not (entry.output_path and Path(entry.output_path).is_file())
+            remote_id = entry.drive_file_id or self._remote_books.get(entry.epub_filename or "")
+            show = bool(local_missing and remote_id)
+        try:
+            if show:
+                btn.configure(state="normal")
+            else:
+                btn.configure(state="disabled")
+        except Exception:
+            pass
+    
+    def _load_library_cover_async(self, entry, cover_label):
+        url = (entry.cover_url or "").strip()
+        source = entry.source_url
+        
+        def worker():
+            data = self.cache.get_cover(cover_url=url, source_url=source)
+            if not data and url:
+                try:
+                    from core.security import validate_fetch_url
+                    validate_fetch_url(url, allow_http=True)
+                    resp = http_session.get(url, timeout=15)
+                    resp.raise_for_status()
+                    data = resp.content
+                    if data:
+                        ctype = ""
+                        try:
+                            ctype = resp.headers.get("content-type", "") or ""
+                        except Exception:
+                            pass
+                        self.cache.put_cover(
+                            data, cover_url=url, source_url=source, content_type=ctype
+                        )
+                except Exception as e:
+                    print(f"Library cover fetch failed: {e}")
+                    data = None
+            if not data:
+                return
+            try:
+                image = Image.open(BytesIO(data))
+                image.thumbnail((110, 150), Image.Resampling.LANCZOS)
+                ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=image.size)
+                self.after(0, lambda: self._set_library_cover(cover_label, ctk_image, source))
+            except Exception as e:
+                print(f"Library cover decode failed: {e}")
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _set_library_cover(self, cover_label, ctk_image, source_url: str):
+        # Ignore if tile was destroyed / rebuilt
+        still = any(
+            w.get("url") == source_url and w.get("cover_label") is cover_label
+            for w in self._library_row_widgets
+        )
+        if not still:
+            return
+        self._library_cover_images.append(ctk_image)
+        try:
+            cover_label.configure(image=ctk_image, text="")
+        except Exception:
+            pass
     
     def _library_novels_with_updates(self) -> list:
         urls = []
@@ -2047,34 +2425,25 @@ class HuaEPUBApp(ctk.CTk):
             self.library_update_all_btn.configure(state="disabled", text="Update All")
     
     def _apply_library_row_status(self, source_url: str):
-        info = self._library_check_status.get(source_url) or {}
-        state = info.get('state', '')
-        text = ""
-        color = "gray"
-        if state == 'checking':
-            text = "Checking…"
-            color = "orange"
-        elif state == 'update':
-            n = int(info.get('new_count') or 0)
-            total = int(info.get('total') or 0)
-            text = f"{n} new chapter(s)" + (f" · {total} on site" if total else "")
-            color = "#2B7A3E"
-        elif state == 'current':
-            total = int(info.get('total') or 0)
-            text = "Up to date" + (f" · {total} on site" if total else "")
-            color = "gray"
-        elif state == 'error':
-            err = (info.get('error') or 'error')[:60]
-            text = f"Check failed: {err}"
-            color = "red"
-        
+        text, color = self._library_status_text(source_url)
         for row in self._library_row_widgets:
-            if row['url'] == source_url:
+            if row.get("url") != source_url:
+                continue
+            if row.get("kind") == "tile":
                 try:
-                    row['status_label'].configure(text=text, text_color=color)
+                    row["status_label"].configure(text=text, text_color=color)
                 except Exception:
                     pass
-                break
+            elif row.get("kind") == "tree":
+                try:
+                    if self.library_tree.exists(source_url):
+                        vals = list(self.library_tree.item(source_url, "values"))
+                        if len(vals) >= 2:
+                            vals[1] = text
+                            self.library_tree.item(source_url, values=vals)
+                except Exception:
+                    pass
+            break
     
     def _schedule_library_check(self, reason: str = "", force: bool = False):
         """Background-check all library novels for new chapters (TOC only)."""
@@ -2132,6 +2501,11 @@ class HuaEPUBApp(ctk.CTk):
                     chapters = parser.get_chapter_list(entry.source_url)
                     if not chapters:
                         raise Exception("No chapters found")
+                    # Local-only TOC snapshot for faster future checks / offline hints
+                    try:
+                        self.cache.put_chapter_list(entry.source_url, chapters)
+                    except Exception:
+                        pass
                     new_only, _ = new_chapters_since(
                         chapters, entry.last_chapter_url, entry.chapter_count
                     )
@@ -2181,6 +2555,9 @@ class HuaEPUBApp(ctk.CTk):
             summary = f"All {total} novel(s) up to date"
             self.library_check_status_label.configure(text=summary, text_color="gray")
             self._update_status(summary)
+        # Refresh filtered shelf (e.g. Updates-only) and tree status cells
+        if self.library_mode:
+            self._refresh_library_ui()
     
     def _on_library_update_all(self):
         """Update every novel that the last check marked as having new chapters."""
@@ -2302,7 +2679,7 @@ class HuaEPUBApp(ctk.CTk):
                     
                     if translator:
                         builder = TranslatedEPUBBuilder(
-                            cleaner=cleaner, translator=translator
+                            cleaner=cleaner, translator=translator, image_cache=self.cache
                         )
                         
                         def progress_cb(current, total_steps, status, _i=idx, _t=total):
@@ -2316,7 +2693,7 @@ class HuaEPUBApp(ctk.CTk):
                             info, chapters, output_path, progress_cb
                         )
                     else:
-                        builder = EPUBBuilder(cleaner=cleaner)
+                        builder = EPUBBuilder(cleaner=cleaner, image_cache=self.cache)
                         
                         def progress_cb(current, total_steps, status, _i=idx, _t=total):
                             overall = (_i + 0.5 + (current / total_steps) * 0.5) / _t
@@ -2568,7 +2945,7 @@ class HuaEPUBApp(ctk.CTk):
             translator = self._make_translator(self._get_workers()) if self.translate_var.get() else None
             
             if translator:
-                builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator)
+                builder = TranslatedEPUBBuilder(cleaner=cleaner, translator=translator, image_cache=self.cache)
                 
                 def progress_cb(current, total_steps, status):
                     if self.cancel_requested:
@@ -2579,7 +2956,7 @@ class HuaEPUBApp(ctk.CTk):
                 
                 builder.build_with_translation(info, chapters, output_path, progress_cb)
             else:
-                builder = EPUBBuilder(cleaner=cleaner)
+                builder = EPUBBuilder(cleaner=cleaner, image_cache=self.cache)
                 
                 def progress_cb(current, total_steps, status):
                     progress = 0.5 + (current / total_steps) * 0.5
@@ -3157,16 +3534,27 @@ class HuaEPUBApp(ctk.CTk):
                 self._on_mode_change("Multi")
     
     def _load_cover(self, url: str, generation: int):
-        """Load cover image from URL in background."""
+        """Load cover image from URL in background (local cache first)."""
         try:
             from core.security import UnsafeURLError, validate_fetch_url
             validate_fetch_url(url, allow_http=True)
-            print(f"Loading cover from: {url}")
-            response = http_session.get(url, timeout=15)
-            response.raise_for_status()
+            
+            data = self.cache.get_cover(cover_url=url)
+            if not data:
+                print(f"Loading cover from: {url}")
+                response = http_session.get(url, timeout=15)
+                response.raise_for_status()
+                data = response.content
+                if data:
+                    ctype = ""
+                    try:
+                        ctype = response.headers.get("content-type", "") or ""
+                    except Exception:
+                        pass
+                    self.cache.put_cover(data, cover_url=url, content_type=ctype)
             
             # Load image with PIL
-            image = Image.open(BytesIO(response.content))
+            image = Image.open(BytesIO(data))
             
             # Resize to fit (100x140 max, keep aspect ratio)
             image.thumbnail((100, 140), Image.Resampling.LANCZOS)

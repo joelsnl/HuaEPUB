@@ -58,6 +58,37 @@ class TestTranslationCache:
         assert cache.get_translation('你好', 'google') == 'Hello'
 
 
+class TestCoverCache:
+    def test_roundtrip(self, cache):
+        cache.put_cover(b"\xff\xd8fake", cover_url="https://x/cover.jpg", content_type="image/jpeg")
+        assert cache.get_cover(cover_url="https://x/cover.jpg") == b"\xff\xd8fake"
+
+    def test_source_url_fallback_key(self, cache):
+        cache.put_cover(b"img", source_url="https://book/1")
+        assert cache.get_cover(source_url="https://book/1") == b"img"
+        assert cache.get_cover(cover_url="https://other") is None
+
+    def test_empty_not_stored(self, cache):
+        cache.put_cover(b"", cover_url="https://x/c.jpg")
+        assert cache.get_cover(cover_url="https://x/c.jpg") is None
+
+
+class TestChapterListCache:
+    def test_roundtrip_dicts(self, cache):
+        cache.put_chapter_list("https://book/1", [
+            {"url": "https://book/1/c1", "title": "Ch1"},
+            {"url": "https://book/1/c2", "title": "Ch2"},
+        ])
+        got = cache.get_chapter_list("https://book/1")
+        assert got == [
+            {"url": "https://book/1/c1", "title": "Ch1"},
+            {"url": "https://book/1/c2", "title": "Ch2"},
+        ]
+
+    def test_miss(self, cache):
+        assert cache.get_chapter_list("https://nope") is None
+
+
 class TestBrokenCache:
     def test_unwritable_path_degrades_gracefully(self, tmp_path):
         # A directory as the db path makes sqlite fail to open
@@ -65,4 +96,6 @@ class TestBrokenCache:
         assert bad.get_chapter('https://x') is None
         bad.put_chapter('b', 'https://x', 't', 'c')  # must not raise
         assert bad.get_translation('你好', 'google') is None
+        assert bad.get_cover(cover_url='https://x/c') is None
+        bad.put_cover(b'x', cover_url='https://x/c')
         bad.close()

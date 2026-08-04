@@ -2,29 +2,28 @@
 """
 SQLite-backed persistent caches.
 
-Two caches in one database file (cache.db in ~/.huaepub/):
+Local-only database (cache.db in ~/.huaepub/) — never synced to Drive:
 
 - chapters: successfully downloaded chapter HTML, keyed by chapter URL.
-  Lets a cancelled/failed run resume without re-downloading, and makes
-  re-downloading a novel (e.g. to pick up new chapters) nearly instant.
 - translations: translated text segments, keyed by (backend, source text).
-  Re-translating a novel or sharing recurring phrases between novels
-  costs zero API requests.
+- covers: cover image bytes, keyed by cover URL (or book source_url fallback).
+- chapter_lists: TOC snapshots for faster library update checks.
 
 All methods are thread-safe (single connection guarded by a lock) and
 never raise - a broken cache degrades to "no cache", not a crash.
 """
 
 import hashlib
+import json
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 
 class NovelCache:
-    """Persistent cache for chapters and translations."""
+    """Persistent local cache for chapters, translations, covers, and TOCs."""
 
     def __init__(self, db_path):
         self._lock = threading.Lock()
@@ -48,6 +47,22 @@ class NovelCache:
                     source     TEXT,
                     translated TEXT,
                     created_at REAL
+                )
+            """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS covers (
+                    key          TEXT PRIMARY KEY,
+                    url          TEXT,
+                    data         BLOB,
+                    content_type TEXT,
+                    fetched_at   REAL
+                )
+            """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS chapter_lists (
+                    source_url TEXT PRIMARY KEY,
+                    payload    TEXT,
+                    fetched_at REAL
                 )
             """)
             self._conn.execute(
@@ -161,6 +176,121 @@ class NovelCache:
             key = self._translation_key(source, backend)
             with self._lock:
                 self._conn.execute("DELETE FROM translations WHERE key = ?", (key,))
+                self._conn.commit()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Covers (local only — never Drive-synced)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def cover_key(cover_url: str = "", source_url: str = "") -> str:
+        """Stable key: prefer cover URL, else book source URL."""
+        raw = (cover_url or source_url or "").strip()
+        if not raw:
+            return ""
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def get_cover(self, cover_url: str = "", source_url: str = "") -> Optional[bytes]:
+        """Return cached cover image bytes, or None."""
+        key = self.cover_key(cover_url, source_url)
+        if not self._conn or not key:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT data FROM covers WHERE key = ?", (key,)
+                ).fetchone()
+            data = row[0] if row else None
+            return bytes(data) if data else None
+        except Exception:
+            return None
+
+    def put_cover(
+        self,
+        data: bytes,
+        cover_url: str = "",
+        source_url: str = "",
+        content_type: str = "",
+    ):
+        """Store cover image bytes locally."""
+        key = self.cover_key(cover_url, source_url)
+        if not self._conn or not key or not data:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO covers (key, url, data, content_type, fetched_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        key,
+                        (cover_url or source_url or "").strip(),
+                        bytes(data),
+                        content_type or "",
+                        time.time(),
+                    ),
+                )
+                self._conn.commit()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Chapter lists / TOC snapshots (local only)
+    # ------------------------------------------------------------------
+
+    def get_chapter_list(self, source_url: str) -> Optional[List[Dict[str, str]]]:
+        """Return cached TOC as list of {url, title}, or None."""
+        if not self._conn or not source_url:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT payload FROM chapter_lists WHERE source_url = ?",
+                    (source_url.strip(),),
+                ).fetchone()
+            if not row or not row[0]:
+                return None
+            data = json.loads(row[0])
+            if not isinstance(data, list):
+                return None
+            out: List[Dict[str, str]] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                url = (item.get("url") or "").strip()
+                if not url:
+                    continue
+                out.append({"url": url, "title": (item.get("title") or "")})
+            return out or None
+        except Exception:
+            return None
+
+    def put_chapter_list(self, source_url: str, chapters: List[Any]):
+        """
+        Store a TOC snapshot. Accepts Chapter-like objects or {url, title} dicts.
+        """
+        if not self._conn or not source_url or not chapters:
+            return
+        try:
+            payload = []
+            for ch in chapters:
+                if isinstance(ch, dict):
+                    url = (ch.get("url") or "").strip()
+                    title = ch.get("title") or ""
+                else:
+                    url = (getattr(ch, "url", None) or "").strip()
+                    title = getattr(ch, "title", "") or ""
+                if url:
+                    payload.append({"url": url, "title": title})
+            if not payload:
+                return
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO chapter_lists (source_url, payload, fetched_at) "
+                    "VALUES (?, ?, ?)",
+                    (source_url.strip(), json.dumps(payload, ensure_ascii=False), time.time()),
+                )
                 self._conn.commit()
         except Exception:
             pass

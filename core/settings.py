@@ -63,6 +63,12 @@ DEFAULTS: Dict[str, Any] = {
     'drive_library_hash': '',
     'drive_last_synced_at': 0.0,
     'drive_last_sync_summary': '',
+    # Library shelf: 'grid' | 'list'
+    'library_view': 'grid',
+    # Library filter: 'all' | 'updates'
+    'library_filter': 'all',
+    # Drive options panel expanded under Library
+    'drive_panel_expanded': False,
 }
 
 _lock = threading.Lock()

@@ -18,9 +18,9 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/epub_builder.py` - `EPUBBuilder` and `TranslatedEPUBBuilder` (ebooklib); translations are applied at the text-node level, never with raw string replacement
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release)
 - `core/settings.py` - persistent settings JSON; `get_data_dir()`, `get_default_books_dir()`
-- `core/cache.py` - SQLite caches: downloaded chapters (resume support) and translations
+- `core/cache.py` - SQLite caches: chapters, translations, **covers**, **chapter-list snapshots** (all local-only; never Drive-synced)
 - `core/library.py` - history + tracked library (`library.json`), chapter-diff helpers for updates
-- `core/drive_sync.py` - optional Google Drive sync (`drive.file` scope only; visible folder, not appDataFolder)
+- `core/drive_sync.py` - optional Google Drive sync (`drive.file` scope only; visible folder; **library.json + EPUBs only**)
 - `core/notify.py` - OS done/update notifications
 - `core/logger.py` - tee stdout/stderr to `logs/huaepub.log` (1 MB startup rotate, keep `.log.1`)
 - `core/utils.py` - shared helpers (`safe_filename`, URL extraction, ETA formatting)
