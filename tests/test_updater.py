@@ -157,14 +157,17 @@ class TestSwapRunningExeWindows:
         assert not new_exe.exists()
 
 
-class TestPlatformAssetPreference:
-    def test_prefers_huaepub_zip(self, monkeypatch):
+class TestPostSwapRelaunchHelper:
+    def test_writes_hidden_wait_script(self, tmp_path, monkeypatch):
         monkeypatch.setattr(updater.sys, "platform", "win32")
-        release = {
-            "assets": [
-                {"name": "NovelDownloader-windows.zip", "browser_download_url": "https://old"},
-                {"name": "HuaEPUB-windows.zip", "browser_download_url": "https://new"},
-            ]
-        }
-        asset = updater._find_platform_asset(release)
-        assert asset["name"] == "HuaEPUB-windows.zip"
+        exe = tmp_path / "HuaEPUB.exe"
+        backup = tmp_path / "_update_backup.exe"
+        exe.write_bytes(b"new")
+        backup.write_bytes(b"old")
+        script = updater._create_post_swap_relaunch_helper(exe, backup, tmp_path, pid=4242)
+        text = script.read_text(encoding="utf-8")
+        assert script.name == "_update_relaunch.ps1"
+        assert "Start-Sleep" in text
+        assert "timeout /t" not in text.lower()
+        assert "Start-Process" in text
+        assert '"pid": 4242' in (tmp_path / "_update_relaunch.json").read_text(encoding="utf-8")

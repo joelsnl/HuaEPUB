@@ -10,6 +10,7 @@ release; zip members are path-checked; install paths are not shell-interpolated.
 
 import os
 import sys
+import json
 import shutil
 import hashlib
 import tempfile
@@ -30,7 +31,7 @@ from core.branding import (
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 
 # GitHub repository info (repo path kept for update continuity)
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -313,28 +314,15 @@ except Exception:
 def _launch_replacement_script(script_path: Path):
     """Run the replacement helper in the background."""
     if sys.platform == 'win32':
-        # Break away from the GUI job so the helper is not killed on exit.
-        creationflags = (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-            | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
-        )
-        # Launch via cmd start so the process is not a direct child of the GUI.
-        subprocess.Popen(
+        _win_hidden_popen(
             [
-                'cmd', '/c', 'start', '', '/b',
                 'powershell',
                 '-NoProfile',
                 '-ExecutionPolicy', 'Bypass',
+                '-WindowStyle', 'Hidden',
                 '-File', str(script_path),
             ],
-            creationflags=creationflags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
             cwd=str(script_path.parent),
-            close_fds=True,
         )
     else:
         python = sys.executable or 'python3'
@@ -574,6 +562,8 @@ def _cleanup_update_sidecars(app_dir: Path):
         "_update_helper.py",
         "_update_helper.json",
         "_update_helper.log",
+        "_update_relaunch.ps1",
+        "_update_relaunch.json",
     ):
         try:
             (app_dir / name).unlink(missing_ok=True)
@@ -617,13 +607,77 @@ def _swap_running_exe_windows(new_exe: Path, old_exe: Path) -> Path:
     raise OSError(f"Could not replace running executable: {last_err}")
 
 
+def _win_hidden_popen(args: list, *, cwd: Optional[str] = None):
+    """Start a process with no console window, broken away from the GUI job."""
+    creationflags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    )
+    return subprocess.Popen(
+        args,
+        creationflags=creationflags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        cwd=cwd,
+        close_fds=True,
+    )
+
+
+def _create_post_swap_relaunch_helper(
+    exe_path: Path, backup_path: Path, app_dir: Path, pid: int
+) -> Path:
+    """
+    After an in-process Windows exe swap: wait for this PID to exit, then
+    silently delete the backup and start the new exe (no console window).
+    """
+    config_path = app_dir / '_update_relaunch.json'
+    config_path.write_text(
+        json.dumps({
+            "pid": int(pid),
+            "exe": str(Path(exe_path)),
+            "backup": str(Path(backup_path)),
+        }),
+        encoding="utf-8",
+    )
+    script_path = app_dir / '_update_relaunch.ps1'
+    script_content = r'''$ErrorActionPreference = "SilentlyContinue"
+$cfgPath = Join-Path $PSScriptRoot "_update_relaunch.json"
+$cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
+$pidWait = [int]$cfg.pid
+$exe = [string]$cfg.exe
+$backup = [string]$cfg.backup
+# Wait until the old GUI process is fully gone (avoids PyInstaller DLL race).
+Start-Sleep -Seconds 1
+while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 500
+}
+# Extra settle for AV / handle release — silent (no console countdown UI).
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $backup) {
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path -LiteralPath $exe) {
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+}
+Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+'''
+    script_path.write_text(script_content, encoding='utf-8')
+    return script_path
+
+
 def _finalize_frozen_update_windows(
     new_exe: Path,
     old_exe: Path,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> Tuple[bool, str]:
-    """Swap on-disk exe while still running; GUI will relaunch after the dialog."""
-    global _pending_relaunch_exe
+    """
+    Swap on-disk exe while still running, then schedule a hidden post-exit
+    helper to delete the backup and relaunch — never relaunch from this process.
+    """
     clear_pending_relaunch()
     try:
         backup = _swap_running_exe_windows(new_exe, old_exe)
@@ -642,32 +696,38 @@ def _finalize_frozen_update_windows(
 
     _cleanup_update_sidecars(old_exe.parent)
 
-    # Delete backup after a short delay in a fully detached cmd (best-effort).
+    # Hidden PowerShell: wait for us to exit → delete backup → start new exe.
+    # Do NOT Start-Process from the still-running GUI (causes pythonXX.dll errors
+    # with PyInstaller one-file, and cmd's `timeout` flashes a console).
     try:
-        creationflags = (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-            | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+        script = _create_post_swap_relaunch_helper(
+            old_exe, backup, old_exe.parent, os.getpid()
         )
-        subprocess.Popen(
-            ["cmd", "/c", f'timeout /t 5 /nobreak >nul & del /f /q "{backup}"'],
-            creationflags=creationflags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
+        _win_hidden_popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Hidden",
+                "-File", str(script),
+            ],
+            cwd=str(old_exe.parent),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Failed to schedule relaunch helper: {e}")
+        # Still leave the swapped exe in place; user can open it manually.
+        try:
+            if backup.exists():
+                backup.unlink()
+        except OSError:
+            pass
 
-    _pending_relaunch_exe = old_exe
     if progress_callback:
         progress_callback(100, 100, "Update ready!")
 
     return (True,
         "Update installed!\n\n"
-        "The application will restart on the new version."
+        "The application will close and reopen on the new version."
     )
 
 

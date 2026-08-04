@@ -3690,36 +3690,15 @@ class HuaEPUBApp(ctk.CTk):
     
     def _handle_update_complete(self, message: str):
         """Handle successful update completion."""
-        from core.updater import is_frozen, get_pending_relaunch, clear_pending_relaunch
-        import subprocess
+        from core.updater import is_frozen
 
         messagebox.showinfo("Update Complete", message)
 
-        pending = get_pending_relaunch()
-        clear_pending_relaunch()
-        if pending and pending.exists():
-            try:
-                flags = 0
-                if sys.platform == "win32":
-                    flags = (
-                        getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-                        | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
-                    )
-                subprocess.Popen(
-                    [str(pending)],
-                    cwd=str(pending.parent),
-                    close_fds=True,
-                    creationflags=flags,
-                )
-            except Exception as e:
-                print(f"Failed to relaunch updated app: {e}")
-            self.after(300, self._on_close)
-            return
-
-        # POSIX / fallback helper replaces after exit
+        # Frozen Windows updates swap the exe in-place and schedule a hidden
+        # helper to relaunch after this process exits (avoids console flash and
+        # PyInstaller pythonXX.dll load races from starting too early).
         if is_frozen():
-            self.after(500, self._on_close)
+            self.after(400, self._on_close)
 
 
 def main():
