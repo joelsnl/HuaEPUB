@@ -22,7 +22,7 @@ from typing import Optional, Tuple, Callable
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.2.1"
+__version__ = "2.2.2"
 
 # GitHub repository info
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -121,63 +121,158 @@ def _create_replacement_helper(new_exe: Path, old_exe: Path, app_dir: Path, pid:
     """
     Write a small helper + JSON config (no shell-interpolated paths), then return
     the helper path to launch. Waits on the specific PID of the running app.
+
+    Windows: rename-swap with retries. A hard Remove-Item right after exit often
+    fails (AV / handle release) and previously aborted the whole script because
+    of $ErrorActionPreference=Stop — leaving the old exe in place.
     """
     config_path = app_dir / '_update_helper.json'
     write_update_helper_config(config_path, new_exe=new_exe, old_exe=old_exe, pid=pid)
 
     if sys.platform == 'win32':
         script_path = app_dir / '_update_helper.ps1'
-        script_content = r'''$ErrorActionPreference = "Stop"
-$cfgPath = Join-Path $PSScriptRoot "_update_helper.json"
-$cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
-$pidWait = [int]$cfg.pid
-$newExe = [string]$cfg.new_exe
-$oldExe = [string]$cfg.old_exe
-Start-Sleep -Seconds 2
-while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
-    Start-Sleep -Seconds 1
+        # NOTE: do not use $pid — it is a PowerShell automatic variable.
+        script_content = r'''$ErrorActionPreference = "Continue"
+$logPath = Join-Path $PSScriptRoot "_update_helper.log"
+function Write-UpdateLog([string]$msg) {
+    $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
+    Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 }
-if (Test-Path -LiteralPath $oldExe) {
-    Remove-Item -LiteralPath $oldExe -Force
+try {
+    $cfgPath = Join-Path $PSScriptRoot "_update_helper.json"
+    $cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
+    $pidWait = [int]$cfg.pid
+    $newExe = [string]$cfg.new_exe
+    $oldExe = [string]$cfg.old_exe
+    $backupExe = Join-Path $PSScriptRoot "_update_backup.exe"
+    Write-UpdateLog "Waiting for PID $pidWait to exit"
+    Start-Sleep -Seconds 2
+    while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
+        Start-Sleep -Seconds 1
+    }
+    # Extra settle time: Windows / Defender often still holds the exe briefly.
+    Start-Sleep -Seconds 2
+    Write-UpdateLog "Replacing '$oldExe' with '$newExe'"
+    if (-not (Test-Path -LiteralPath $newExe)) {
+        throw "New executable missing: $newExe"
+    }
+    $replaced = $false
+    for ($i = 1; $i -le 90; $i++) {
+        try {
+            if (Test-Path -LiteralPath $backupExe) {
+                Remove-Item -LiteralPath $backupExe -Force -ErrorAction Stop
+            }
+            if (Test-Path -LiteralPath $oldExe) {
+                # Rename works more reliably than delete on a just-exited exe.
+                Move-Item -LiteralPath $oldExe -Destination $backupExe -Force -ErrorAction Stop
+            }
+            Move-Item -LiteralPath $newExe -Destination $oldExe -Force -ErrorAction Stop
+            $replaced = $true
+            Write-UpdateLog "Replace succeeded on attempt $i"
+            break
+        } catch {
+            Write-UpdateLog "Attempt $i failed: $($_.Exception.Message)"
+            # Roll back rename if we moved old aside but could not place new.
+            if (-not (Test-Path -LiteralPath $oldExe) -and (Test-Path -LiteralPath $backupExe)) {
+                Move-Item -LiteralPath $backupExe -Destination $oldExe -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
+    if (-not $replaced) {
+        throw "Failed to replace executable after retries"
+    }
+    Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
+    Write-UpdateLog "Launching updated app"
+    Start-Process -FilePath $oldExe
+    Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-UpdateLog "FATAL: $($_.Exception.Message)"
 }
-Move-Item -LiteralPath $newExe -Destination $oldExe -Force
-Remove-Item -LiteralPath (Join-Path $PSScriptRoot "_update_backup.exe") -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 '''
         script_path.write_text(script_content, encoding='utf-8')
         return script_path
 
     script_path = app_dir / '_update_helper.py'
     script_content = '''#!/usr/bin/env python3
-import json, os, time
+import json, os, time, sys, traceback
 from pathlib import Path
 cfg_path = Path(__file__).with_name("_update_helper.json")
-cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-pid = int(cfg["pid"])
-new_exe = Path(cfg["new_exe"])
-old_exe = Path(cfg["old_exe"])
-time.sleep(2)
-while True:
+log_path = Path(__file__).with_name("_update_helper.log")
+
+def log(msg):
     try:
-        os.kill(pid, 0)
-        time.sleep(1)
-    except OSError:
-        break
-if old_exe.exists():
-    old_exe.unlink()
-new_exe.replace(old_exe)
-os.chmod(old_exe, os.stat(old_exe).st_mode | 0o111)
-for name in ("_update_backup", "_update_helper.json"):
-    p = Path(__file__).with_name(name)
-    try:
-        p.unlink()
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\\n")
     except OSError:
         pass
+
 try:
-    Path(__file__).unlink()
-except OSError:
-    pass
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    pid = int(cfg["pid"])
+    new_exe = Path(cfg["new_exe"])
+    old_exe = Path(cfg["old_exe"])
+    backup = Path(__file__).with_name("_update_backup")
+    log(f"Waiting for PID {pid} to exit")
+    time.sleep(2)
+    while True:
+        try:
+            os.kill(pid, 0)
+            time.sleep(1)
+        except OSError:
+            break
+    time.sleep(2)
+    if not new_exe.exists():
+        raise FileNotFoundError(f"New executable missing: {new_exe}")
+    replaced = False
+    last_err = None
+    for i in range(1, 91):
+        try:
+            if backup.exists():
+                backup.unlink()
+            if old_exe.exists():
+                old_exe.replace(backup)
+            new_exe.replace(old_exe)
+            replaced = True
+            log(f"Replace succeeded on attempt {i}")
+            break
+        except OSError as e:
+            last_err = e
+            log(f"Attempt {i} failed: {e}")
+            if not old_exe.exists() and backup.exists():
+                try:
+                    backup.replace(old_exe)
+                except OSError:
+                    pass
+            time.sleep(1)
+    if not replaced:
+        raise RuntimeError(f"Failed to replace executable after retries: {last_err}")
+    os.chmod(old_exe, os.stat(old_exe).st_mode | 0o111)
+    try:
+        backup.unlink()
+    except OSError:
+        pass
+    try:
+        cfg_path.unlink()
+    except OSError:
+        pass
+    log("Launching updated app")
+    try:
+        os.spawnv(os.P_NOWAIT, str(old_exe), [str(old_exe)])
+    except Exception as e:
+        log(f"Relaunch failed: {e}")
+    try:
+        Path(__file__).unlink()
+    except OSError:
+        pass
+    try:
+        log_path.unlink()
+    except OSError:
+        pass
+except Exception:
+    log("FATAL:\\n" + traceback.format_exc())
 '''
     script_path.write_text(script_content, encoding='utf-8')
     os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
@@ -187,6 +282,10 @@ except OSError:
 def _launch_replacement_script(script_path: Path):
     """Run the replacement helper in the background."""
     if sys.platform == 'win32':
+        # DETACHED_PROCESS keeps the helper alive after the GUI exits.
+        creationflags = subprocess.CREATE_NO_WINDOW | getattr(
+            subprocess, "DETACHED_PROCESS", 0x00000008
+        )
         subprocess.Popen(
             [
                 'powershell',
@@ -194,10 +293,12 @@ def _launch_replacement_script(script_path: Path):
                 '-ExecutionPolicy', 'Bypass',
                 '-File', str(script_path),
             ],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=creationflags,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             cwd=str(script_path.parent),
+            close_fds=True,
         )
     else:
         python = sys.executable or 'python3'
@@ -407,8 +508,8 @@ def _update_frozen_from_asset(
 
     return (True,
         "Update downloaded and verified!\n\n"
-        "The application will now close to apply the update.\n"
-        "Please restart it manually after it closes."
+        "The application will now close to apply the update,\n"
+        "then reopen automatically."
     )
 
 

@@ -3,6 +3,7 @@
 import hashlib
 import sys
 import types
+from pathlib import Path
 
 from core import updater
 
@@ -105,3 +106,38 @@ class TestRequireChecksum:
         ok, msg = updater._require_checksum(Sess(), release, "NovelDownloader-windows.zip", payload)
         assert ok is True
         assert msg == digest
+
+
+class TestReplacementHelper:
+    def test_windows_helper_retries_and_avoids_stop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        new_exe = tmp_path / "_new_NovelDownloader.exe"
+        old_exe = tmp_path / "NovelDownloader.exe"
+        new_exe.write_bytes(b"new")
+        old_exe.write_bytes(b"old")
+
+        script = updater._create_replacement_helper(new_exe, old_exe, tmp_path, pid=12345)
+        text = script.read_text(encoding="utf-8")
+        assert script.name == "_update_helper.ps1"
+        assert "$ErrorActionPreference = \"Continue\"" in text
+        assert "for ($i = 1; $i -le 90; $i++)" in text
+        assert "Start-Process -FilePath $oldExe" in text
+        assert "$pidWait" in text
+        # Must not wait on PowerShell's automatic $PID by mistake
+        assert "Get-Process -Id $pidWait" in text
+        cfg = (tmp_path / "_update_helper.json").read_text(encoding="utf-8")
+        assert '"pid": 12345' in cfg
+
+    def test_posix_helper_retries(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "linux")
+        new_exe = tmp_path / "_new_NovelDownloader"
+        old_exe = tmp_path / "NovelDownloader"
+        new_exe.write_bytes(b"new")
+        old_exe.write_bytes(b"old")
+
+        script = updater._create_replacement_helper(new_exe, old_exe, tmp_path, pid=99)
+        text = script.read_text(encoding="utf-8")
+        assert script.name == "_update_helper.py"
+        assert "for i in range(1, 91)" in text
+        assert "os.spawnv" in text
+        assert Path(script).exists()
