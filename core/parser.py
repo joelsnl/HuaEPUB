@@ -34,6 +34,11 @@ def create_http_session():
     is available, falling back to a plain requests session.
     Shared by parsers, the app (cover preview), and the EPUB builder.
     """
+    try:
+        from core.utils import sanitize_runtime_env
+        sanitize_runtime_env()
+    except Exception:
+        pass
     if HTTP_CLIENT == "curl_cffi":
         return CurlSession(impersonate="chrome120")
     import requests

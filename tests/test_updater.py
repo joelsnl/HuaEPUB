@@ -170,4 +170,5 @@ class TestPostSwapRelaunchHelper:
         assert "Start-Sleep" in text
         assert "timeout /t" not in text.lower()
         assert "Start-Process" in text
+        assert "SSL_CERT_FILE" in text
         assert '"pid": 4242' in (tmp_path / "_update_relaunch.json").read_text(encoding="utf-8")

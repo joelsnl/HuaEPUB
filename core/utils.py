@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from typing import List
 from urllib.parse import urlparse
 
@@ -11,6 +13,51 @@ URL_RE = re.compile(r'https?://[^\s<>\'"\]]+', re.IGNORECASE)
 
 # Windows-forbidden filename characters
 _UNSAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# Env vars PyInstaller / SSL stacks may leave pointing at a dead _MEI* folder
+_STALE_ENV_KEYS = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "_MEIPASS2",
+)
+
+
+def sanitize_runtime_env() -> list:
+    """
+    Drop inherited env that breaks TLS after a post-update relaunch.
+
+    The update helper is spawned by the old frozen process, so it (and any
+    child it Start-Processes) can inherit SSL_CERT_FILE / CURL_CA_BUNDLE
+    pointing at the old `_MEI*` extract dir. Once that dir is deleted,
+    curl_cffi fails with error 77 and library/Drive networking dies until a
+    clean manual restart.
+    """
+    cleared = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    meipass_norm = os.path.normcase(os.path.abspath(meipass)) if meipass else ""
+
+    for key in _STALE_ENV_KEYS:
+        val = os.environ.get(key)
+        if not val:
+            continue
+        drop = False
+        if key in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+            if not os.path.isfile(val):
+                drop = True
+            elif "_MEI" in val.replace("\\", "/"):
+                # Cert path from another PyInstaller extract — not ours
+                if not meipass_norm or meipass_norm not in os.path.normcase(os.path.abspath(val)):
+                    drop = True
+        elif getattr(sys, "frozen", False):
+            # Frozen apps should not keep parent PYTHON* / _MEIPASS2 leftovers
+            drop = True
+        if drop:
+            os.environ.pop(key, None)
+            cleared.append(key)
+    return cleared
 
 
 def format_eta(seconds: float) -> str:

@@ -9,6 +9,15 @@ Based on WebToEpub extension and fixTranslate.py
 
 import os
 import sys
+
+# Add parent directory to path for imports (before sanitizing / other core imports)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Must run before any HTTP/TLS imports: post-update relaunch can inherit a
+# dead PyInstaller _MEI* SSL_CERT_FILE from the previous process.
+from core.utils import sanitize_runtime_env
+sanitize_runtime_env()
+
 import time
 import threading
 import re
@@ -20,9 +29,6 @@ from io import BytesIO
 
 import customtkinter as ctk
 from PIL import Image
-
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.parser import (
     Chapter, NovelInfo, get_parser_for_url, cleanup_browser, create_http_session

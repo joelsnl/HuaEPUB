@@ -1,6 +1,10 @@
 """Tests for core.utils helpers."""
 
-from core.utils import format_eta, safe_filename, extract_urls, looks_like_url
+import os
+
+from core.utils import (
+    format_eta, safe_filename, extract_urls, looks_like_url, sanitize_runtime_env,
+)
 
 
 class TestFormatEta:
@@ -60,3 +64,22 @@ class TestExtractUrls:
         assert looks_like_url("https://twkan.com/book/1.html")
         assert looks_like_url("https://a.com/1\nhttps://b.com/2")
         assert not looks_like_url("just some text without links")
+
+
+class TestSanitizeRuntimeEnv:
+    def test_clears_missing_ssl_cert_file(self, monkeypatch):
+        monkeypatch.setenv("SSL_CERT_FILE", r"C:\Users\x\AppData\Local\Temp\_MEI123\certifi\cacert.pem")
+        monkeypatch.setenv("CURL_CA_BUNDLE", r"C:\Users\x\AppData\Local\Temp\_MEI123\certifi\cacert.pem")
+        cleared = sanitize_runtime_env()
+        assert "SSL_CERT_FILE" in cleared
+        assert "CURL_CA_BUNDLE" in cleared
+        assert "SSL_CERT_FILE" not in os.environ
+        assert "CURL_CA_BUNDLE" not in os.environ
+
+    def test_keeps_existing_cert_file(self, monkeypatch, tmp_path):
+        cert = tmp_path / "cacert.pem"
+        cert.write_text("x")
+        monkeypatch.setenv("SSL_CERT_FILE", str(cert))
+        cleared = sanitize_runtime_env()
+        assert "SSL_CERT_FILE" not in cleared
+        assert os.environ.get("SSL_CERT_FILE") == str(cert)

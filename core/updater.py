@@ -31,7 +31,7 @@ from core.branding import (
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 
 # GitHub repository info (repo path kept for update continuity)
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -217,6 +217,12 @@ try {
     Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
     Write-UpdateLog "Launching updated app"
+    foreach ($key in @(
+        "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "PYTHONHOME", "PYTHONPATH", "_MEIPASS2"
+    )) {
+        Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
+    }
     Start-Process -FilePath $oldExe
     Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
@@ -658,6 +664,14 @@ while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
 Start-Sleep -Seconds 2
 if (Test-Path -LiteralPath $backup) {
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+}
+# Critical: this script inherits env from the dying frozen app (SSL_CERT_FILE
+# → old _MEI*\certifi\cacert.pem). Clear those or the relaunched exe cannot TLS.
+foreach ($key in @(
+    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "PYTHONHOME", "PYTHONPATH", "_MEIPASS2"
+)) {
+    Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
 }
 if (Test-Path -LiteralPath $exe) {
     Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
