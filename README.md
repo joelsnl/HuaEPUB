@@ -216,6 +216,18 @@ python -m pytest tests/
 - Uses [ebooklib](https://github.com/aerkalov/ebooklib) for EPUB creation
 - GUI built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
 
+## Disclaimer
+
+HuaEPUB is a personal utility for fetching and packaging web novel pages that are already publicly reachable in a browser. It does **not** grant you any rights to the novels themselves.
+
+- Many novels on aggregator / mirror sites are uploaded **without the copyright holder's permission**. Downloading, copying, translating, or redistributing that material may violate copyright law in your country.
+- You are solely responsible for how you use this tool and for complying with applicable laws, site terms of service, and the rights of authors, publishers, and platforms.
+- Automatic translation does **not** create a legal license to keep or share the work. Machine-translated EPUBs are still derived from the original copyrighted text.
+- This project is **not affiliated with**, endorsed by, or connected to twkan, 69shuba, uukanshu, Google, Google Play Books, or any novel publisher.
+- The software is provided **as is**, without warranty. The authors are not liable for misuse, account bans, takedown notices, or legal claims arising from your use of it.
+
+If you enjoy a novel, support the author through official channels whenever possible.
+
 ## License
 
 MIT License - Feel free to modify and distribute.
