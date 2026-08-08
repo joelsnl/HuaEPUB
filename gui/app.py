@@ -6,7 +6,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 from core.utils import sanitize_runtime_env
 from gui.main_window import MainWindow
@@ -17,6 +18,11 @@ def run():
     app = QApplication(sys.argv)
     app.setApplicationName("HuaEPUB")
     app.setOrganizationName("HuaEPUB")
+    # Fusion + QSS keeps menu text aligned; Windows native menus misalign under stylesheet
+    fusion = QStyleFactory.create("Fusion")
+    if fusion is not None:
+        app.setStyle(fusion)
+    app.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, True)
 
     qss = Path(__file__).with_name("style.qss")
     if qss.exists():

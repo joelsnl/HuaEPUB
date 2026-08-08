@@ -9,11 +9,14 @@ from pathlib import Path
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QInputDialog, QListWidget,
+    QApplication, QDialog, QDialogButtonBox, QInputDialog, QLabel, QListWidget,
     QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from core.branding import APP_TITLE, LOG_FILE_NAME
+from core.branding import (
+    APP_AUTHOR, APP_AUTHOR_HANDLE, APP_DESCRIPTION, APP_LICENSE,
+    APP_REPO_URL, APP_TITLE, LOG_FILE_NAME,
+)
 from core.download_job import (
     chapters_from_job, chapters_to_job, clear_job, load_job,
     novel_info_from_job, novel_info_to_job, save_job,
@@ -1032,12 +1035,33 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Log", f"No log yet at:\n{log}")
 
     def _about(self):
-        QMessageBox.about(
-            self, "About",
-            f"{APP_TITLE} v{get_current_version()}\n\n"
-            "Download Chinese web novels and build English EPUBs.\n"
-            "Qt GUI (PySide6).",
+        version = get_current_version()
+        box = QMessageBox(self)
+        box.setWindowTitle(f"About {APP_TITLE}")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
+            f"<p>{APP_DESCRIPTION}</p>"
+            "<p>"
+            f"<b>Developer:</b> {APP_AUTHOR} "
+            f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"
+            f"<b>Repository:</b> "
+            f"<a href='{APP_REPO_URL}'>{APP_REPO_URL.replace('https://', '')}</a><br>"
+            f"<b>License:</b> {APP_LICENSE}<br>"
+            "<b>UI:</b> PySide6 (Qt)<br>"
+            "<b>Data folder:</b> ~/.huaepub/"
+            "</p>"
+            "<p style='color:#aaa;font-size:11px;'>"
+            "Based on WebToEpub (dteviot) and fixTranslate.py.<br>"
+            "Not affiliated with novel sites or Google."
+            "</p>"
         )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        for lbl in box.findChildren(QLabel):
+            lbl.setOpenExternalLinks(True)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.exec()
 
     def _auto_check_updates(self):
         check_for_updates_async(callback=self._update_check_cb)

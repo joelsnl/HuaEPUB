@@ -5,6 +5,11 @@ APP_NAME = "HuaEPUB"
 APP_TITLE = "HuaEPUB"
 APP_DESCRIPTION = "Download Chinese web novels and build English EPUBs"
 
+APP_AUTHOR = "Joel Sunil"
+APP_AUTHOR_HANDLE = "joelsnl"
+APP_REPO_URL = "https://github.com/joelsnl/novelDownloader"
+APP_LICENSE = "MIT"
+
 # User data dir under ~ (migrates from legacy)
 DATA_DIR_NAME = ".huaepub"
 LEGACY_DATA_DIR_NAME = ".noveldownloader"

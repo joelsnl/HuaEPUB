@@ -125,13 +125,70 @@ QFrame#resumeBanner {
 QMenuBar {
     background-color: #242424;
     color: #e8e8e8;
+    spacing: 2px;
+    padding: 2px 4px;
+    border-bottom: 1px solid #3a3a3a;
 }
-QMenuBar::item:selected { background: #1f6aa5; }
+QMenuBar::item {
+    background: transparent;
+    color: #e8e8e8;
+    padding: 6px 12px;
+    margin: 0px 1px;
+    border-radius: 3px;
+}
+QMenuBar::item:selected,
+QMenuBar::item:pressed {
+    background: #1f6aa5;
+    color: #ffffff;
+}
 QMenu {
     background-color: #2b2b2b;
+    color: #e8e8e8;
     border: 1px solid #555;
+    padding: 4px 0px;
 }
-QMenu::item:selected { background-color: #1f6aa5; }
+QMenu::item {
+    background: transparent;
+    color: #e8e8e8;
+    /* Left pad matches indicator column so checkable + plain items line up */
+    padding: 7px 28px 7px 32px;
+    margin: 1px 4px;
+    border-radius: 3px;
+}
+QMenu::item:selected {
+    background-color: #1f6aa5;
+    color: #ffffff;
+}
+QMenu::item:disabled {
+    color: #888888;
+}
+QMenu::separator {
+    height: 1px;
+    background: #555555;
+    margin: 5px 10px;
+}
+QMenu::indicator {
+    width: 14px;
+    height: 14px;
+    margin-left: 10px;
+}
+QMenu::indicator:non-exclusive:unchecked,
+QMenu::indicator:exclusive:unchecked {
+    border: 1px solid #777;
+    background: #3a3a3a;
+    border-radius: 2px;
+}
+QMenu::indicator:non-exclusive:checked,
+QMenu::indicator:exclusive:checked {
+    border: 1px solid #1f6aa5;
+    background: #1f6aa5;
+    border-radius: 2px;
+}
+QMenu::right-arrow {
+    width: 10px;
+    height: 10px;
+    margin-right: 8px;
+}
 QToolTip {
     background-color: #222;
     color: #eee;
