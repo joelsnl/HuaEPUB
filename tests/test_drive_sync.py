@@ -36,3 +36,23 @@ class TestDriveSyncHelpers:
         ) == "1AbCDefGhIJ_klmn0123456789"
         assert DriveSync.parse_folder_id("1AbCDefGhIJ_klmn0123456789") == "1AbCDefGhIJ_klmn0123456789"
         assert DriveSync.parse_folder_id("not a folder") == ""
+
+    def test_pick_best_sync_folder_prefers_library(self, monkeypatch):
+        sync = DriveSync()
+        monkeypatch.setattr(
+            sync,
+            "_folder_has_library",
+            lambda folder_id: folder_id == "with-lib",
+        )
+        picked = sync._pick_best_sync_folder(
+            [
+                {"id": "empty-a", "name": "HuaEPUB"},
+                {"id": "with-lib", "name": "HuaEPUB"},
+                {"id": "empty-b", "name": "HuaEPUB"},
+            ]
+        )
+        assert picked == "with-lib"
+
+    def test_escape_query_name(self):
+        sync = DriveSync()
+        assert "\\'" in sync._escape_query_name("O'Brien")

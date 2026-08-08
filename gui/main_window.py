@@ -932,16 +932,47 @@ class MainWindow(QMainWindow):
         self._finish_worker_later()
 
     def _drive_change_folder(self):
-        name, ok = QInputDialog.getText(
+        from core.drive_sync import DriveSync
+
+        text, ok = QInputDialog.getText(
             self, "Drive folder",
-            "Folder name or Drive folder URL/ID:",
+            "Paste the Drive folder URL from your other PC\n"
+            "(Library → Open folder), or type a folder name:",
             text=self.session.settings.get("drive_folder_name") or "HuaEPUB",
         )
         if not ok:
             return
+        text = (text or "").strip()
+        if not text:
+            return
         try:
-            self.session.drive_sync.set_custom_folder(folder_name=name, folder_url_or_id=name)
-            self.library.drive_status.setText(self.session.drive_sync.location_description())
+            parsed = DriveSync.parse_folder_id(text)
+            if parsed:
+                self.session.drive_sync.set_custom_folder(folder_url_or_id=text)
+            else:
+                self.session.drive_sync.set_custom_folder(folder_name=text)
+            info = self.session.drive_sync.inspect_sync_folder()
+            label = info.get("name") or self.session.drive_sync.location_description()
+            novels = int(info.get("library_novels") or 0)
+            epubs = int(info.get("epub_count") or 0)
+            detail = (
+                f"Using: {label}\n"
+                f"library.json novels: {novels}\n"
+                f"EPUB files in books/: {epubs}\n"
+                f"{info.get('web_link') or ''}"
+            )
+            if info.get("error"):
+                QMessageBox.warning(
+                    self, "Drive folder",
+                    detail + f"\n\nWarning: {info['error']}",
+                )
+            else:
+                QMessageBox.information(self, "Drive folder", detail)
+            self.library.drive_status.setText(
+                f"{label} — {novels} novel(s), {epubs} EPUB(s) on Drive"
+            )
+            # Pull immediately so Library fills from this folder
+            QTimer.singleShot(100, lambda: self._start_drive_sync(silent=False))
         except Exception as e:
             QMessageBox.critical(self, "Drive folder", str(e))
 

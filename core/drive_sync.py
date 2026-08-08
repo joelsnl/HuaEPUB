@@ -318,21 +318,84 @@ class DriveSync:
     # Folder layout
     # ------------------------------------------------------------------
 
+    def _escape_query_name(self, name: str) -> str:
+        return (name or "").replace("\\", "\\\\").replace("'", "\\'")
+
+    def _files_list(self, **kwargs) -> dict:
+        """files().list with flags that make cross-device drive.file more reliable."""
+        kwargs.setdefault("spaces", "drive")
+        kwargs.setdefault("supportsAllDrives", True)
+        kwargs.setdefault("includeItemsFromAllDrives", True)
+        return self._require_service().files().list(**kwargs).execute()
+
     def _find_child(self, name: str, parent_id: str) -> Optional[str]:
-        service = self._require_service()
-        safe_name = name.replace("\\", "\\\\").replace("'", "\\'")
+        safe_name = self._escape_query_name(name)
         q = (
             f"name = '{safe_name}' "
             f"and '{parent_id}' in parents and trashed = false"
         )
-        results = service.files().list(
-            q=q,
-            spaces="drive",
-            fields="files(id, name)",
-            pageSize=10,
-        ).execute()
+        results = self._files_list(q=q, fields="files(id, name)", pageSize=10)
         files = results.get("files") or []
         return files[0]["id"] if files else None
+
+    def _list_folders_named(self, name: str) -> List[dict]:
+        """All folders with this name still visible to drive.file (any parent)."""
+        safe_name = self._escape_query_name(name)
+        q = (
+            f"name = '{safe_name}' "
+            f"and mimeType = 'application/vnd.google-apps.folder' "
+            f"and trashed = false"
+        )
+        results = self._files_list(
+            q=q,
+            fields="files(id, name, parents, modifiedTime)",
+            pageSize=25,
+            orderBy="modifiedTime desc",
+        )
+        return list(results.get("files") or [])
+
+    def _find_library_file_global(self) -> Optional[Tuple[str, str]]:
+        """
+        Find an accessible library.json anywhere Drive lets this app see.
+        Returns (file_id, parent_folder_id) or None.
+        """
+        safe_name = self._escape_query_name(LIBRARY_FILE)
+        results = self._files_list(
+            q=f"name = '{safe_name}' and trashed = false",
+            fields="files(id, name, parents, modifiedTime)",
+            pageSize=25,
+            orderBy="modifiedTime desc",
+        )
+        for f in results.get("files") or []:
+            parents = f.get("parents") or []
+            if parents:
+                return f["id"], parents[0]
+        return None
+
+    def _folder_list_accessible(self, folder_id: str) -> bool:
+        """True if drive.file can list children of this folder."""
+        try:
+            self._files_list(
+                q=f"'{folder_id}' in parents and trashed = false",
+                fields="files(id)",
+                pageSize=1,
+            )
+            return True
+        except Exception as e:
+            print(f"Cannot list Drive folder {folder_id}: {e}")
+            return False
+
+    def _folder_has_library(self, folder_id: str) -> bool:
+        return bool(self._find_child(LIBRARY_FILE, folder_id))
+
+    def _pick_best_sync_folder(self, candidates: List[dict]) -> Optional[str]:
+        """Prefer a folder that already has library.json (cross-device sync)."""
+        if not candidates:
+            return None
+        with_lib = [f for f in candidates if self._folder_has_library(f["id"])]
+        pool = with_lib or candidates
+        # Already ordered by modifiedTime desc from the API
+        return pool[0]["id"]
 
     def _create_folder(self, name: str, parent_id: str) -> str:
         service = self._require_service()
@@ -341,24 +404,41 @@ class DriveSync:
             "mimeType": "application/vnd.google-apps.folder",
             "parents": [parent_id],
         }
-        created = service.files().create(body=meta, fields="id").execute()
+        created = service.files().create(
+            body=meta, fields="id", supportsAllDrives=True
+        ).execute()
         return created["id"]
 
     def _resolve_root_folder(self) -> str:
         """Find or create the configured My Drive sync folder; return its id."""
+        from core.branding import LEGACY_DRIVE_FOLDER_NAME
+
         folder_name = self.configured_folder_name()
         folder_id = (get_setting("drive_folder_id") or "").strip()
         if folder_id:
             # Verify it still exists / is accessible
             try:
                 meta = self._require_service().files().get(
-                    fileId=folder_id, fields="id,name,mimeType,trashed"
+                    fileId=folder_id,
+                    fields="id,name,mimeType,trashed",
+                    supportsAllDrives=True,
                 ).execute()
                 if meta.get("trashed"):
                     raise DriveSyncError("Configured Drive folder is in trash")
                 # Keep display name in sync when we know it
                 if meta.get("name"):
                     set_setting("drive_folder_name", meta["name"])
+                # Empty stored folder with no library — try to rediscover a better one
+                # (only when we can list; otherwise keep the id and let ensure error)
+                if self._folder_list_accessible(folder_id) and not self._folder_has_library(folder_id):
+                    better = self._discover_existing_sync_folder(folder_name)
+                    if better and better != folder_id and self._folder_has_library(better):
+                        print(
+                            f"Stored Drive folder {folder_id} has no library.json; "
+                            f"switching to {better} which does."
+                        )
+                        set_setting("drive_folder_id", better)
+                        return better
                 return folder_id
             except DriveSyncError:
                 raise
@@ -366,48 +446,179 @@ class DriveSync:
                 print(f"Stored drive_folder_id unusable ({folder_id}): {e}")
                 set_setting("drive_folder_id", "")
 
-        root_id = self._find_child(folder_name, "root")
+        root_id = self._discover_existing_sync_folder(folder_name)
         if not root_id:
-            root_id = self._create_folder(folder_name, "root")
+            # Last chance: any library.json this app can see (e.g. legacy name)
+            found = self._find_library_file_global()
+            if found:
+                _, parent_id = found
+                print(f"Reusing Drive folder that already contains {LIBRARY_FILE}: {parent_id}")
+                root_id = parent_id
+        if not root_id:
+            # Also try legacy folder name before creating a duplicate
+            if folder_name != LEGACY_DRIVE_FOLDER_NAME:
+                root_id = self._discover_existing_sync_folder(LEGACY_DRIVE_FOLDER_NAME)
+                if root_id:
+                    set_setting("drive_folder_name", LEGACY_DRIVE_FOLDER_NAME)
+            if not root_id:
+                print(f"No existing Drive sync folder found; creating '{folder_name}'")
+                root_id = self._create_folder(folder_name, "root")
         set_setting("drive_folder_id", root_id)
         return root_id
+
+    def _discover_existing_sync_folder(self, folder_name: str) -> Optional[str]:
+        """
+        Locate an existing sync folder without creating one.
+
+        drive.file can miss 'root' parent queries across devices, so search by
+        folder name app-wide and prefer any copy that already has library.json.
+        """
+        # 1) Direct child of My Drive root (fast path when visible)
+        root_child = self._find_child(folder_name, "root")
+        # 2) Any folder with this name the app can see
+        named = self._list_folders_named(folder_name)
+        ids = []
+        if root_child:
+            ids.append({"id": root_child, "name": folder_name})
+        for f in named:
+            if not any(x["id"] == f["id"] for x in ids):
+                ids.append(f)
+        picked = self._pick_best_sync_folder(ids)
+        if picked:
+            return picked
+        # 3) library.json orphaned / under unexpected parent
+        found = self._find_library_file_global()
+        if found:
+            return found[1]
+        return None
 
     def ensure_folder_layout(self) -> Tuple[str, str]:
         """
         Ensure configured My Drive folder + books/ exist. Returns (root_id, books_id).
+
+        Never silently abandons a user-selected folder_id to create a new empty
+        HuaEPUB elsewhere — that made Sync report success while the real Drive
+        folder never updated.
         """
         with self._lock:
             if self._root_id and self._books_id:
                 return self._root_id, self._books_id
 
+            explicit_id = (get_setting("drive_folder_id") or "").strip()
             try:
                 root_id = self._resolve_root_folder()
+                if not self._folder_list_accessible(root_id):
+                    raise DriveSyncError(
+                        "HuaEPUB can see this Drive folder but cannot list files "
+                        "inside it (Google drive.file permission).\n\n"
+                        "Usually the folder was not created by this app / OAuth client.\n"
+                        "Fix: copy the same google_oauth_client.json from your other PC, "
+                        "Disconnect + Connect again, then Change folder to the HuaEPUB "
+                        "folder that the app created (Library → Open folder on that PC)."
+                    )
                 books_id = self._find_child(BOOKS_FOLDER_NAME, root_id)
                 if not books_id:
-                    books_id = self._create_folder(BOOKS_FOLDER_NAME, root_id)
-            except Exception as e:
-                print(f"Drive folder layout retry after error: {e}")
-                traceback.print_exc()
-                try:
-                    set_setting("drive_folder_id", "")
-                    self._root_id = None
-                    self._books_id = None
-                    root_id = self._resolve_root_folder()
-                    books_id = self._find_child(BOOKS_FOLDER_NAME, root_id)
-                    if not books_id:
+                    try:
                         books_id = self._create_folder(BOOKS_FOLDER_NAME, root_id)
-                except Exception as e2:
-                    raise DriveSyncError(self._format_api_error(e2)) from e2
+                    except Exception as e:
+                        raise DriveSyncError(
+                            f"Could not create books/ in the Drive folder:\n"
+                            f"{self._format_api_error(e)}"
+                        ) from e
+            except DriveSyncError:
+                raise
+            except Exception as e:
+                traceback.print_exc()
+                # Do NOT clear drive_folder_id — user may have picked it via Change folder
+                msg = self._format_api_error(e)
+                if explicit_id:
+                    raise DriveSyncError(
+                        f"Cannot use the selected Drive folder.\n{msg}\n\n"
+                        "Your folder choice was kept. Fix access (same OAuth client / "
+                        "Connect again) or pick another folder."
+                    ) from e
+                raise DriveSyncError(msg) from e
 
             self._root_id = root_id
             self._books_id = books_id
             return root_id, books_id
+
+    def inspect_sync_folder(self, folder_id: Optional[str] = None) -> dict:
+        """
+        Diagnose the current (or given) sync folder for the UI.
+        Keys: folder_id, name, can_list, library_file_id, books_id,
+        library_novels, epub_count, web_link, error
+        """
+        info = {
+            "folder_id": "",
+            "name": "",
+            "can_list": False,
+            "library_file_id": "",
+            "books_id": "",
+            "library_novels": 0,
+            "epub_count": 0,
+            "web_link": "",
+            "error": "",
+        }
+        try:
+            service = self._require_service()
+            if folder_id:
+                root_id = folder_id
+            else:
+                root_id, _ = self.ensure_folder_layout()
+            info["folder_id"] = root_id
+            info["web_link"] = f"https://drive.google.com/drive/folders/{root_id}"
+            meta = service.files().get(
+                fileId=root_id,
+                fields="id,name,mimeType,trashed",
+                supportsAllDrives=True,
+            ).execute()
+            info["name"] = meta.get("name") or ""
+            if meta.get("trashed"):
+                info["error"] = "Folder is in trash"
+                return info
+            info["can_list"] = self._folder_list_accessible(root_id)
+            if not info["can_list"]:
+                info["error"] = "Cannot list folder contents (drive.file access)"
+                return info
+            info["library_file_id"] = self._find_library_file(root_id) or ""
+            info["books_id"] = self._find_child(BOOKS_FOLDER_NAME, root_id) or ""
+            if info["library_file_id"]:
+                try:
+                    content = service.files().get_media(
+                        fileId=info["library_file_id"]
+                    ).execute()
+                    raw = json.loads(
+                        content.decode("utf-8") if isinstance(content, bytes) else content
+                    )
+                    data = library_data_from_dict(raw if isinstance(raw, dict) else {})
+                    info["library_novels"] = len(data.library)
+                except Exception as e:
+                    info["error"] = f"library.json unreadable: {e}"
+            if info["books_id"]:
+                try:
+                    # Temporarily use books id via list
+                    resp = self._files_list(
+                        q=(
+                            f"'{info['books_id']}' in parents and trashed = false "
+                            f"and name contains '.epub'"
+                        ),
+                        fields="files(id, name)",
+                        pageSize=100,
+                    )
+                    info["epub_count"] = len(resp.get("files") or [])
+                except Exception:
+                    pass
+        except Exception as e:
+            info["error"] = self._format_api_error(e)
+        return info
 
     def set_custom_folder(self, folder_name: str = "", folder_url_or_id: str = "") -> str:
         """
         Point sync at a custom My Drive folder.
         Prefer folder_url_or_id when provided; otherwise create/reuse folder_name under My Drive.
         Returns the folder id. Clears layout cache.
+        Raises DriveSyncError if a pasted folder URL/ID is not usable.
         """
         folder_url_or_id = (folder_url_or_id or "").strip()
         folder_name = (folder_name or "").strip() or CUSTOM_ROOT_FOLDER_NAME
@@ -416,12 +627,41 @@ class DriveSync:
         self.reset_layout_cache()
 
         if parsed_id:
+            service = self._require_service()
+            try:
+                meta = service.files().get(
+                    fileId=parsed_id,
+                    fields="id,name,mimeType,trashed",
+                    supportsAllDrives=True,
+                ).execute()
+            except Exception as e:
+                raise DriveSyncError(
+                    "Cannot open that Drive folder with this app.\n"
+                    f"{self._format_api_error(e)}\n\n"
+                    "Paste the folder URL from Library → Open folder on the PC "
+                    "that already syncs, and use the same google_oauth_client.json."
+                ) from e
+            if meta.get("trashed"):
+                raise DriveSyncError("That Drive folder is in the trash.")
+            if meta.get("mimeType") != "application/vnd.google-apps.folder":
+                raise DriveSyncError("That ID is not a folder.")
+            if not self._folder_list_accessible(parsed_id):
+                raise DriveSyncError(
+                    f"Folder “{meta.get('name') or parsed_id}” is visible but "
+                    "HuaEPUB cannot list files inside it.\n\n"
+                    "Google only allows this app to manage folders it created "
+                    "(drive.file scope). Use the HuaEPUB folder created by the app "
+                    "on your other device, with the same OAuth client JSON."
+                )
             set_setting("drive_folder_id", parsed_id)
-            # Name will be refreshed on next ensure/get
-            if folder_name and folder_name != CUSTOM_ROOT_FOLDER_NAME:
-                set_setting("drive_folder_name", folder_name)
-            root_id, _ = self.ensure_folder_layout()
-            return root_id
+            set_setting("drive_folder_name", meta.get("name") or folder_name)
+            # Ensure books/ exists inside the chosen folder (do not switch away)
+            books_id = self._find_child(BOOKS_FOLDER_NAME, parsed_id)
+            if not books_id:
+                books_id = self._create_folder(BOOKS_FOLDER_NAME, parsed_id)
+            self._root_id = parsed_id
+            self._books_id = books_id
+            return parsed_id
 
         set_setting("drive_folder_id", "")
         set_setting("drive_folder_name", folder_name)
@@ -441,14 +681,28 @@ class DriveSync:
         root_id, _ = self.ensure_folder_layout()
         file_id = self._find_library_file(root_id)
         if not file_id:
-            return None
+            # Folder layout may be a fresh empty duplicate — find library.json app-wide
+            found = self._find_library_file_global()
+            if found:
+                file_id, parent_id = found
+                if parent_id != root_id:
+                    print(
+                        f"library.json is under folder {parent_id}, not current "
+                        f"root {root_id}; switching sync folder."
+                    )
+                    set_setting("drive_folder_id", parent_id)
+                    self.reset_layout_cache()
+            else:
+                return None
         try:
             content = service.files().get_media(fileId=file_id).execute()
             if isinstance(content, bytes):
                 raw = json.loads(content.decode("utf-8"))
             else:
                 raw = json.loads(content)
-            return library_data_from_dict(raw if isinstance(raw, dict) else {})
+            data = library_data_from_dict(raw if isinstance(raw, dict) else {})
+            print(f"Pulled library.json from Drive: {len(data.library)} novel(s)")
+            return data
         except Exception as e:
             raise DriveSyncError(
                 f"Failed to download library.json: {self._format_api_error(e)}"
@@ -473,22 +727,33 @@ class DriveSync:
 
         try:
             if file_id:
-                service.files().update(
+                updated = service.files().update(
                     fileId=file_id,
                     media_body=media,
-                    fields="id",
+                    fields="id,modifiedTime,size",
+                    supportsAllDrives=True,
                 ).execute()
+                print(
+                    f"Updated Drive library.json id={updated.get('id')} "
+                    f"modified={updated.get('modifiedTime')} "
+                    f"novels={len(data.library)}"
+                )
             else:
                 meta = {
                     "name": LIBRARY_FILE,
                     "parents": [root_id],
                     "mimeType": "application/json",
                 }
-                service.files().create(
+                created = service.files().create(
                     body=meta,
                     media_body=media,
-                    fields="id",
+                    fields="id,modifiedTime",
+                    supportsAllDrives=True,
                 ).execute()
+                print(
+                    f"Created Drive library.json id={created.get('id')} "
+                    f"in folder {root_id} novels={len(data.library)}"
+                )
         except Exception as e:
             raise DriveSyncError(
                 f"Failed to upload library.json: {self._format_api_error(e)}"
@@ -506,10 +771,42 @@ class DriveSync:
         remote = self.pull_library()
         if remote is None:
             merged = local
+            print(
+                f"No remote library.json yet; keeping local "
+                f"({len(local.library)} novel(s))"
+            )
         else:
             merged = merge_library(local, remote)
+            print(
+                f"Merged library: local={len(local.library)} "
+                f"remote={len(remote.library)} → {len(merged.library)}"
+            )
+            # Never let an empty local wipe a populated remote due to bad merge
+            if not merged.library and remote.library:
+                print("Merge produced empty library; keeping remote copy")
+                merged = remote
+
+        # Attach Drive EPUB ids so Download EPUB works on other devices
+        try:
+            remote_books = self.list_remote_books()
+            if remote_books:
+                for entry in merged.library:
+                    name = entry.epub_filename or (
+                        Path(entry.output_path).name if entry.output_path else ""
+                    )
+                    if name and name in remote_books:
+                        entry.drive_file_id = remote_books[name]
+                        if not entry.epub_filename:
+                            entry.epub_filename = name
+        except Exception as e:
+            print(f"Warning: could not attach remote EPUB ids: {e}")
+
         store.replace_data(merged)
-        self.push_library(merged)
+        # Avoid uploading an empty library over a non-empty remote we failed to read
+        if merged.library or remote is None or not getattr(remote, "library", None):
+            self.push_library(merged)
+        else:
+            print("Skipping push of empty library over known remote novels")
         return merged
 
     # ------------------------------------------------------------------
@@ -518,20 +815,18 @@ class DriveSync:
 
     def list_remote_books(self) -> Dict[str, str]:
         """Map filename → file id for books/ contents."""
-        service = self._require_service()
         _, books_id = self.ensure_folder_layout()
         result: Dict[str, str] = {}
         page_token = None
         while True:
             kwargs = {
                 "q": f"'{books_id}' in parents and trashed = false",
-                "spaces": "drive",
                 "fields": "nextPageToken, files(id, name)",
                 "pageSize": 100,
             }
             if page_token:
                 kwargs["pageToken"] = page_token
-            resp = service.files().list(**kwargs).execute()
+            resp = self._files_list(**kwargs)
             for f in resp.get("files") or []:
                 name = f.get("name") or ""
                 if name.lower().endswith(".epub"):

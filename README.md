@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.6.1**
+**Current version: 2.6.2**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -151,6 +151,14 @@ Use this only if you want the same library list (and optionally EPUBs) on more t
 5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** as needed. Progress appears in the status bar while syncing.
 
 If Drive is offline, downloads and the local library still work.
+
+**Second device shows an empty library after Connect:**
+
+1. Use the **same** `google_oauth_client.json` (same Google Cloud Desktop client) on every device — Drive’s `drive.file` scope only lets HuaEPUB manage folders **this app created**. A folder you made by hand (or with a different OAuth client) can look selectable but Sync will not read/write `library.json` / `books/` inside it.
+2. On the PC that already has novels: **Library → Open folder** and confirm `library.json` + `books/` are inside that Drive folder.
+3. On the new device: **Change folder** → paste that folder’s URL → the app checks list access and then syncs. You should see `library.json novels: N` in the confirmation.
+4. Status should look like `Synced “HuaEPUB”: library (N novel(s))`. If N is 0 or you get an access error, fix the OAuth client / folder — Sync will no longer silently invent a second empty HuaEPUB folder.
+5. EPUB sync uploads local files that are missing on Drive; it does not wipe or re-upload every book on every sync. On a new Mac, use **Download EPUB** per novel (or copy `books/` once) after the library list appears.
 
 ### Where files live
 
