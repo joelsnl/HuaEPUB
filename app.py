@@ -44,6 +44,12 @@ from core.settings import (
     load_settings, save_settings, get_app_dir, get_data_dir, get_default_books_dir,
 )
 from core.cache import NovelCache
+from core.download_job import (
+    load_job, save_job, clear_job,
+    chapters_to_job, chapters_from_job,
+    novel_info_to_job, novel_info_from_job,
+    job_display_title, job_chapter_urls,
+)
 from core.branding import APP_TITLE, DRIVE_FOLDER_NAME, LOG_FILE_NAME
 from core.logger import setup_logging
 from core.utils import format_eta, safe_filename, extract_urls, looks_like_url
@@ -97,8 +103,11 @@ class HuaEPUBApp(ctk.CTk):
         self.parser = None
         self.is_downloading = False
         self.cancel_requested = False
+        self.is_paused = False
         self.cover_image = None  # Store PhotoImage reference
         self.translated_title = None  # Store translated title
+        self._active_job: Optional[dict] = None  # local resume snapshot (not Drive)
+        self._job_save_counter = 0
         
         # Generation counters to ignore results from stale background work
         self._fetch_generation = 0   # bumped on each new fetch
@@ -119,6 +128,9 @@ class HuaEPUBApp(ctk.CTk):
         self._library_filter = self.settings.get('library_filter', 'all') or 'all'
         self._drive_panel_expanded = bool(self.settings.get('drive_panel_expanded', False))
         self._library_reflow_after = None
+        self._library_grid_last_width = 0
+        self._library_grid_last_cols = 0
+        self._library_wheel_bound = False
         
         # Clipboard watcher
         self._clipboard_last = ""
@@ -137,6 +149,9 @@ class HuaEPUBApp(ctk.CTk):
         # Cleanup browser on close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
+        # Offer resume of a locally saved incomplete download (after UI is ready)
+        self.after(600, self._check_resume_job)
+        
         # Auto-check for updates on startup (if enabled)
         if get_auto_check_updates():
             self.after(2000, self._auto_check_updates)  # Check after 2 seconds
@@ -153,9 +168,16 @@ class HuaEPUBApp(ctk.CTk):
             self.after(4000, lambda: self._schedule_library_check(reason="startup"))
     
     def _on_close(self):
-        """Handle window close - persist settings and clean up."""
+        """Handle window close - persist settings, keep incomplete download job, clean up."""
         try:
             self._menu_close()
+        except Exception:
+            pass
+        try:
+            if self.is_downloading and self._active_job:
+                # Keep local resume file; chapter HTML is already in cache.db
+                self._active_job["status"] = "paused"
+                save_job(self._active_job, self.data_dir)
         except Exception:
             pass
         try:
@@ -221,17 +243,45 @@ class HuaEPUBApp(ctk.CTk):
         url_frame.grid(row=1, column=0, padx=10, pady=(6, 5), sticky="ew")
         url_frame.grid_columnconfigure(1, weight=1)
         
+        # Incomplete download resume banner (local only; shown on startup if job exists)
+        self.resume_frame = ctk.CTkFrame(url_frame, fg_color=("#E8E0C8", "#3A3420"))
+        self.resume_frame.grid_columnconfigure(0, weight=1)
+        self.resume_label = ctk.CTkLabel(
+            self.resume_frame,
+            text="",
+            font=("", 12),
+            anchor="w",
+            justify="left",
+        )
+        self.resume_label.grid(row=0, column=0, padx=10, pady=8, sticky="ew")
+        resume_btns = ctk.CTkFrame(self.resume_frame, fg_color="transparent")
+        resume_btns.grid(row=0, column=1, padx=8, pady=6)
+        self.resume_continue_btn = ctk.CTkButton(
+            resume_btns, text="Resume", width=90, height=28,
+            fg_color="#2B7A3E", hover_color="#236332",
+            command=self._on_resume_job,
+        )
+        self.resume_continue_btn.pack(side="left", padx=3)
+        self.resume_discard_btn = ctk.CTkButton(
+            resume_btns, text="Discard", width=90, height=28,
+            fg_color="gray40", hover_color="gray30",
+            command=self._on_discard_job,
+        )
+        self.resume_discard_btn.pack(side="left", padx=3)
+        # Hidden until an incomplete job is found
+        self.resume_frame.grid_remove()
+        
         # Mode toggle
         self.mode_switch = ctk.CTkSegmentedButton(
             url_frame, values=["Single", "Multi", "Library"],
             command=self._on_mode_change, width=220
         )
         self.mode_switch.set("Single")
-        self.mode_switch.grid(row=0, column=0, padx=(10, 5), pady=10)
+        self.mode_switch.grid(row=1, column=0, padx=(10, 5), pady=10)
         
         # Single-mode URL entry
         self.single_url_frame = ctk.CTkFrame(url_frame, fg_color="transparent")
-        self.single_url_frame.grid(row=0, column=1, columnspan=2, padx=0, pady=0, sticky="ew")
+        self.single_url_frame.grid(row=1, column=1, columnspan=2, padx=0, pady=0, sticky="ew")
         self.single_url_frame.grid_columnconfigure(0, weight=1)
         
         self.url_entry = ctk.CTkEntry(self.single_url_frame, placeholder_text="Enter novel URL (e.g., https://twkan.com/book/12345.html)")
@@ -563,10 +613,21 @@ class HuaEPUBApp(ctk.CTk):
         self.library_body.grid_rowconfigure(0, weight=1)
         
         self.library_list_frame = ctk.CTkScrollableFrame(
-            self.library_body, label_text="Tracked novels"
+            self.library_body, label_text="Tracked novels", height=360
         )
         self.library_list_frame.grid(row=0, column=0, sticky="nsew")
-        self.library_list_frame.bind("<Configure>", self._on_library_grid_configure)
+        # Reflow on window/shelf resize. Do NOT key off the inner canvas width —
+        # CTkScrollableFrame's canvas often stays at the old wide size when the
+        # window shrinks, which froze the column count.
+        self.library_body.bind("<Configure>", self._on_library_shelf_configure)
+        self.library_frame.bind("<Configure>", self._on_library_shelf_configure)
+        self.bind("<Configure>", self._on_library_window_configure, add="+")
+        try:
+            # CTk defaults to 1px increments; wheel delta/6 then feels almost stuck
+            self.library_list_frame._parent_canvas.configure(yscrollincrement=20)
+        except Exception:
+            pass
+        self._bind_library_scroll_helpers()
         
         self.library_tree_frame = ctk.CTkFrame(self.library_body, fg_color="transparent")
         self.library_tree_frame.grid_columnconfigure(0, weight=1)
@@ -600,25 +661,25 @@ class HuaEPUBApp(ctk.CTk):
         self.library_tree.bind("<Button-3>", self._on_library_tree_menu)
         self.library_tree.bind("<<TreeviewSelect>>", self._on_library_tree_select)
         
-        lib_actions = ctk.CTkFrame(self.library_body, fg_color="transparent")
-        lib_actions.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.library_actions_bar = ctk.CTkFrame(self.library_body, fg_color="transparent")
+        self.library_actions_bar.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         ctk.CTkButton(
-            lib_actions, text="Update", width=80, height=28,
+            self.library_actions_bar, text="Update", width=80, height=28,
             fg_color="#2B7A3E", hover_color="#236332",
             command=self._on_library_selected_update,
         ).pack(side="left", padx=3)
         ctk.CTkButton(
-            lib_actions, text="Open URL", width=80, height=28,
+            self.library_actions_bar, text="Open URL", width=80, height=28,
             fg_color="gray40", hover_color="gray30",
             command=self._on_library_selected_open,
         ).pack(side="left", padx=3)
         ctk.CTkButton(
-            lib_actions, text="Remove", width=70, height=28,
+            self.library_actions_bar, text="Remove", width=70, height=28,
             fg_color="gray40", hover_color="gray30",
             command=self._on_library_selected_remove,
         ).pack(side="left", padx=3)
         self.library_download_epub_btn = ctk.CTkButton(
-            lib_actions, text="Download EPUB", width=110, height=28,
+            self.library_actions_bar, text="Download EPUB", width=110, height=28,
             command=self._on_library_selected_download_epub,
         )
         self.library_download_epub_btn.pack(side="left", padx=3)
@@ -718,6 +779,18 @@ class HuaEPUBApp(ctk.CTk):
             state="disabled"
         )
         self.download_btn.pack(side="left", padx=5)
+        
+        self.pause_btn = ctk.CTkButton(
+            btn_frame,
+            text="Pause",
+            height=40,
+            width=100,
+            command=self._on_pause_toggle,
+            state="disabled",
+            fg_color="gray40",
+            hover_color="gray30",
+        )
+        self.pause_btn.pack(side="left", padx=5)
         
         self.cancel_btn = ctk.CTkButton(
             btn_frame,
@@ -1091,11 +1164,25 @@ class HuaEPUBApp(ctk.CTk):
         # Persist current options before starting
         self._save_settings()
         
+        # Local resume snapshot (chapter HTML lives in cache.db; not synced to Drive)
+        self._set_active_job({
+            "kind": "single",
+            "status": "running",
+            "source_url": self.novel_info.source_url or "",
+            "title": self.novel_info.title or "",
+            "translated_title": self.translated_title or "",
+            "info": novel_info_to_job(self.novel_info),
+            "chapters": chapters_to_job(selected_chapters),
+            "output_path": output_path,
+            "options": self._download_options_snapshot(),
+        })
+        
         # Start download
         self.is_downloading = True
         self.cancel_requested = False
+        self.is_paused = False
         self.download_btn.configure(state="disabled")
-        self.cancel_btn.configure(state="normal")
+        self._set_download_controls_active(True)
         self.fetch_btn.configure(state="disabled")
         
         thread = threading.Thread(
@@ -1224,8 +1311,10 @@ class HuaEPUBApp(ctk.CTk):
         use_cache = bool(self.use_cache_var.get())
         failed: List[Chapter] = []
         start_time = time.monotonic()
+        paused_for = 0.0  # exclude pause time from ETA
         
         for idx, chapter in enumerate(chapters):
+            paused_for += self._wait_while_paused(set_status)
             if self.cancel_requested:
                 raise _DownloadCancelled()
             
@@ -1233,7 +1322,8 @@ class HuaEPUBApp(ctk.CTk):
             
             eta_text = ""
             if idx >= 3:
-                avg = (time.monotonic() - start_time) / idx
+                elapsed = max(0.001, (time.monotonic() - start_time) - paused_for)
+                avg = elapsed / idx
                 eta_text = f"  (ETA {format_eta(avg * (total - idx))})"
             
             # Cached chapters are free - no fetch, no delay
@@ -1241,6 +1331,7 @@ class HuaEPUBApp(ctk.CTk):
             if cached:
                 chapter.content = cached
                 set_status(f"Chapter [{idx+1}/{total}] from cache{eta_text}")
+                self._persist_active_job()
                 continue
             
             set_status(f"Downloading [{idx+1}/{total}]: {chapter.title[:40]}{eta_text}")
@@ -1254,8 +1345,9 @@ class HuaEPUBApp(ctk.CTk):
                 print(f"  Chapter [{idx+1}/{total}] failed: {chapter.title}: {e}")
                 failed.append(chapter)
             
+            self._persist_active_job()
             if idx < total - 1:
-                time.sleep(delay)
+                paused_for += self._interruptible_delay(delay, set_status)
         
         # End-of-run retry pass: transient failures usually succeed here
         still_failed: List[str] = []
@@ -1263,9 +1355,10 @@ class HuaEPUBApp(ctk.CTk):
             set_status(f"Retrying {len(failed)} failed chapter(s)...")
             print(f"Retrying {len(failed)} failed chapter(s)...")
             for chapter in failed:
+                paused_for += self._wait_while_paused(set_status)
                 if self.cancel_requested:
                     raise _DownloadCancelled()
-                time.sleep(delay)
+                paused_for += self._interruptible_delay(delay, set_status)
                 try:
                     chapter.content = parser.get_chapter_content(chapter)
                     if use_cache:
@@ -1339,6 +1432,7 @@ class HuaEPUBApp(ctk.CTk):
             self._record_successful_download(
                 self.novel_info, chapters, self.translated_title, output_path
             )
+            self._clear_active_job()
             
             success_msg = f"EPUB saved to:\n{output_path}"
             if failed_chapters:
@@ -1357,18 +1451,498 @@ class HuaEPUBApp(ctk.CTk):
             self.after(0, lambda m=success_msg: messagebox.showinfo("Success", m))
             
         except Exception as e:
+            # Keep the local job so the user can resume after fixing the issue
+            try:
+                self._persist_active_job(force=True)
+                job = self._active_job
+                if job:
+                    self.after(0, lambda j=job: self._show_resume_banner(j))
+            except Exception:
+                pass
             error_msg = f"Download failed: {str(e)}"
             self.after(0, lambda msg=error_msg: self._show_error(msg))
         finally:
             self.is_downloading = False
+            self.is_paused = False
             self.after(0, lambda: self.download_btn.configure(state="normal"))
-            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+            self.after(0, lambda: self._set_download_controls_active(False))
             self.after(0, lambda: self.fetch_btn.configure(state="normal"))
+    
+    def _set_download_controls_active(self, active: bool):
+        """Enable/disable Pause + Cancel for an in-flight download."""
+        try:
+            if active:
+                self.pause_btn.configure(
+                    state="normal", text="Pause",
+                    fg_color="gray40", hover_color="gray30",
+                )
+                self.cancel_btn.configure(state="normal")
+            else:
+                self.is_paused = False
+                self.pause_btn.configure(
+                    state="disabled", text="Pause",
+                    fg_color="gray40", hover_color="gray30",
+                )
+                self.cancel_btn.configure(state="disabled")
+        except Exception:
+            pass
+    
+    def _on_pause_toggle(self):
+        """Pause or resume the current download (chapters already fetched stay cached)."""
+        if not self.is_downloading:
+            return
+        self.is_paused = not self.is_paused
+        if self.is_paused:
+            self.pause_btn.configure(text="Resume", fg_color="#2B7A3E", hover_color="#236332")
+            self._update_status("Paused — click Resume to continue (safe to close the app)")
+            self._persist_active_job(force=True)
+        else:
+            self.pause_btn.configure(text="Pause", fg_color="gray40", hover_color="gray30")
+            self._update_status("Resuming…")
+            self._persist_active_job(force=True)
+    
+    def _wait_while_paused(self, set_status=None) -> float:
+        """
+        Block the worker while paused. Returns seconds spent paused.
+        Raises _DownloadCancelled if the user cancels while paused.
+        """
+        if not self.is_paused:
+            return 0.0
+        if set_status:
+            set_status("Paused — click Resume to continue")
+        else:
+            self.after(0, lambda: self._update_status("Paused — click Resume to continue"))
+        t0 = time.monotonic()
+        while self.is_paused:
+            if self.cancel_requested:
+                raise _DownloadCancelled()
+            time.sleep(0.2)
+        return time.monotonic() - t0
+    
+    def _interruptible_delay(self, seconds: float, set_status=None) -> float:
+        """Sleep for request_delay, but wake for pause/cancel. Returns pause time."""
+        paused_total = 0.0
+        end = time.monotonic() + max(0.0, seconds)
+        while True:
+            paused_total += self._wait_while_paused(set_status)
+            if self.cancel_requested:
+                raise _DownloadCancelled()
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.2, remaining))
+        return paused_total
     
     def _on_cancel(self):
         """Handle cancel button click."""
         self.cancel_requested = True
+        self.is_paused = False  # unblock pause wait so cancel can proceed
+        self._clear_active_job()
+        try:
+            self.pause_btn.configure(text="Pause", fg_color="gray40", hover_color="gray30")
+        except Exception:
+            pass
         self._update_status("Cancelling...")
+    
+    # ------------------------------------------------------------------
+    # Local download job (resume after close / reboot — not Drive-synced)
+    # ------------------------------------------------------------------
+    
+    def _download_options_snapshot(self) -> dict:
+        return {
+            "translate": bool(self.translate_var.get()),
+            "clean": bool(self.clean_var.get()),
+            "workers": self._get_workers(),
+            "use_cache": bool(self.use_cache_var.get()),
+            "translation_backend": (
+                "libretranslate"
+                if self.backend_menu.get() == "LibreTranslate"
+                else "google"
+            ),
+            "output_dir": self.output_dir or "",
+        }
+    
+    def _apply_download_options(self, options: Optional[dict]):
+        if not options:
+            return
+        try:
+            if "translate" in options:
+                self.translate_var.set(bool(options["translate"]))
+            if "clean" in options:
+                self.clean_var.set(bool(options["clean"]))
+            if "use_cache" in options:
+                self.use_cache_var.set(bool(options.get("use_cache", True)))
+            if "workers" in options:
+                self.workers_entry.delete(0, "end")
+                self.workers_entry.insert(0, str(int(options["workers"])))
+            if "translation_backend" in options:
+                self.backend_menu.set(
+                    "LibreTranslate"
+                    if options["translation_backend"] == "libretranslate"
+                    else "Google"
+                )
+            if "output_dir" in options and options["output_dir"] is not None:
+                self.output_dir = options["output_dir"] or ""
+                self._update_output_dir_label()
+        except Exception as e:
+            print(f"Warning: could not restore download options: {e}")
+    
+    def _persist_active_job(self, force: bool = False):
+        """Write _active_job to disk (throttled unless force)."""
+        if not self._active_job:
+            return
+        self._job_save_counter += 1
+        if not force and self._job_save_counter % 10 != 0:
+            return
+        self._active_job["status"] = "paused" if self.is_paused else "running"
+        save_job(self._active_job, self.data_dir)
+    
+    def _set_active_job(self, job: dict):
+        self._active_job = job
+        self._job_save_counter = 0
+        self._hide_resume_banner()
+        save_job(job, self.data_dir)
+    
+    def _clear_active_job(self):
+        self._active_job = None
+        self._job_save_counter = 0
+        clear_job(self.data_dir)
+        self._hide_resume_banner()
+    
+    def _hide_resume_banner(self):
+        try:
+            self.resume_frame.grid_remove()
+        except Exception:
+            pass
+    
+    def _show_resume_banner(self, job: dict):
+        urls = job_chapter_urls(job)
+        cached = self.cache.count_cached_urls(urls) if urls else 0
+        total = len(urls)
+        title = job_display_title(job)
+        if total:
+            detail = f"{cached}/{total} chapters cached"
+        else:
+            detail = "cached chapters will be reused"
+        self.resume_label.configure(
+            text=f"Incomplete download: {title}\n{detail} — resume anytime (saved locally, not on Drive)."
+        )
+        self.resume_frame.grid(row=0, column=0, columnspan=3, padx=8, pady=(8, 0), sticky="ew")
+    
+    def _check_resume_job(self):
+        """On startup, surface a previously unfinished download."""
+        if self.is_downloading:
+            return
+        job = load_job(self.data_dir)
+        if not job:
+            return
+        self._active_job = job
+        self._show_resume_banner(job)
+        self._update_status(f"Incomplete download ready to resume: {job_display_title(job)}")
+    
+    def _on_discard_job(self):
+        if self.is_downloading:
+            return
+        if not messagebox.askyesno(
+            "Discard incomplete download",
+            "Remove the saved resume point?\n\n"
+            "Cached chapter text stays on this PC and can still speed up a new download.",
+        ):
+            return
+        self._clear_active_job()
+        self._update_status("Resume point discarded")
+    
+    def _on_resume_job(self):
+        if self.is_downloading:
+            return
+        job = self._active_job or load_job(self.data_dir)
+        if not job:
+            self._hide_resume_banner()
+            return
+        kind = job.get("kind")
+        try:
+            if kind == "single":
+                self._resume_single_job(job)
+            elif kind == "multi":
+                self._resume_multi_job(job)
+            elif kind == "library_update":
+                self._resume_library_update_job(job)
+            elif kind == "library_update_all":
+                self._resume_library_update_all_job(job)
+            else:
+                messagebox.showerror("Resume", f"Unknown job type: {kind}")
+                self._clear_active_job()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Resume failed", str(e))
+    
+    def _resume_single_job(self, job: dict):
+        self.mode_switch.set("Single")
+        self._on_mode_change("Single")
+        self._apply_download_options(job.get("options"))
+        
+        info = novel_info_from_job(job.get("info"))
+        chapters = chapters_from_job(job.get("chapters") or [])
+        source_url = (job.get("source_url") or (info.source_url if info else "")).strip()
+        if not chapters or not source_url:
+            raise Exception("Saved download is missing chapter list or URL")
+        
+        parser = get_parser_for_url(source_url)
+        if not parser:
+            raise Exception(f"Unsupported site:\n{source_url}")
+        
+        if not info:
+            info = NovelInfo(title=job.get("title") or "Untitled", source_url=source_url)
+        elif not info.source_url:
+            info.source_url = source_url
+        
+        self.parser = parser
+        self.novel_info = info
+        self.chapters = chapters
+        self.translated_title = job.get("translated_title") or None
+        self.url_entry.delete(0, "end")
+        self.url_entry.insert(0, source_url)
+        self.title_label.configure(text=info.title)
+        self.author_label.configure(text=info.author or "-")
+        self.chapters_label.configure(text=str(len(chapters)))
+        self.eng_title_label.configure(text=self.translated_title or "-")
+        self._populate_chapter_tree(select_all=True)
+        
+        output_path = job.get("output_path") or self._epub_path(
+            self._get_downloads_folder(),
+            self.translated_title or info.title,
+        )
+        self._set_active_job(job)
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.is_paused = False
+        self.download_btn.configure(state="disabled")
+        self._set_download_controls_active(True)
+        self.fetch_btn.configure(state="disabled")
+        self._update_status("Resuming download…")
+        
+        thread = threading.Thread(
+            target=self._download_thread,
+            args=(chapters, output_path),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _resume_multi_job(self, job: dict):
+        self.mode_switch.set("Multi")
+        self._on_mode_change("Multi")
+        self._apply_download_options(job.get("options"))
+        
+        novels = []
+        for item in job.get("novels") or []:
+            if item.get("done"):
+                continue
+            source_url = (item.get("source_url") or item.get("url") or "").strip()
+            chapters = chapters_from_job(item.get("chapters") or [])
+            info = novel_info_from_job(item.get("info"))
+            if not source_url or not chapters:
+                continue
+            parser = get_parser_for_url(source_url)
+            if not parser:
+                continue
+            if not info:
+                info = NovelInfo(
+                    title=item.get("title") or "Untitled",
+                    source_url=source_url,
+                )
+            novels.append({
+                "url": source_url,
+                "parser": parser,
+                "info": info,
+                "chapters": chapters,
+                "status": "fetched",
+                "translated_title": item.get("translated_title") or "",
+            })
+        
+        if not novels:
+            self._clear_active_job()
+            raise Exception("No unfinished novels left in the saved multi-download")
+        
+        # Rebuild result rows for the remaining queue
+        for w in list(self.multi_result_labels):
+            try:
+                w["frame"].destroy()
+            except Exception:
+                pass
+        self.multi_result_labels = []
+        self.multi_novels = novels
+        for idx, novel in enumerate(novels):
+            self._multi_create_result_row(idx, novel["url"])
+            title = novel.get("translated_title") or novel["info"].title
+            self.multi_result_labels[idx]["title"].configure(text=title)
+            self.multi_result_labels[idx]["chapters"].configure(
+                text=f"{len(novel['chapters'])} ch."
+            )
+            self.multi_result_labels[idx]["status"].configure(
+                text="Queued", text_color="gray"
+            )
+        
+        self._set_active_job(job)
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.is_paused = False
+        self.multi_download_btn.configure(state="disabled")
+        self.multi_fetch_btn.configure(state="disabled")
+        self.multi_clear_btn.configure(state="disabled")
+        self._set_download_controls_active(True)
+        self.fetch_btn.configure(state="disabled")
+        self.mode_switch.configure(state="disabled")
+        self._update_status("Resuming multi-download…")
+        
+        thread = threading.Thread(
+            target=self._multi_download_thread,
+            args=(novels,),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _resume_library_update_job(self, job: dict):
+        self.mode_switch.set("Library")
+        self._on_mode_change("Library")
+        self._apply_download_options(job.get("options"))
+        
+        source_url = (job.get("source_url") or "").strip()
+        entry = self.library_store.get_library_entry(source_url) if source_url else None
+        parser = get_parser_for_url(source_url) if source_url else None
+        chapters = chapters_from_job(job.get("chapters") or [])
+        info = novel_info_from_job(job.get("info"))
+        if not parser or not chapters or not info:
+            raise Exception("Saved library update is incomplete — try Update again from the library")
+        
+        output_path = job.get("output_path") or ""
+        translated_title = job.get("translated_title") or (
+            entry.translated_title if entry else None
+        ) or info.title
+        
+        self._set_active_job(job)
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.is_paused = False
+        self._set_download_controls_active(True)
+        self.mode_switch.configure(state="disabled")
+        self.library_refresh_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        self._update_status(f"Resuming library update: {translated_title[:40]}…")
+        
+        thread = threading.Thread(
+            target=self._library_update_resume_thread,
+            args=(entry, parser, info, chapters, output_path, translated_title),
+            daemon=True,
+        )
+        thread.start()
+    
+    def _library_update_resume_thread(
+        self, entry, parser, info, chapters, output_path, translated_title
+    ):
+        """Continue a saved library update using stored chapter list + cache."""
+        try:
+            book_key = info.source_url or (entry.source_url if entry else "")
+            if not output_path:
+                output_path = self._epub_path(
+                    self._get_downloads_folder(),
+                    translated_title,
+                    preferred_name=(entry.epub_filename if entry else "") or "",
+                    preferred_path=(entry.output_path if entry else "") or "",
+                )
+            
+            failed_titles = self._download_chapters_with_cache(
+                parser, chapters, book_key,
+                set_status=lambda s: self._ui_progress(status=s),
+                set_progress=lambda f: self._ui_progress(fraction=f / 2),
+            )
+            
+            cleaner = ContentCleaner() if self.clean_var.get() else None
+            translator = (
+                self._make_translator(self._get_workers())
+                if self.translate_var.get() else None
+            )
+            if translator:
+                builder = TranslatedEPUBBuilder(
+                    cleaner=cleaner, translator=translator, image_cache=self.cache
+                )
+                
+                def progress_cb(current, total_steps, status):
+                    if self.cancel_requested:
+                        translator.cancel()
+                        return
+                    self._ui_progress(0.5 + (current / total_steps) * 0.5, status)
+                
+                builder.build_with_translation(info, chapters, output_path, progress_cb)
+            else:
+                builder = EPUBBuilder(cleaner=cleaner, image_cache=self.cache)
+                
+                def progress_cb(current, total_steps, status):
+                    self._ui_progress(0.5 + (current / total_steps) * 0.5, status)
+                
+                builder.build(info, chapters, output_path, progress_cb)
+            
+            self._record_successful_download(info, chapters, translated_title, output_path)
+            self._clear_active_job()
+            display = translated_title or info.title
+            msg = f"Updated!\n{display}\n→ {output_path}"
+            if failed_titles:
+                msg += f"\n\n{len(failed_titles)} chapter(s) failed (placeholders)."
+            notify("Library update complete", f"{display}")
+            self._ui_progress(1.0, f"Updated → {output_path}", force=True)
+            self.after(0, lambda m=msg: messagebox.showinfo("Library Updated", m))
+        except _DownloadCancelled:
+            self._ui_progress(status="Cancelled", force=True)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.after(0, lambda msg=str(e): self._show_error(f"Library update failed: {msg}"))
+        finally:
+            self.is_downloading = False
+            self.is_paused = False
+            self.after(0, lambda: self._set_download_controls_active(False))
+            self.after(0, lambda: self.mode_switch.configure(state="normal"))
+            self.after(0, lambda: self.library_refresh_btn.configure(state="normal"))
+            self.after(0, lambda: self.library_check_btn.configure(state="normal"))
+            self.after(0, self._refresh_library_ui)
+            self.after(0, self._update_library_update_all_btn)
+    
+    def _resume_library_update_all_job(self, job: dict):
+        self.mode_switch.set("Library")
+        self._on_mode_change("Library")
+        self._apply_download_options(job.get("options"))
+        
+        pending_urls = [
+            e.get("source_url") for e in (job.get("entries") or [])
+            if e.get("source_url") and not e.get("done")
+        ]
+        entries = []
+        for url in pending_urls:
+            entry = self.library_store.get_library_entry(url)
+            if entry:
+                entries.append(entry)
+        if not entries:
+            self._clear_active_job()
+            raise Exception("No unfinished library novels left to update")
+        
+        self._set_active_job(job)
+        self.is_downloading = True
+        self.cancel_requested = False
+        self.is_paused = False
+        self._set_download_controls_active(True)
+        self.mode_switch.configure(state="disabled")
+        self.library_refresh_btn.configure(state="disabled")
+        self.library_check_btn.configure(state="disabled")
+        self.library_update_all_btn.configure(state="disabled")
+        self.progress_bar.set(0)
+        self._update_status(f"Resuming Update All ({len(entries)} remaining)…")
+        
+        thread = threading.Thread(
+            target=self._library_update_all_thread,
+            args=(entries,),
+            daemon=True,
+        )
+        thread.start()
     
     # ------------------------------------------------------------------
     # Multi-download mode
@@ -1596,12 +2170,30 @@ class HuaEPUBApp(ctk.CTk):
         # Persist current options before starting
         self._save_settings()
         
+        self._set_active_job({
+            "kind": "multi",
+            "status": "running",
+            "options": self._download_options_snapshot(),
+            "novels": [
+                {
+                    "source_url": (n.get("url") or (n["info"].source_url if n.get("info") else "")) or "",
+                    "title": n["info"].title if n.get("info") else "",
+                    "translated_title": n.get("translated_title") or "",
+                    "info": novel_info_to_job(n.get("info")),
+                    "chapters": chapters_to_job(n.get("chapters") or []),
+                    "done": False,
+                }
+                for n in fetched
+            ],
+        })
+        
         self.is_downloading = True
         self.cancel_requested = False
+        self.is_paused = False
         self.multi_download_btn.configure(state="disabled")
         self.multi_fetch_btn.configure(state="disabled")
         self.multi_clear_btn.configure(state="disabled")
-        self.cancel_btn.configure(state="normal")
+        self._set_download_controls_active(True)
         self.fetch_btn.configure(state="disabled")
         self.mode_switch.configure(state="disabled")
         
@@ -1609,16 +2201,34 @@ class HuaEPUBApp(ctk.CTk):
         thread.daemon = True
         thread.start()
     
+    def _mark_multi_novel_done(self, source_url: str):
+        """Flip done=True on the matching novel in the active multi job."""
+        if not self._active_job or self._active_job.get("kind") != "multi":
+            return
+        for novel in self._active_job.get("novels") or []:
+            if novel.get("source_url") == source_url or novel.get("url") == source_url:
+                novel["done"] = True
+                break
+        self._persist_active_job(force=True)
+    
     def _multi_download_thread(self, novels: list):
         """Download all novels sequentially in background."""
         total_novels = len(novels)
         results = []  # (title, path, success, error, failed_chapter_count)
         downloads_dir = self._get_downloads_folder()
+        cancelled = False
         
         for novel_idx, novel in enumerate(novels):
+            try:
+                self._wait_while_paused()
+            except _DownloadCancelled:
+                results.append((novel['translated_title'] or "Unknown", "", False, "Cancelled", 0))
+                cancelled = True
+                break
             if self.cancel_requested:
                 results.append((novel['translated_title'] or "Unknown", "", False, "Cancelled", 0))
-                continue
+                cancelled = True
+                break
             
             info = novel['info']
             chapters = novel['chapters']
@@ -1626,11 +2236,14 @@ class HuaEPUBApp(ctk.CTk):
             title_for_filename = novel['translated_title'] if novel['translated_title'] else info.title
             
             # Find the index in the full multi_novels list for UI updates
-            full_idx = self.multi_novels.index(novel)
+            try:
+                full_idx = self.multi_novels.index(novel)
+            except ValueError:
+                full_idx = novel_idx
             
             self.after(0, lambda i=full_idx: self.multi_result_labels[i]['status'].configure(
                 text="Downloading", text_color="orange"
-            ))
+            ) if i < len(self.multi_result_labels) else None)
             self.after(0, lambda ni=novel_idx, tn=total_novels: self._update_status(
                 f"Novel {ni + 1}/{tn}: Downloading chapters..."
             ))
@@ -1664,6 +2277,7 @@ class HuaEPUBApp(ctk.CTk):
                         parser, chapters, book_key, set_status, set_progress
                     )
                 except _DownloadCancelled:
+                    cancelled = True
                     raise Exception("Cancelled by user")
                 failed_ch_count = len(failed_titles)
                 
@@ -1703,22 +2317,40 @@ class HuaEPUBApp(ctk.CTk):
                 self._record_successful_download(
                     info, chapters, novel.get('translated_title'), output_path
                 )
+                self._mark_multi_novel_done(book_key)
                 status_text = "Done" if not failed_ch_count else f"Done ({failed_ch_count} ch. failed)"
                 self.after(0, lambda i=full_idx, s=status_text: self.multi_result_labels[i]['status'].configure(
                     text=s, text_color="#2B7A3E"
-                ))
+                ) if i < len(self.multi_result_labels) else None)
                 
             except Exception as e:
+                if "Cancelled" in str(e):
+                    cancelled = True
+                    results.append((title_for_filename, "", False, "Cancelled", 0))
+                    break
                 results.append((title_for_filename, "", False, str(e), 0))
                 self.after(0, lambda i=full_idx: self.multi_result_labels[i]['status'].configure(
                     text="Failed", text_color="red"
-                ))
+                ) if i < len(self.multi_result_labels) else None)
         
         # All done - show summary
         self.after(0, lambda: self.progress_bar.set(1.0))
         
         success = [r for r in results if r[2]]
         failed = [r for r in results if not r[2]]
+        
+        if self.cancel_requested:
+            pass  # Cancel already discarded the resume file
+        elif self._active_job and self._active_job.get("kind") == "multi":
+            pending = [n for n in self._active_job.get("novels") or [] if not n.get("done")]
+            if pending:
+                self._persist_active_job(force=True)
+                job = self._active_job
+                self.after(0, lambda j=job: self._show_resume_banner(j))
+            else:
+                self._clear_active_job()
+        else:
+            self._clear_active_job()
         
         summary = f"Completed: {len(success)}/{len(results)} novels\n\n"
         if success:
@@ -1749,10 +2381,11 @@ class HuaEPUBApp(ctk.CTk):
         
         # Re-enable UI
         self.is_downloading = False
+        self.is_paused = False
         self.after(0, lambda: self.multi_download_btn.configure(state="normal"))
         self.after(0, lambda: self.multi_fetch_btn.configure(state="normal"))
         self.after(0, lambda: self.multi_clear_btn.configure(state="normal"))
-        self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+        self.after(0, lambda: self._set_download_controls_active(False))
         self.after(0, lambda: self.fetch_btn.configure(state="normal"))
         self.after(0, lambda: self.mode_switch.configure(state="normal"))
     
@@ -2095,6 +2728,7 @@ class HuaEPUBApp(ctk.CTk):
         else:
             self.library_tree_frame.grid_remove()
             self.library_list_frame.grid(row=0, column=0, sticky="nsew")
+            self.after_idle(self._sync_library_grid_scrollregion)
     
     def _toggle_drive_panel(self):
         self._drive_panel_expanded = not self._drive_panel_expanded
@@ -2154,39 +2788,229 @@ class HuaEPUBApp(ctk.CTk):
             return f"Failed: {err}", "red"
         return "", "gray"
     
-    def _on_library_grid_configure(self, _event=None):
-        if self._library_view != "grid":
+    def _library_grid_viewport_width(self) -> int:
+        """
+        Width available for cover columns.
+
+        Prefer library_body / library_frame (they shrink with the window). Avoid
+        trusting the CTkScrollableFrame canvas first — it often keeps the old
+        wide width after a shrink, which froze columns at e.g. 7.
+        """
+        for getter in (
+            lambda: self.library_body.winfo_width(),
+            lambda: self.library_frame.winfo_width(),
+            lambda: self.library_list_frame._parent_frame.winfo_width(),
+            lambda: self.library_list_frame._parent_canvas.winfo_width(),
+        ):
+            try:
+                w = int(getter())
+                if w > 40:
+                    # Leave room for the CTk vertical scrollbar (~16–20px)
+                    return max(80, w - 20)
+            except Exception:
+                pass
+        return 200
+    
+    def _library_grid_column_count(self, viewport_width: Optional[int] = None) -> int:
+        width = viewport_width if viewport_width is not None else self._library_grid_viewport_width()
+        # ~132px tile + horizontal padding
+        return max(1, int(width) // 150)
+    
+    def _on_library_window_configure(self, event=None):
+        """Root window resize — only act on the toplevel itself."""
+        if event is not None and getattr(event, "widget", None) is not self:
+            return
+        self._schedule_library_grid_reflow()
+    
+    def _on_library_shelf_configure(self, event=None):
+        """library_frame / library_body resized."""
+        if event is not None:
+            widget = getattr(event, "widget", None)
+            if widget not in (self.library_body, self.library_frame):
+                return
+        self._schedule_library_grid_reflow()
+    
+    def _schedule_library_grid_reflow(self):
+        """Debounced column reflow when the shelf width changes."""
+        if not self.library_mode or self._library_view != "grid":
+            return
+        width = self._library_grid_viewport_width()
+        cols = self._library_grid_column_count(width)
+        if (
+            abs(width - self._library_grid_last_width) < 8
+            and cols == self._library_grid_last_cols
+            and self._library_grid_last_cols
+        ):
             return
         if self._library_reflow_after is not None:
             try:
                 self.after_cancel(self._library_reflow_after)
             except Exception:
                 pass
-        self._library_reflow_after = self.after(120, self._reflow_library_grid)
+        self._library_reflow_after = self.after(80, self._reflow_library_grid)
+    
+    def _sync_library_grid_scrollregion(self, restore_y: Optional[float] = None):
+        """
+        Force the cover-grid canvas to scroll through all tiles.
+
+        CTkScrollableFrame often keeps scrollregion == viewport when children are
+        gridded, so the scrollbar thumb stays full-size and nothing moves.
+        """
+        if self._library_view != "grid":
+            return
+        frame = self.library_list_frame
+        try:
+            canvas = frame._parent_canvas
+            win_id = frame._create_window_id
+        except Exception:
+            return
+        try:
+            if restore_y is None:
+                try:
+                    restore_y = canvas.yview()[0]
+                except Exception:
+                    restore_y = 0.0
+            frame.update_idletasks()
+            canvas_w = self._library_grid_viewport_width()
+            # Prefer laid-out content height; fall back to estimating from tile rows
+            content_h = max(int(frame.winfo_reqheight()), 1)
+            tiles = [w for w in self._library_row_widgets if w.get("kind") == "tile"]
+            if tiles:
+                cols = self._library_grid_column_count(canvas_w)
+                rows = (len(tiles) + cols - 1) // cols
+                # tile 220 + pady 12
+                estimated = rows * 232 + 24
+                content_h = max(content_h, estimated)
+            # Pin content window to viewport width so columns can shrink on resize
+            canvas.itemconfigure(win_id, width=canvas_w, height=content_h)
+            frame.update_idletasks()
+            bbox = canvas.bbox("all")
+            if bbox:
+                x1, y1, x2, y2 = bbox
+                # Do not let scrollregion wider than the viewport (avoids horizontal clipping)
+                canvas.configure(scrollregion=(x1, y1, canvas_w, max(y2, content_h)))
+            else:
+                canvas.configure(scrollregion=(0, 0, canvas_w, content_h))
+            canvas.yview_moveto(max(0.0, min(float(restore_y), 1.0)))
+        except Exception as e:
+            print(f"Warning: library scrollregion sync failed: {e}")
+    
+    def _bind_library_scroll_helpers(self):
+        """Reliable mouse-wheel scrolling over cover tiles (Windows/macOS/Linux)."""
+        frame = self.library_list_frame
+        try:
+            canvas = frame._parent_canvas
+        except Exception:
+            return
+        
+        def _pointer_over_library() -> bool:
+            try:
+                x, y = self.winfo_pointerxy()
+                widget = self.winfo_containing(x, y)
+                while widget is not None:
+                    if widget is frame or widget is canvas:
+                        return True
+                    # CTkScrollableFrame geometry is on its parent frame
+                    try:
+                        if widget is frame._parent_frame:
+                            return True
+                    except Exception:
+                        pass
+                    widget = getattr(widget, "master", None)
+            except Exception:
+                return False
+            return False
+        
+        def _on_wheel(event):
+            if self._library_view != "grid" or not self.library_mode:
+                return
+            if not _pointer_over_library():
+                return
+            try:
+                # Refresh region in case tiles were added/resized since last sync
+                top, bottom = canvas.yview()
+                if top == 0.0 and bottom == 1.0:
+                    self._sync_library_grid_scrollregion(restore_y=top)
+                    top, bottom = canvas.yview()
+                    if top == 0.0 and bottom == 1.0:
+                        return
+            except Exception:
+                return
+            try:
+                if getattr(event, "delta", 0):
+                    # Windows / macOS
+                    steps = -int(event.delta / 120) if abs(event.delta) >= 120 else (-1 if event.delta > 0 else 1)
+                    if sys.platform == "darwin":
+                        steps = -int(event.delta)
+                    canvas.yview_scroll(steps, "units")
+                elif getattr(event, "num", None) in (4, 5):
+                    canvas.yview_scroll(-1 if event.num == 4 else 1, "units")
+            except Exception:
+                pass
+            return "break"
+        
+        # bind_all so wheel works when hovering CTk child widgets
+        if not self._library_wheel_bound:
+            self.bind_all("<MouseWheel>", _on_wheel, add="+")
+            self.bind_all("<Button-4>", _on_wheel, add="+")
+            self.bind_all("<Button-5>", _on_wheel, add="+")
+            self._library_wheel_bound = True
     
     def _reflow_library_grid(self):
         self._library_reflow_after = None
-        if self._library_view != "grid":
+        if self._library_view != "grid" or not self.library_mode:
             return
         tiles = [w for w in self._library_row_widgets if w.get("kind") == "tile"]
         if not tiles:
             return
-        width = max(self.library_list_frame.winfo_width(), 200)
-        cols = max(1, width // 150)
+        
+        # Body width tracks the window; force the scroll canvas to the same width
+        # so tiles wrap instead of staying in a wide off-screen row.
+        try:
+            body_w = max(int(self.library_body.winfo_width()), 80)
+            canvas = self.library_list_frame._parent_canvas
+            canvas.configure(width=max(60, body_w - 24))
+            canvas.itemconfigure(
+                self.library_list_frame._create_window_id,
+                width=max(60, body_w - 24),
+            )
+        except Exception:
+            pass
+        
+        width = self._library_grid_viewport_width()
+        cols = self._library_grid_column_count(width)
+        self._library_grid_last_width = width
+        self._library_grid_last_cols = cols
+        
+        # Preserve scroll position across regrid (geometry changes reset it)
+        y0 = 0.0
+        try:
+            y0 = self.library_list_frame._parent_canvas.yview()[0]
+        except Exception:
+            pass
+        
         for i, row in enumerate(tiles):
             widget = row.get("frame")
             if widget is None:
                 continue
             try:
+                widget.grid_forget()
+            except Exception:
+                pass
+            try:
                 widget.grid(row=i // cols, column=i % cols, padx=6, pady=6, sticky="n")
             except Exception:
                 pass
+        
+        self._sync_library_grid_scrollregion(restore_y=y0)
     
     def _render_library_grid(self, entries: list):
         for child in self.library_list_frame.winfo_children():
             child.destroy()
         self._library_row_widgets.clear()
         self._library_cover_images.clear()
+        self._library_grid_last_width = 0  # force next reflow to place tiles
+        self._library_grid_last_cols = 0
         
         if not entries:
             msg = (
@@ -2205,6 +3029,8 @@ class HuaEPUBApp(ctk.CTk):
         for entry in entries:
             self._create_library_tile(entry)
         self.after(50, self._reflow_library_grid)
+        # Second pass after layout settles — ensures scrollbar thumb shrinks for overflow
+        self.after(200, self._sync_library_grid_scrollregion)
     
     def _create_library_tile(self, entry):
         tile = ctk.CTkFrame(self.library_list_frame, width=132, height=220)
@@ -2590,9 +3416,24 @@ class HuaEPUBApp(ctk.CTk):
             return
         
         self._save_settings()
+        self._set_active_job({
+            "kind": "library_update_all",
+            "status": "running",
+            "options": self._download_options_snapshot(),
+            "entries": [
+                {
+                    "source_url": e.source_url,
+                    "title": e.title or "",
+                    "translated_title": e.translated_title or "",
+                    "done": False,
+                }
+                for e in entries
+            ],
+        })
         self.is_downloading = True
         self.cancel_requested = False
-        self.cancel_btn.configure(state="normal")
+        self.is_paused = False
+        self._set_download_controls_active(True)
         self.mode_switch.configure(state="disabled")
         self.library_refresh_btn.configure(state="disabled")
         self.library_check_btn.configure(state="disabled")
@@ -2606,11 +3447,29 @@ class HuaEPUBApp(ctk.CTk):
         )
         thread.start()
     
+    def _mark_library_update_all_entry_done(self, source_url: str):
+        if not self._active_job or self._active_job.get("kind") != "library_update_all":
+            return
+        for item in self._active_job.get("entries") or []:
+            if item.get("source_url") == source_url:
+                item["done"] = True
+                break
+        self._persist_active_job(force=True)
+    
     def _library_update_all_thread(self, entries: list):
         results = []  # (title, ok, detail)
         total = len(entries)
         try:
             for idx, entry in enumerate(entries):
+                try:
+                    self._wait_while_paused()
+                except _DownloadCancelled:
+                    results.append((
+                        entry.translated_title or entry.title,
+                        False,
+                        "Cancelled",
+                    ))
+                    break
                 if self.cancel_requested:
                     results.append((
                         entry.translated_title or entry.title,
@@ -2637,6 +3496,15 @@ class HuaEPUBApp(ctk.CTk):
                     if not chapters:
                         raise Exception("No chapters found")
                     
+                    # Refresh resume snapshot with this book's chapter list
+                    if self._active_job and self._active_job.get("kind") == "library_update_all":
+                        for item in self._active_job.get("entries") or []:
+                            if item.get("source_url") == entry.source_url:
+                                item["chapters"] = chapters_to_job(chapters)
+                                item["info"] = novel_info_to_job(info)
+                                break
+                        self._persist_active_job(force=True)
+                    
                     new_only, _ = new_chapters_since(
                         chapters, entry.last_chapter_url, entry.chapter_count
                     )
@@ -2646,6 +3514,7 @@ class HuaEPUBApp(ctk.CTk):
                             'total': len(chapters), 'error': '',
                         }
                         results.append((display, True, "Already up to date"))
+                        self._mark_library_update_all_entry_done(entry.source_url)
                         continue
                     
                     translated_title = entry.translated_title or info.title
@@ -2716,6 +3585,7 @@ class HuaEPUBApp(ctk.CTk):
                         'total': len(chapters),
                         'error': '',
                     }
+                    self._mark_library_update_all_entry_done(entry.source_url)
                     detail = f"+{len(new_only)} → {Path(output_path).name}"
                     if failed_titles:
                         detail += f" ({len(failed_titles)} ch. failed)"
@@ -2736,7 +3606,16 @@ class HuaEPUBApp(ctk.CTk):
     
     def _on_library_update_all_done(self, results: list):
         self.is_downloading = False
-        self.cancel_btn.configure(state="disabled")
+        self.is_paused = False
+        # Clear job only when every entry finished (Cancel already cleared it)
+        if self._active_job and self._active_job.get("kind") == "library_update_all":
+            pending = [e for e in self._active_job.get("entries") or [] if not e.get("done")]
+            if pending and not self.cancel_requested:
+                self._persist_active_job(force=True)
+                self._show_resume_banner(self._active_job)
+            else:
+                self._clear_active_job()
+        self._set_download_controls_active(False)
         self.mode_switch.configure(state="normal")
         self.library_refresh_btn.configure(state="normal")
         self.library_check_btn.configure(state="normal")
@@ -2870,7 +3749,8 @@ class HuaEPUBApp(ctk.CTk):
         self._save_settings()
         self.is_downloading = True
         self.cancel_requested = False
-        self.cancel_btn.configure(state="normal")
+        self.is_paused = False
+        self._set_download_controls_active(True)
         self.mode_switch.configure(state="disabled")
         self.library_refresh_btn.configure(state="disabled")
         self.progress_bar.set(0)
@@ -2931,6 +3811,18 @@ class HuaEPUBApp(ctk.CTk):
             )
             book_key = info.source_url or url
             
+            self._set_active_job({
+                "kind": "library_update",
+                "status": "running",
+                "source_url": url,
+                "title": info.title or entry.title or "",
+                "translated_title": translated_title or "",
+                "info": novel_info_to_job(info),
+                "chapters": chapters_to_job(chapters),
+                "output_path": output_path,
+                "options": self._download_options_snapshot(),
+            })
+            
             def set_status(s):
                 self._ui_progress(status=s)
             
@@ -2971,6 +3863,7 @@ class HuaEPUBApp(ctk.CTk):
                 builder.build(info, chapters, output_path, progress_cb)
             
             self._record_successful_download(info, chapters, translated_title, output_path)
+            self._clear_active_job()
             self._library_check_status[entry.source_url] = {
                 'state': 'current',
                 'new_count': 0,
@@ -2994,10 +3887,15 @@ class HuaEPUBApp(ctk.CTk):
         except Exception as e:
             import traceback
             traceback.print_exc()
+            try:
+                self._persist_active_job(force=True)
+            except Exception:
+                pass
             self.after(0, lambda msg=str(e): self._show_error(f"Library update failed: {msg}"))
         finally:
             self.is_downloading = False
-            self.after(0, lambda: self.cancel_btn.configure(state="disabled"))
+            self.is_paused = False
+            self.after(0, lambda: self._set_download_controls_active(False))
             self.after(0, lambda: self.mode_switch.configure(state="normal"))
             self.after(0, lambda: self.library_refresh_btn.configure(state="normal"))
             self.after(0, lambda: self.library_check_btn.configure(state="normal"))

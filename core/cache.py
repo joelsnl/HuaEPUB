@@ -118,6 +118,28 @@ class NovelCache:
         except Exception:
             return 0
 
+    def count_cached_urls(self, urls: List[str]) -> int:
+        """How many of the given chapter URLs are already in the cache."""
+        if not self._conn or not urls:
+            return 0
+        try:
+            total = 0
+            # SQLite default variable limit is 999 — batch conservatively
+            with self._lock:
+                for i in range(0, len(urls), 400):
+                    batch = [u for u in urls[i:i + 400] if u]
+                    if not batch:
+                        continue
+                    placeholders = ",".join("?" * len(batch))
+                    row = self._conn.execute(
+                        f"SELECT COUNT(*) FROM chapters WHERE url IN ({placeholders})",
+                        batch,
+                    ).fetchone()
+                    total += row[0] if row else 0
+            return total
+        except Exception:
+            return 0
+
     def clear_book(self, book_key: str):
         """Drop all cached chapters for a book (force fresh download)."""
         if not self._conn:

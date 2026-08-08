@@ -19,6 +19,7 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release)
 - `core/settings.py` - persistent settings JSON; `get_data_dir()`, `get_default_books_dir()`
 - `core/cache.py` - SQLite caches: chapters, translations, **covers**, **chapter-list snapshots** (all local-only; never Drive-synced)
+- `core/download_job.py` - local-only `active_download.json` so Pause/close/reboot can resume (never Drive-synced)
 - `core/library.py` - history + tracked library (`library.json`), chapter-diff helpers for updates
 - `core/drive_sync.py` - optional Google Drive sync (`drive.file` scope only; visible folder; **library.json + EPUBs only**)
 - `core/notify.py` - OS done/update notifications

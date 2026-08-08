@@ -33,6 +33,12 @@ class TestChapterCache:
         assert cache.count_chapters('book1') == 0
         assert cache.get_chapter('https://y/1') == 'c'
 
+    def test_count_cached_urls(self, cache):
+        cache.put_chapter('book1', 'https://x/1', 't1', 'c1')
+        cache.put_chapter('book1', 'https://x/2', 't2', 'c2')
+        assert cache.count_cached_urls(['https://x/1', 'https://x/2', 'https://x/missing']) == 2
+        assert cache.count_cached_urls([]) == 0
+
     def test_overwrite(self, cache):
         cache.put_chapter('b', 'https://x/1', 't', 'old')
         cache.put_chapter('b', 'https://x/1', 't', 'new')
