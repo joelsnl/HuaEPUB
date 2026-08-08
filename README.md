@@ -6,7 +6,8 @@ Download Chinese web novels and build English EPUBs. Run from source on **Window
 
 GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window move/resize and stabler threading). Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dteviot) and fixTranslate.py.
 
-<img width="898" height="729" alt="image" src="https://github.com/user-attachments/assets/1a40bb3c-a92b-4c7b-a210-7fd50562a887" />
+<img width="1838" height="1124" alt="Screenshot 2026-08-08 at 16 30 03" src="https://github.com/user-attachments/assets/6ffa080a-5ba0-4bde-a506-e52de3a90fd5" />
+
 
 ## Features
 
