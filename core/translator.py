@@ -160,25 +160,24 @@ class GoogleTranslator:
             'dj': '1',
             'q': text
         }
+        from core.security import safe_http_request
         session = self._get_http_session()
         headers = {'User-Agent': self.USER_AGENT}
-        
-        # Use GET for short texts, POST for long texts
+
+        # Use GET for short texts, POST for long texts (redirect-safe)
         if len(text) <= 1800:
-            response = session.get(
-                self.ENDPOINT,
-                params=params,
-                headers=headers,
+            response = safe_http_request(
+                session, "GET", self.ENDPOINT,
+                allow_http=False, params=params, headers=headers,
                 timeout=self._timeout,
             )
         else:
-            response = session.post(
-                self.ENDPOINT,
-                data=params,
-                headers=headers,
+            response = safe_http_request(
+                session, "POST", self.ENDPOINT,
+                allow_http=False, data=params, headers=headers,
                 timeout=self._timeout,
             )
-        
+
         response.raise_for_status()
         data = response.json()
         
@@ -190,25 +189,27 @@ class GoogleTranslator:
     
     def _request_libretranslate(self, text: str) -> str:
         """Translate via a LibreTranslate server."""
-        from core.security import UnsafeURLError, validate_fetch_url
-        try:
-            validate_fetch_url(self.libretranslate_url, allow_http=True, resolve_dns=True)
-        except UnsafeURLError as e:
-            raise ValueError(f"Blocked LibreTranslate URL: {e}") from e
+        from core.security import UnsafeURLError, safe_http_request
         # LibreTranslate uses plain ISO codes ('zh', not 'zh-CN')
         source = self.source_lang.split('-')[0]
         session = self._get_http_session()
-        response = session.post(
-            f'{self.libretranslate_url}/translate',
-            json={
-                'q': text,
-                'source': source,
-                'target': self.target_lang,
-                'format': 'text',
-            },
-            headers={'User-Agent': self.USER_AGENT},
-            timeout=self._timeout,
-        )
+        try:
+            response = safe_http_request(
+                session,
+                "POST",
+                f'{self.libretranslate_url}/translate',
+                allow_http=True,
+                timeout=self._timeout,
+                json={
+                    'q': text,
+                    'source': source,
+                    'target': self.target_lang,
+                    'format': 'text',
+                },
+                headers={'User-Agent': self.USER_AGENT},
+            )
+        except UnsafeURLError as e:
+            raise ValueError(f"Blocked LibreTranslate URL: {e}") from e
         response.raise_for_status()
         return response.json().get('translatedText', '')
     

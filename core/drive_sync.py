@@ -140,7 +140,16 @@ class DriveSync:
     # ------------------------------------------------------------------
 
     def client_configured(self) -> bool:
-        return oauth_client_path().is_file()
+        path = oauth_client_path()
+        if not path.is_file():
+            return False
+        # Tighten perms on user-copied Desktop OAuth client JSON
+        try:
+            from core.security import tighten_file_permissions
+            tighten_file_permissions(path)
+        except Exception:
+            pass
+        return True
 
     def is_connected(self) -> bool:
         with self._lock:

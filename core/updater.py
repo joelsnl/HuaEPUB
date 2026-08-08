@@ -31,7 +31,7 @@ from core.branding import (
 from core.security import safe_extract_zip, write_update_helper_config
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.6.3"
+__version__ = "2.6.4"
 
 # GitHub repository info (repo path kept for update continuity)
 GITHUB_REPO = "joelsnl/novelDownloader"
@@ -149,17 +149,28 @@ def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = Non
         return (False, __version__, message)
 
 
-def _create_replacement_helper(new_exe: Path, old_exe: Path, app_dir: Path, pid: int) -> Path:
+def _create_replacement_helper(
+    new_exe: Path,
+    old_exe: Path,
+    app_dir: Path,
+    pid: int,
+    sha256: Optional[str] = None,
+) -> Path:
     """
-    Write a small helper + JSON config (no shell-interpolated paths), then return
-    the helper path to launch. Waits on the specific PID of the running app.
+    Write a small helper + JSON config (paths validated, never shell-interpolated
+    from untrusted text), then return the helper path to launch.
 
-    Windows: rename-swap with retries. A hard Remove-Item right after exit often
-    fails (AV / handle release) and previously aborted the whole script because
-    of $ErrorActionPreference=Stop — leaving the old exe in place.
+    Windows: rename-swap with retries + re-hash of staged binary.
+    POSIX: /bin/sh launcher that runs an embedded python3 replace (paths never
+    assigned into shell variables for mv/exec). Falls back to a strict shell
+    path only when python3 is missing.
     """
     config_path = app_dir / '_update_helper.json'
-    write_update_helper_config(config_path, new_exe=new_exe, old_exe=old_exe, pid=pid)
+    if not sha256:
+        sha256 = hashlib.sha256(Path(new_exe).read_bytes()).hexdigest()
+    write_update_helper_config(
+        config_path, new_exe=new_exe, old_exe=old_exe, pid=pid, sha256=sha256
+    )
 
     if sys.platform == 'win32':
         script_path = app_dir / '_update_helper.ps1'
@@ -176,6 +187,7 @@ try {
     $pidWait = [int]$cfg.pid
     $newExe = [string]$cfg.new_exe
     $oldExe = [string]$cfg.old_exe
+    $expected = ([string]$cfg.sha256).ToLowerInvariant()
     $backupExe = Join-Path $PSScriptRoot "_update_backup.exe"
     Write-UpdateLog "Waiting for PID $pidWait to exit"
     Start-Sleep -Seconds 2
@@ -187,6 +199,13 @@ try {
     Write-UpdateLog "Replacing '$oldExe' with '$newExe'"
     if (-not (Test-Path -LiteralPath $newExe)) {
         throw "New executable missing: $newExe"
+    }
+    if ($expected.Length -eq 64) {
+        $actual = (Get-FileHash -LiteralPath $newExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "Staged binary checksum mismatch (expected $expected, got $actual)"
+        }
+        Write-UpdateLog "Staged binary checksum OK"
     }
     $replaced = $false
     for ($i = 1; $i -le 90; $i++) {
@@ -233,17 +252,33 @@ try {
         script_path.write_text(script_content, encoding='utf-8')
         return script_path
 
-    script_path = app_dir / '_update_helper.py'
-    script_content = '''#!/usr/bin/env python3
-import json, os, time, sys, traceback
-from pathlib import Path
-cfg_path = Path(__file__).with_name("_update_helper.json")
-log_path = Path(__file__).with_name("_update_helper.log")
+    # POSIX (macOS + Linux): never launch via frozen sys.executable.
+    # Prefer python3 for replace so paths never enter shell variables.
+    script_path = app_dir / '_update_helper.sh'
+    script_content = r'''#!/bin/sh
+set +e
+DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+LOG="$DIR/_update_helper.log"
+CFG="$DIR/_update_helper.json"
+SELF="$0"
 
-def log(msg):
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG" 2>/dev/null
+}
+
+# Primary path: python3 owns wait / hash verify / replace / relaunch.
+# Paths stay inside Python — never assigned to shell vars for mv/exec.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$CFG" "$LOG" "$SELF" <<'PY'
+import hashlib, json, os, sys, time
+from pathlib import Path
+
+cfg_path, log_path, self_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+
+def log(msg: str) -> None:
     try:
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\\n")
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
     except OSError:
         pass
 
@@ -252,18 +287,27 @@ try:
     pid = int(cfg["pid"])
     new_exe = Path(cfg["new_exe"])
     old_exe = Path(cfg["old_exe"])
-    backup = Path(__file__).with_name("_update_backup")
-    log(f"Waiting for PID {pid} to exit")
+    expected = str(cfg.get("sha256") or "").strip().lower()
+    backup = old_exe.parent / "_update_backup"
+    app_dir = old_exe.parent.resolve()
+    for p in (new_exe, old_exe):
+        p.resolve().relative_to(app_dir)
+    log(f"Waiting for PID {pid} to exit (new={new_exe} old={old_exe})")
     time.sleep(2)
     while True:
         try:
             os.kill(pid, 0)
-            time.sleep(1)
         except OSError:
             break
+        time.sleep(1)
     time.sleep(2)
-    if not new_exe.exists():
+    if not new_exe.is_file():
         raise FileNotFoundError(f"New executable missing: {new_exe}")
+    if expected:
+        actual = hashlib.sha256(new_exe.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"Staged binary checksum mismatch ({actual} != {expected})")
+        log("Staged binary checksum OK")
     replaced = False
     last_err = None
     for i in range(1, 91):
@@ -287,7 +331,8 @@ try:
             time.sleep(1)
     if not replaced:
         raise RuntimeError(f"Failed to replace executable after retries: {last_err}")
-    os.chmod(old_exe, os.stat(old_exe).st_mode | 0o111)
+    mode = old_exe.stat().st_mode
+    os.chmod(old_exe, mode | 0o111)
     try:
         backup.unlink()
     except OSError:
@@ -296,25 +341,170 @@ try:
         cfg_path.unlink()
     except OSError:
         pass
+    # Clear Gatekeeper quarantine when xattr exists (macOS)
+    if sys.platform == "darwin":
+        for args in (
+            ["xattr", "-dr", "com.apple.quarantine", str(old_exe)],
+            ["xattr", "-cr", str(old_exe)],
+        ):
+            try:
+                import subprocess
+                subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
     log("Launching updated app")
-    try:
-        os.spawnv(os.P_NOWAIT, str(old_exe), [str(old_exe)])
-    except Exception as e:
-        log(f"Relaunch failed: {e}")
-    try:
-        Path(__file__).unlink()
-    except OSError:
-        pass
-    try:
-        log_path.unlink()
-    except OSError:
-        pass
+    clean = {
+        k: v for k, v in os.environ.items()
+        if k not in {
+            "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2",
+        }
+    }
+    os.spawnve(os.P_NOWAIT, str(old_exe), [str(old_exe)], clean)
+    for p in (self_path, log_path):
+        try:
+            p.unlink()
+        except OSError:
+            pass
 except Exception:
-    log("FATAL:\\n" + traceback.format_exc())
+    import traceback
+    log("FATAL:\n" + traceback.format_exc())
+    sys.exit(1)
+PY
+  exit $?
+fi
+
+# Fallback without python3: reject metacharacters, then quoted mv only.
+log "python3 not found; using restricted shell fallback"
+PID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CFG" | head -1)
+NEW_EXE=$(sed -n 's/.*"new_exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -1)
+OLD_EXE=$(sed -n 's/.*"old_exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -1)
+EXPECTED=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' "$CFG" | head -1)
+BACKUP="$DIR/_update_backup"
+
+# Reject shell-metacharacters in paths before any use (python3 path already validated).
+bad=0
+for p in "$NEW_EXE" "$OLD_EXE"; do
+  case "$p" in
+    *\$*|*\`*|*\;*|*\|*|*\&*) bad=1 ;;
+  esac
+done
+case "$NEW_EXE$OLD_EXE" in
+  *"	"*) bad=1 ;;
+esac
+if [ "$bad" -ne 0 ] || [ -z "$NEW_EXE" ] || [ -z "$OLD_EXE" ] || [ -z "$PID" ]; then
+  log "FATAL: invalid helper paths or pid"
+  exit 1
+fi
+
+log "Waiting for PID $PID to exit (new=$NEW_EXE old=$OLD_EXE)"
+sleep 2
+while kill -0 "$PID" 2>/dev/null; do
+  sleep 1
+done
+sleep 2
+
+if [ ! -f "$NEW_EXE" ]; then
+  log "FATAL: new executable missing: $NEW_EXE"
+  exit 1
+fi
+
+# Best-effort re-hash when sha256sum/shasum exists
+if [ -n "$EXPECTED" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL=$(sha256sum "$NEW_EXE" | awk '{print tolower($1)}')
+  elif command -v shasum >/dev/null 2>&1; then
+    ACTUAL=$(shasum -a 256 "$NEW_EXE" | awk '{print tolower($1)}')
+  else
+    ACTUAL=""
+  fi
+  EXP_LC=$(printf '%s' "$EXPECTED" | tr 'A-F' 'a-f')
+  if [ -n "$ACTUAL" ] && [ "$ACTUAL" != "$EXP_LC" ]; then
+    log "FATAL: staged binary checksum mismatch"
+    exit 1
+  fi
+fi
+
+replaced=0
+i=0
+while [ "$i" -lt 90 ]; do
+  i=$((i + 1))
+  rm -f "$BACKUP"
+  if [ -e "$OLD_EXE" ]; then
+    if ! mv -f "$OLD_EXE" "$BACKUP" 2>>"$LOG"; then
+      log "Attempt $i: could not move old aside"
+      sleep 1
+      continue
+    fi
+  fi
+  if mv -f "$NEW_EXE" "$OLD_EXE" 2>>"$LOG"; then
+    replaced=1
+    log "Replace succeeded on attempt $i"
+    break
+  fi
+  log "Attempt $i: could not place new exe"
+  if [ ! -e "$OLD_EXE" ] && [ -e "$BACKUP" ]; then
+    mv -f "$BACKUP" "$OLD_EXE" 2>>"$LOG"
+  fi
+  sleep 1
+done
+
+if [ "$replaced" -ne 1 ]; then
+  log "FATAL: failed to replace executable after retries"
+  exit 1
+fi
+
+chmod a+x "$OLD_EXE" 2>/dev/null
+rm -f "$BACKUP" "$CFG"
+if command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$OLD_EXE" 2>/dev/null
+  xattr -cr "$OLD_EXE" 2>/dev/null
+fi
+
+log "Launching updated app"
+env \
+  -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
+  -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u _MEIPASS2 \
+  "$OLD_EXE" >/dev/null 2>&1 &
+
+rm -f "$SELF" "$LOG"
 '''
-    script_path.write_text(script_content, encoding='utf-8')
+    script_path.write_text(script_content, encoding='utf-8', newline='\n')
     os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
     return script_path
+
+
+def _posix_helper_interpreter() -> str:
+    """
+    Shell used to run the POSIX update helper.
+
+    Must never be the frozen app binary: on macOS/Linux, sys.executable is the
+    GUI itself, so launching the helper with it opens a second old-version window.
+    """
+    frozen_exe: Optional[Path] = None
+    if is_frozen():
+        try:
+            frozen_exe = Path(sys.executable).resolve()
+        except OSError:
+            frozen_exe = Path(sys.executable)
+
+    for candidate in (
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/sh",
+        "/usr/bin/sh",
+    ):
+        path = Path(candidate)
+        if not path.is_file():
+            continue
+        if frozen_exe is not None:
+            try:
+                if path.resolve() == frozen_exe:
+                    continue
+            except OSError:
+                pass
+        return candidate
+    return "sh"
 
 
 def _launch_replacement_script(script_path: Path):
@@ -330,15 +520,26 @@ def _launch_replacement_script(script_path: Path):
             ],
             cwd=str(script_path.parent),
         )
-    else:
-        python = sys.executable or 'python3'
-        subprocess.Popen(
-            [python, str(script_path)],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(script_path.parent),
-        )
+        return
+
+    # macOS + Linux: always a real shell — never sys.executable when frozen.
+    shell = _posix_helper_interpreter()
+    if is_frozen():
+        try:
+            if Path(shell).resolve() == Path(sys.executable).resolve():
+                raise RuntimeError(
+                    "Refusing to launch update helper via frozen app binary "
+                    f"({sys.executable}); would open a second GUI instead of applying the update."
+                )
+        except OSError:
+            pass
+    subprocess.Popen(
+        [shell, str(script_path)],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(script_path.parent),
+    )
 
 
 def _find_asset(release_data: dict, name: str) -> Optional[dict]:
@@ -539,17 +740,28 @@ def _update_frozen_from_asset(
 
         shutil.copy2(new_exe, temp_new_exe)
 
-    if sys.platform != 'win32':
-        os.chmod(temp_new_exe, os.stat(temp_new_exe).st_mode | stat.S_IEXEC)
+    # Owner-only staged binary; re-hashed by the helper immediately before replace.
+    try:
+        if sys.platform == 'win32':
+            os.chmod(temp_new_exe, stat.S_IRUSR | stat.S_IWUSR)
+        else:
+            os.chmod(temp_new_exe, stat.S_IRWXU)  # 0700 — owner rwx for later exec
+    except OSError:
+        pass
+    staged_sha = hashlib.sha256(temp_new_exe.read_bytes()).hexdigest()
 
     if progress_callback:
         progress_callback(90, 100, "Installing update...")
 
     if sys.platform == 'win32':
-        return _finalize_frozen_update_windows(temp_new_exe, old_exe, progress_callback)
+        return _finalize_frozen_update_windows(
+            temp_new_exe, old_exe, progress_callback, sha256=staged_sha
+        )
 
     # POSIX: replace after this process exits
-    script_path = _create_replacement_helper(temp_new_exe, old_exe, app_dir, os.getpid())
+    script_path = _create_replacement_helper(
+        temp_new_exe, old_exe, app_dir, os.getpid(), sha256=staged_sha
+    )
     _launch_replacement_script(script_path)
 
     if progress_callback:
@@ -566,6 +778,7 @@ def _cleanup_update_sidecars(app_dir: Path):
     for name in (
         "_update_helper.ps1",
         "_update_helper.py",
+        "_update_helper.sh",
         "_update_helper.json",
         "_update_helper.log",
         "_update_relaunch.ps1",
@@ -687,6 +900,7 @@ def _finalize_frozen_update_windows(
     new_exe: Path,
     old_exe: Path,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    sha256: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """
     Swap on-disk exe while still running, then schedule a hidden post-exit
@@ -698,7 +912,9 @@ def _finalize_frozen_update_windows(
     except OSError as e:
         # Fall back to post-exit helper if in-process swap is blocked.
         print(f"In-process swap failed ({e}); scheduling post-exit helper")
-        script_path = _create_replacement_helper(new_exe, old_exe, old_exe.parent, os.getpid())
+        script_path = _create_replacement_helper(
+            new_exe, old_exe, old_exe.parent, os.getpid(), sha256=sha256
+        )
         _launch_replacement_script(script_path)
         if progress_callback:
             progress_callback(100, 100, "Update ready!")

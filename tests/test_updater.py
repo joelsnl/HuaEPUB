@@ -128,19 +128,72 @@ class TestReplacementHelper:
         cfg = (tmp_path / "_update_helper.json").read_text(encoding="utf-8")
         assert '"pid": 12345' in cfg
 
-    def test_posix_helper_retries(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(updater.sys, "platform", "linux")
-        new_exe = tmp_path / "_new_HuaEPUB"
-        old_exe = tmp_path / "HuaEPUB"
+    def test_posix_helper_is_shell_not_frozen_python(self, tmp_path, monkeypatch):
+        for platform in ("linux", "darwin"):
+            monkeypatch.setattr(updater.sys, "platform", platform)
+            new_exe = tmp_path / f"_new_HuaEPUB_{platform}"
+            old_exe = tmp_path / f"HuaEPUB_{platform}"
+            new_exe.write_bytes(b"new")
+            old_exe.write_bytes(b"old")
+
+            script = updater._create_replacement_helper(new_exe, old_exe, tmp_path, pid=99)
+            text = script.read_text(encoding="utf-8")
+            assert script.name == "_update_helper.sh"
+            assert text.startswith("#!/bin/sh")
+            # Primary path: python3 owns replace (paths never in shell vars)
+            assert "python3 - " in text
+            assert "hashlib.sha256" in text
+            assert "Staged binary checksum" in text
+            # Fallback still strips PyInstaller env; never env -i
+            assert "env -i" not in text
+            assert "-u SSL_CERT_FILE" in text
+            assert "com.apple.quarantine" in text
+            cfg = (tmp_path / "_update_helper.json").read_text(encoding="utf-8")
+            assert '"sha256"' in cfg
+            assert '"pid": 99' in cfg
+
+    def test_windows_helper_rehashes_staged_binary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        new_exe = tmp_path / "_new_HuaEPUB.exe"
+        old_exe = tmp_path / "HuaEPUB.exe"
         new_exe.write_bytes(b"new")
         old_exe.write_bytes(b"old")
-
-        script = updater._create_replacement_helper(new_exe, old_exe, tmp_path, pid=99)
+        script = updater._create_replacement_helper(new_exe, old_exe, tmp_path, pid=7)
         text = script.read_text(encoding="utf-8")
-        assert script.name == "_update_helper.py"
-        assert "for i in range(1, 91)" in text
-        assert "os.spawnv" in text
-        assert Path(script).exists()
+        assert "Get-FileHash" in text
+        assert "checksum mismatch" in text.lower()
+
+    def test_posix_launch_uses_shell_not_sys_executable(self, tmp_path, monkeypatch):
+        for platform in ("linux", "darwin"):
+            monkeypatch.setattr(updater.sys, "platform", platform)
+            monkeypatch.setattr(updater, "is_frozen", lambda: True)
+            monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "HuaEPUB"))
+            calls = []
+
+            def fake_popen(args, **kwargs):
+                calls.append((args, kwargs))
+                class P:
+                    pass
+                return P()
+
+            monkeypatch.setattr(updater.subprocess, "Popen", fake_popen)
+            script = tmp_path / "_update_helper.sh"
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            updater._launch_replacement_script(script)
+            assert calls, platform
+            interp = calls[-1][0][0]
+            assert interp != str(tmp_path / "HuaEPUB"), platform
+            assert Path(interp).name in ("bash", "sh"), platform
+            assert calls[-1][0][1] == str(script)
+
+    def test_posix_interpreter_skips_frozen_exe(self, tmp_path, monkeypatch):
+        fake_app = tmp_path / "HuaEPUB"
+        fake_app.write_bytes(b"app")
+        monkeypatch.setattr(updater, "is_frozen", lambda: True)
+        monkeypatch.setattr(updater.sys, "executable", str(fake_app))
+        chosen = updater._posix_helper_interpreter()
+        assert Path(chosen).resolve() != fake_app.resolve()
+        assert Path(chosen).name in ("bash", "sh")
 
 
 class TestSwapRunningExeWindows:

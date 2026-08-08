@@ -53,6 +53,7 @@ import parsers  # noqa: F401 — register site parsers
 class MainWindow(QMainWindow):
     # Cross-thread marshaling for plain threading.Thread callbacks (updater, etc.)
     _sig_update_check = Signal(bool, str, str)
+    _sig_update_done = Signal(bool, str)
     _sig_status = Signal(str)
 
     def __init__(self):
@@ -73,6 +74,9 @@ class MainWindow(QMainWindow):
 
         self._sig_update_check.connect(
             self._on_update_check_ready, Qt.ConnectionType.QueuedConnection
+        )
+        self._sig_update_done.connect(
+            self._on_update_download_done, Qt.ConnectionType.QueuedConnection
         )
         self._sig_status.connect(
             self._set_status_safe, Qt.ConnectionType.QueuedConnection
@@ -1145,11 +1149,27 @@ class MainWindow(QMainWindow):
                     progress_callback=lambda _c, _t, s: self._sig_status.emit(
                         s or "Downloading update…"
                     ),
-                    completion_callback=lambda ok, msg: self._sig_status.emit(
-                        "Update ready — restart the app"
-                        if ok
-                        else (msg or "Update failed")
+                    completion_callback=lambda ok, msg: self._sig_update_done.emit(
+                        bool(ok), str(msg or "")
                     ),
                 )
         else:
             self.progress.set_status(message or "App is up to date")
+
+    @Slot(bool, str)
+    def _on_update_download_done(self, ok: bool, message: str):
+        if ok:
+            self.progress.set_status("Update ready — closing to apply…")
+            QMessageBox.information(
+                self,
+                "Update ready",
+                message
+                or "Update installed.\nThe application will now close and reopen.",
+            )
+            # Helper waits for this PID to exit before swapping the binary.
+            QApplication.instance().quit()
+            return
+        self.progress.set_status(message or "Update failed")
+        QMessageBox.warning(
+            self, "Update failed", message or "Update failed."
+        )

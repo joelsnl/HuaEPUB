@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.6.3**
+**Current version: 2.6.4**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -24,7 +24,7 @@ GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA, Pause, and Cancel; failed chapters are retried at the end of the run
 - **Custom output folder** and persistent settings in `~/.huaepub/` (migrates from `~/.noveldownloader/` if present)
-- **Auto-updater** — downloads prebuilt, checksum-verified release builds when available
+- **Auto-updater** — downloads prebuilt release builds, verifies `SHA256SUMS.txt`, then replaces the binary and relaunches (macOS/Linux quit the app so the helper can finish; Windows swaps in place)
 - **Log file** (`~/.huaepub/logs/huaepub.log`) for diagnosing issues
 
 ## Installation
@@ -169,9 +169,18 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/cache.db` | Chapter HTML, translations, covers, TOCs |
 | `~/.huaepub/active_download.json` | Incomplete download resume point (if any) |
 | `~/.huaepub/settings.json` | App options |
+| `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
+| `~/.huaepub/google_token.json` | Drive refresh token (owner-only when the OS allows) |
 | `~/.huaepub/logs/huaepub.log` | Diagnostics |
 
 On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
+
+### Auto-update & trust
+
+- Updates install only when the downloaded zip matches the release’s `SHA256SUMS.txt` (fail closed if the sum is missing or wrong).
+- Checksums and zips come from the **same** GitHub release — treat the [joelsnl/novelDownloader](https://github.com/joelsnl/novelDownloader) publisher account as your trust root (enable 2FA on that account).
+- On **macOS / Linux**, confirm the “update ready” dialog; the app closes so a small shell helper can replace the binary and reopen. On **Windows**, the binary is swapped while running, then relaunched after exit.
+- Novel page / cover / LibreTranslate fetches block private/loopback hosts and re-check redirect targets. Translation still sends chapter text to Google or your LibreTranslate URL when enabled.
 
 ### Tips
 
@@ -249,8 +258,10 @@ python -m pytest tests/
 │   ├── download_job.py # Local incomplete-download resume (not Drive)
 │   ├── library.py      # Library + history store
 │   ├── drive_sync.py   # Optional Google Drive sync
+│   ├── security.py     # SSRF guards, safe zip extract, secret file perms
+│   ├── notify.py       # Desktop notifications
 │   ├── logger.py       # Log-to-file setup
-│   └── updater.py      # Auto-updater
+│   └── updater.py      # Auto-updater (version + GitHub releases)
 ├── parsers/
 │   ├── twkan.py        # twkan.com parser
 │   ├── shuba69.py      # 69shuba.com parser
@@ -280,6 +291,14 @@ python -m pytest tests/
 - Confirm the download had started (chapters were being fetched)
 - Check that `~/.huaepub/active_download.json` exists; if you clicked **Cancel**, the resume point was cleared on purpose
 - Cached chapters still help if you fetch the same book again with cache enabled
+
+### Update installed but the old version keeps opening (macOS / Linux)
+- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update).
+- After “Update ready”, allow the app to quit; do not force-quit the helper. Reopen `HuaEPUB` from the same folder you installed into.
+- If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/novelDownloader/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
+
+### Update refused / checksum error
+- The release may be incomplete, or the download was corrupted — try again later, or install the zip from Releases manually after checking `SHA256SUMS.txt`.
 
 ## Credits
 

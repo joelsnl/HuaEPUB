@@ -12,8 +12,8 @@ import socket
 import stat
 import zipfile
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Any, Iterable, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 # Hosts / nets that must never be fetched as novel content, covers, or LT backends
 _BLOCKED_HOSTNAMES = {
@@ -22,6 +22,13 @@ _BLOCKED_HOSTNAMES = {
     "metadata.google.internal",
     "metadata",
 }
+
+_REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
+
+# Zip bomb guards
+_MAX_ZIP_MEMBER_BYTES = 512 * 1024 * 1024  # 512 MiB per entry
+_MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB uncompressed total
+_MAX_ZIP_ENTRIES = 10_000
 
 
 class UnsafeURLError(Exception):
@@ -51,6 +58,14 @@ def write_secret_file(path: Path, data: str) -> None:
                 pass
     try:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+
+
+def tighten_file_permissions(path: Path) -> None:
+    """Best-effort owner-only perms on an existing file."""
+    try:
+        os.chmod(Path(path), stat.S_IRUSR | stat.S_IWUSR)
     except Exception:
         pass
 
@@ -174,11 +189,75 @@ def validate_libretranslate_url(url: str, *, resolve_dns: bool = True) -> str:
     return rebuilt.rstrip("/")
 
 
+def safe_http_request(
+    session: Any,
+    method: str,
+    url: str,
+    *,
+    allow_http: bool = True,
+    max_redirects: int = 5,
+    timeout: float = 30,
+    **kwargs: Any,
+) -> Any:
+    """
+    HTTP request that re-validates every redirect hop against the SSRF blocklist.
+
+    Does not follow redirects automatically — each Location is checked with
+    validate_fetch_url (including DNS) before the next request.
+    """
+    current = (url or "").strip()
+    method = (method or "GET").upper()
+    # Callers must not bypass redirect checks
+    kwargs.pop("allow_redirects", None)
+
+    for _ in range(max_redirects + 1):
+        validate_fetch_url(current, allow_http=allow_http, resolve_dns=True)
+
+        def _call(fn, *args, **kw):
+            try:
+                return fn(*args, allow_redirects=False, **kw)
+            except TypeError:
+                # Test doubles / odd clients may not accept allow_redirects
+                return fn(*args, **kw)
+
+        if hasattr(session, "request"):
+            resp = _call(
+                session.request, method, current, timeout=timeout, **kwargs
+            )
+        elif method == "GET" and hasattr(session, "get"):
+            resp = _call(session.get, current, timeout=timeout, **kwargs)
+        elif method == "POST" and hasattr(session, "post"):
+            resp = _call(session.post, current, timeout=timeout, **kwargs)
+        else:
+            raise UnsafeURLError("HTTP session does not support request/get/post")
+
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if status in _REDIRECT_STATUS:
+            headers = getattr(resp, "headers", {}) or {}
+            loc = headers.get("Location") or headers.get("location")
+            if not loc:
+                raise UnsafeURLError(f"Redirect {status} without Location header")
+            current = urljoin(current, loc)
+            # Match common client behavior: 301/302/303 turn POST into GET
+            if status in (301, 302, 303) and method == "POST":
+                method = "GET"
+                kwargs.pop("json", None)
+                kwargs.pop("data", None)
+                kwargs.pop("files", None)
+            continue
+        return resp
+
+    raise UnsafeURLError(f"Too many redirects (>{max_redirects})")
+
+
 def safe_extract_zip(
     zip_path: Path,
     dest_dir: Path,
     *,
     allowed_names: Optional[Iterable[str]] = None,
+    max_member_bytes: int = _MAX_ZIP_MEMBER_BYTES,
+    max_total_bytes: int = _MAX_ZIP_TOTAL_BYTES,
+    max_entries: int = _MAX_ZIP_ENTRIES,
 ) -> List[Path]:
     """
     Extract a zip without Zip Slip. Optionally restrict to a set of basenames
@@ -189,6 +268,8 @@ def safe_extract_zip(
     dest_dir.mkdir(parents=True, exist_ok=True)
     allowed = set(allowed_names) if allowed_names is not None else None
     written: List[Path] = []
+    total_bytes = 0
+    entry_count = 0
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in zf.infolist():
@@ -215,29 +296,84 @@ def safe_extract_zip(
                 # so checksummed zips can contain README etc.
                 continue
 
+            entry_count += 1
+            if entry_count > max_entries:
+                raise ValueError(
+                    f"Zip has too many extractable entries (>{max_entries})"
+                )
+
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info, "r") as src, open(target, "wb") as out:
-                # Bound individual file size (512 MB) against zip bombs of one huge file
-                max_bytes = 512 * 1024 * 1024
                 copied = 0
                 while True:
                     chunk = src.read(1024 * 1024)
                     if not chunk:
                         break
                     copied += len(chunk)
-                    if copied > max_bytes:
+                    total_bytes += len(chunk)
+                    if copied > max_member_bytes:
                         raise ValueError(f"Zip entry too large: {info.filename!r}")
+                    if total_bytes > max_total_bytes:
+                        raise ValueError(
+                            f"Zip uncompressed size exceeds limit "
+                            f"({max_total_bytes} bytes)"
+                        )
                     out.write(chunk)
             written.append(target)
 
     return written
 
 
-def write_update_helper_config(path: Path, *, new_exe: Path, old_exe: Path, pid: int) -> None:
-    """Sidecar JSON for the update helper — avoids shell-interpolating paths."""
+def validate_update_helper_paths(
+    new_exe: Path, old_exe: Path, app_dir: Path
+) -> Tuple[Path, Path]:
+    """
+    Ensure update helper paths stay under app_dir and contain no control chars.
+    Returns resolved (new_exe, old_exe).
+    """
+    app_dir = Path(app_dir).resolve()
+    resolved: List[Path] = []
+    for label, raw in (("new_exe", new_exe), ("old_exe", old_exe)):
+        p = Path(raw)
+        text = str(p)
+        if not text or any(c in text for c in ("\x00", "\n", "\r")):
+            raise ValueError(f"Invalid {label}: control characters not allowed")
+        # Reject characters that are hazardous if ever mis-handled by a shell
+        if any(c in text for c in ("$", "`", ";", "|", "&", "\t")):
+            raise ValueError(f"Invalid {label}: disallowed shell metacharacters")
+        try:
+            rp = p.resolve()
+        except OSError as e:
+            raise ValueError(f"Invalid {label}: {e}") from e
+        try:
+            rp.relative_to(app_dir)
+        except ValueError as e:
+            raise ValueError(
+                f"{label} must be inside the application directory ({app_dir})"
+            ) from e
+        resolved.append(rp)
+    return resolved[0], resolved[1]
+
+
+def write_update_helper_config(
+    path: Path,
+    *,
+    new_exe: Path,
+    old_exe: Path,
+    pid: int,
+    sha256: Optional[str] = None,
+) -> None:
+    """Sidecar JSON for the update helper — owner-only perms, validated paths."""
+    app_dir = Path(path).resolve().parent
+    new_r, old_r = validate_update_helper_paths(new_exe, old_exe, app_dir)
     payload = {
-        "new_exe": str(Path(new_exe)),
-        "old_exe": str(Path(old_exe)),
+        "new_exe": str(new_r),
+        "old_exe": str(old_r),
         "pid": int(pid),
     }
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    if sha256:
+        digest = str(sha256).strip().lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("sha256 must be a 64-char hex digest")
+        payload["sha256"] = digest
+    write_secret_file(path, json.dumps(payload))

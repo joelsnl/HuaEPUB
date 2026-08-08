@@ -230,18 +230,15 @@ class EPUBBuilder:
     
     def _download_image(self, url: str) -> Optional[bytes]:
         """Download an image and return bytes using curl_cffi."""
-        from core.security import UnsafeURLError, validate_fetch_url
-        try:
-            validate_fetch_url(url, allow_http=True)
-        except UnsafeURLError as e:
-            print(f"  Blocked cover URL: {e}")
-            return None
+        from core.security import UnsafeURLError, safe_http_request
         if self.image_cache is not None:
             cached = self.image_cache.get_cover(cover_url=url)
             if cached:
                 return cached
         try:
-            response = _http_session.get(url, timeout=30)
+            response = safe_http_request(
+                _http_session, "GET", url, allow_http=True, timeout=30
+            )
             response.raise_for_status()
             data = response.content
             if data and self.image_cache is not None:
@@ -252,6 +249,9 @@ class EPUBBuilder:
                     pass
                 self.image_cache.put_cover(data, cover_url=url, content_type=ctype)
             return data
+        except UnsafeURLError as e:
+            print(f"  Blocked cover URL: {e}")
+            return None
         except Exception as e:
             print(f"  Image download error: {e}")
             return None
