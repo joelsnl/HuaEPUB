@@ -64,14 +64,18 @@ def build():
         '--hidden-import=ebooklib',
         '--hidden-import=ebooklib.epub',
         '--hidden-import=PIL',
-        '--hidden-import=customtkinter',
+        '--hidden-import=PySide6',
+        '--hidden-import=gui',
+        '--hidden-import=gui.main_window',
+        '--hidden-import=gui.app',
         
-        # Collect all customtkinter data
-        '--collect-all=customtkinter',
+        # Collect Qt platform plugins / resources
+        '--collect-all=PySide6',
         
-        # Add core and parsers as data (in case of import issues)
+        # Add packages as data (in case of import issues)
         f'--add-data={script_dir / "core"}{separator}core',
         f'--add-data={script_dir / "parsers"}{separator}parsers',
+        f'--add-data={script_dir / "gui"}{separator}gui',
         
         # Main script
         str(script_dir / 'app.py'),

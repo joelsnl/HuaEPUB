@@ -12,8 +12,8 @@ beautifulsoup4>=4.11.0
 # EPUB creation
 ebooklib>=0.18
 
-# GUI
-customtkinter>=5.2.0
+# GUI (Qt)
+PySide6>=6.5.0
 
 # Image handling (for covers)
 Pillow>=9.0.0

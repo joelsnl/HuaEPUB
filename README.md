@@ -1,10 +1,10 @@
 # HuaEPUB
 
-**Current version: 2.5.0**
+**Current version: 2.6.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
-Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dteviot) and fixTranslate.py.
+GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window move/resize and stabler threading). Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dteviot) and fixTranslate.py.
 
 <img width="898" height="729" alt="image" src="https://github.com/user-attachments/assets/1a40bb3c-a92b-4c7b-a210-7fd50562a887" />
 
@@ -70,7 +70,7 @@ Each zip includes `HuaEPUB` plus a legacy `NovelDownloader` binary (same build) 
 
 ## User Manual
 
-HuaEPUB has three modes at the top: **Single**, **Multi**, and **Library**. Options at the bottom (translate, clean, cache, workers, save folder) apply to all modes and are remembered between sessions.
+HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Options below the main area (translate, clean, cache, workers, save folder) apply to all modes and are remembered between sessions.
 
 ### Quick start (one novel)
 
@@ -88,8 +88,9 @@ HuaEPUB has three modes at the top: **Single**, **Multi**, and **Library**. Opti
 | Remove watermarks & ads | Cleans site junk from chapter HTML |
 | Translate to English | Machine-translates text while building the EPUB |
 | Use chapter cache (resume) | Reuses chapters already saved on this PC |
+| Watch clipboard for URLs | When on, copied novel URLs are queued into Multi (and fill Single if empty) |
 | Translator | Google (default) or LibreTranslate |
-| Translation Workers | How many translate requests run at once (default 200) |
+| Translation Workers | Concurrent translate requests (default 200); use the **−** / **+** buttons |
 | Save to | Where EPUB files are written |
 
 Keep **Use chapter cache** on unless you intentionally want a full re-download.
@@ -114,7 +115,7 @@ Resume data is **local only**. Google Drive sync never uploads the chapter cache
 
 ### Multi mode
 
-1. Switch to **Multi**.
+1. Open the **Multi** tab.
 2. Paste several book URLs (one per line, or a block of text containing URLs).
 3. **Fetch All**, then **Download All**.
 4. Novels run one after another. You can Pause / Cancel / resume the queue the same way as Single.
@@ -123,12 +124,13 @@ Resume data is **local only**. Google Drive sync never uploads the chapter cache
 
 After you download a novel, it appears in **Library** so you can update it later.
 
-1. Switch to **Library**.
+1. Open the **Library** tab.
 2. Choose **Grid** (covers) or **List** (compact table).
-3. Filter **All** or **Updates** (novels with new chapters after **Check updates**).
-4. Select a novel → **Update** (rebuilds a full EPUB; old chapters come from cache).
-5. Or use **Update All** when several books have new chapters.
-6. **Open URL** loads the book in Single mode; **Remove** drops it from the library only (files/cache stay unless you delete them yourself).
+3. Click **Check updates** — each cover shows status under the title (`Checking…`, `N new`, `Up to date`, or an error).
+4. Filter **All** or **Updates** (novels that have new chapters).
+5. Select a novel → **Update** (rebuilds a full EPUB; old chapters come from cache).
+6. Or use **Update All** when several books have new chapters.
+7. **Open URL** / **Download EPUB** / **Remove** as needed (**Remove** drops library tracking only; files/cache stay unless you delete them yourself).
 
 The cover grid reflows when you resize the window and scrolls when there are more novels than fit on screen.
 
@@ -144,9 +146,9 @@ Use this only if you want the same library list (and optionally EPUBs) on more t
 2. Save the client JSON as:
    - Windows: `C:\Users\<you>\.huaepub\google_oauth_client.json`
    - macOS / Linux: `~/.huaepub/google_oauth_client.json`
-3. In the app: **Library** → expand **Drive** → enable sync → **Connect** (browser login).
+3. In the app: **Library** → Google Drive panel → enable sync → **Connect** (browser login).
 4. Choose **Sync library** and/or **Sync EPUBs**.
-5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** as needed.
+5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** as needed. Progress appears in the status bar while syncing.
 
 If Drive is offline, downloads and the local library still work.
 
@@ -223,7 +225,8 @@ python -m pytest tests/
 
 ```
 .
-├── app.py              # Main GUI application
+├── app.py              # Entry → gui.app.run()
+├── gui/                # PySide6 UI (main window, pages, workers)
 ├── requirements.txt    # Python dependencies
 ├── build.py            # PyInstaller build script
 ├── core/
@@ -232,6 +235,7 @@ python -m pytest tests/
 │   ├── cleaner.py      # Watermark/ad removal
 │   ├── translator.py   # Translation (Google / LibreTranslate)
 │   ├── epub_builder.py # EPUB creation
+│   ├── download_runner.py  # Pause/cancel/chapter download (UI-agnostic)
 │   ├── settings.py     # Persistent app settings
 │   ├── cache.py        # Chapter + translation + cover caches (SQLite)
 │   ├── download_job.py # Local incomplete-download resume (not Drive)
@@ -274,7 +278,7 @@ python -m pytest tests/
 - Based on [WebToEpub](https://github.com/dteviot/WebToEpub) browser extension
 - Translation logic from fixTranslate.py
 - Uses [ebooklib](https://github.com/aerkalov/ebooklib) for EPUB creation
-- GUI built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
+- GUI built with [PySide6](https://doc.qt.io/qtforpython/) (Qt)
 
 ## Disclaimer
 

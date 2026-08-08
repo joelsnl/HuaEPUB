@@ -3,19 +3,21 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
-HuaEPUB (formerly novelDownloader) is a Python GUI application (CustomTkinter) for downloading Chinese web novels, optionally translating them to English via the free Google Translate endpoint, and packaging them as EPUB files.
+HuaEPUB (formerly novelDownloader) is a Python GUI application (PySide6 / Qt) for downloading Chinese web novels, optionally translating them to English via the free Google Translate endpoint, and packaging them as EPUB files.
 
 Modes: **Single**, **Multi** (block-paste URLs), and **Library** (track novels, check/update for new chapters). Optional Google Drive sync for library metadata and/or EPUBs. User data lives under `~/.huaepub/` (migrates from `~/.noveldownloader/` when present).
 
 ## Layout
 All application code lives at the repository root (there used to be a duplicate copy in `novel_downloader/`; it was removed - do not recreate it).
 
-- `app.py` - GUI entry point (`HuaEPUBApp`; Single / Multi / Library modes, dark CTk menubar, clipboard watcher)
+- `app.py` - thin entry → `gui.app.run()`
+- `gui/` - PySide6 UI (`main_window`, pages, workers, dark `style.qss`). Worker→UI must use `@Slot` methods on the main window (never bare lambdas — they can run on the worker thread and crash Qt).
 - `core/branding.py` - product name, data-dir name, exe basename, and legacy aliases
 - `core/parser.py` - `BaseParser`, `Chapter`/`NovelInfo` dataclasses, parser registry, `create_http_session()` (curl_cffi Chrome impersonation with requests fallback)
 - `core/cleaner.py` - `ContentCleaner`: watermark/ad removal, XHTML structure fixing, br-to-p conversion
 - `core/translator.py` - `GoogleTranslator`: concurrent translation with bounded multi-pass retry (hard cap on passes; partial improvements are accepted so it never loops forever)
 - `core/epub_builder.py` - `EPUBBuilder` and `TranslatedEPUBBuilder` (ebooklib); translations are applied at the text-node level, never with raw string replacement
+- `core/download_runner.py` - UI-agnostic pause/cancel/chapter-cache/EPUB orchestration
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release)
 - `core/settings.py` - persistent settings JSON; `get_data_dir()`, `get_default_books_dir()`
 - `core/cache.py` - SQLite caches: chapters, translations, **covers**, **chapter-list snapshots** (all local-only; never Drive-synced)
