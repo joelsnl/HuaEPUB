@@ -925,10 +925,29 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Drive sync", err)
         else:
             self.library.drive_status.setText(summary)
-            self.library.refresh()
-            self.progress.set_status(summary or "Drive sync done")
+            # Drive pull only needs library.json — show All so Updates filter
+            # doesn't hide every novel before Check updates has been run.
+            try:
+                self.session.library_store.reload()
+            except Exception:
+                pass
+            n = len(self.session.library_store.get_library())
+            self.library.show_all()
+            self.tabs.setCurrentWidget(self.library)
+            self.progress.set_status(summary or f"Drive sync done — {n} novel(s)")
             if not silent:
-                QMessageBox.information(self, "Drive sync", summary)
+                extra = ""
+                if n == 0:
+                    extra = (
+                        "\n\nLibrary UI is still empty. Confirm ~/.huaepub/library.json "
+                        "was written, or click Refresh."
+                    )
+                else:
+                    extra = (
+                        f"\n\n{n} novel(s) are in your library list now "
+                        "(covers/EPUBs stay optional — no full download required)."
+                    )
+                QMessageBox.information(self, "Drive sync", (summary or "Sync done") + extra)
         self._finish_worker_later()
 
     def _drive_change_folder(self):

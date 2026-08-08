@@ -224,10 +224,12 @@ class LibraryStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = library_data_to_dict(self._data)
-            with open(self._path, 'w', encoding='utf-8') as f:
+            tmp = self._path.with_suffix(".json.tmp")
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+            tmp.replace(self._path)
+        except Exception as e:
+            print(f"Failed to save library.json to {self._path}: {e}")
 
     def get_data(self) -> LibraryData:
         with self._lock:
@@ -244,6 +246,15 @@ class LibraryStore:
                 library=list(data.library),
             )
             self._save()
+            print(
+                f"Library store updated: {len(self._data.library)} novel(s) "
+                f"→ {self._path}"
+            )
+
+    def reload(self):
+        """Re-read library.json from disk into memory."""
+        with self._lock:
+            self._load()
 
     def to_payload(self) -> dict:
         with self._lock:
@@ -342,6 +353,32 @@ class LibraryStore:
                         e.epub_filename = epub_filename
                     if output_path:
                         e.output_path = output_path
+                    self._save()
+                    return
+
+    def update_metadata(
+        self,
+        source_url: str,
+        *,
+        title: str = '',
+        translated_title: str = '',
+        author: str = '',
+        cover_url: str = '',
+    ):
+        """Update display metadata without bumping last_downloaded_at."""
+        if not source_url:
+            return
+        with self._lock:
+            for e in self._data.library:
+                if e.source_url == source_url:
+                    if title:
+                        e.title = title
+                    if translated_title:
+                        e.translated_title = translated_title
+                    if author:
+                        e.author = author
+                    if cover_url:
+                        e.cover_url = cover_url
                     self._save()
                     return
 

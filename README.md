@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.6.2**
+**Current version: 2.6.3**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -126,7 +126,7 @@ After you download a novel, it appears in **Library** so you can update it later
 
 1. Open the **Library** tab.
 2. Choose **Grid** (covers) or **List** (compact table).
-3. Click **Check updates** — each cover shows status under the title (`Checking…`, `N new`, `Up to date`, or an error).
+3. Click **Check updates** — each cover shows status under the title (`Checking…`, `N new`, `Up to date`, or an error), and thumbnails are refreshed from the site.
 4. Filter **All** or **Updates** (novels that have new chapters).
 5. Select a novel → **Update** (rebuilds a full EPUB; old chapters come from cache).
 6. Or use **Update All** when several books have new chapters.

@@ -5,7 +5,7 @@ import time
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QSize, Qt, Signal, Slot
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QFrame, QGroupBox, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QStackedWidget, QTableWidget,
@@ -244,6 +244,13 @@ class LibraryPage(QWidget):
         self.drive_sync_btn.setEnabled(not busy and self.drive_enabled.isChecked())
         self.drive_sync_btn.setText("Syncing…" if busy else "Sync Now")
 
+    def show_all(self):
+        """Ensure the All filter is active (Updates hides novels until Check runs)."""
+        if self._filter != "all":
+            self._set_filter("all")
+        else:
+            self.refresh()
+
     def filtered_entries(self):
         entries = self.session.library_store.get_library()
         if self._filter == "updates":
@@ -256,6 +263,7 @@ class LibraryPage(QWidget):
 
     def refresh(self):
         selected = self._selected_url
+        all_entries = self.session.library_store.get_library()
         self._entries = self.filtered_entries()
         self.grid.clear()
         self.table.setRowCount(0)
@@ -264,12 +272,22 @@ class LibraryPage(QWidget):
             st, kind = self._status_display(entry.source_url)
             pix = self._cover_pixmap(entry)
 
-            item = QListWidgetItem()
+            # Icon + text (not setItemWidget): macOS IconMode often paints
+            # embedded widgets as blank, which looked like an empty library.
+            status_line = st.strip() or "—"
+            item = QListWidgetItem(f"{title[:40]}\n{status_line}")
             item.setData(Qt.UserRole, entry.source_url)
-            item.setToolTip(f"{title}\n{st}" if st.strip() else title)
-            item.setSizeHint(QSize(140, 230))
+            item.setToolTip(f"{title}\n{status_line}")
+            item.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
+            item.setSizeHint(QSize(140, 210))
+            if pix and not pix.isNull():
+                item.setIcon(QIcon(pix))
+            else:
+                # Placeholder so tiles keep a consistent cover-sized icon area
+                blank = QPixmap(110, 150)
+                blank.fill(Qt.GlobalColor.darkGray)
+                item.setIcon(QIcon(blank))
             self.grid.addItem(item)
-            self.grid.setItemWidget(item, _LibraryTile(title[:48], st, kind, pix))
 
             r = self.table.rowCount()
             self.table.insertRow(r)
@@ -295,9 +313,24 @@ class LibraryPage(QWidget):
         if selected:
             self._reselect(selected)
 
+        total = len(all_entries)
+        shown = len(self._entries)
+        if self._filter == "updates":
+            if total and not shown:
+                self.status_label.setText(
+                    f"{total} novel(s) in library — none flagged yet. "
+                    "Click All, or run Check updates."
+                )
+            else:
+                self.status_label.setText(
+                    f"Updates filter: {shown}/{total} novel(s) with new chapters"
+                )
+        else:
+            self.status_label.setText(f"{total} novel(s) in library")
+
         self.update_all_btn.setEnabled(any(
             (self.check_status.get(e.source_url) or {}).get("state") == "update"
-            for e in self.session.library_store.get_library()
+            for e in all_entries
         ))
 
     def _reselect(self, url: str):
@@ -347,19 +380,28 @@ class LibraryPage(QWidget):
         self.check_status[url] = st
         # Update just the matching tile/row when possible (avoids full rebuild flicker)
         text, kind = self._status_display(url)
+        entry = self.session.library_store.get_library_entry(url)
+        display_title = ""
+        if entry:
+            display_title = entry.translated_title or entry.title or url
         updated = False
         for i in range(self.grid.count()):
             it = self.grid.item(i)
             if it and it.data(Qt.UserRole) == url:
-                w = self.grid.itemWidget(it)
-                if isinstance(w, _LibraryTile):
-                    w.set_status(text, kind)
-                    it.setToolTip(f"{w.title_lbl.text()}\n{text}")
-                    updated = True
+                title = display_title or ((it.text() or "").split("\n", 1)[0] or url)
+                it.setText(f"{title[:40]}\n{text or '—'}")
+                it.setToolTip(f"{title}\n{text}" if text else title)
+                if st.get("cover_refreshed") and entry:
+                    pix = self._cover_pixmap(entry)
+                    if pix and not pix.isNull():
+                        it.setIcon(QIcon(pix))
+                updated = True
                 break
         for r in range(self.table.rowCount()):
             it = self.table.item(r, 0)
             if it and it.data(Qt.UserRole) == url:
+                if display_title:
+                    it.setText(display_title[:80])
                 status_item = QTableWidgetItem(text)
                 if kind == "update":
                     status_item.setForeground(Qt.yellow)

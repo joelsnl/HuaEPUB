@@ -347,6 +347,47 @@ class LibraryCheckWorker(QObject):
         self.session = session
         self.entries = entries
 
+    def _refresh_cover(self, entry, info, parser) -> bool:
+        """Download cover into cache and update library metadata. Returns True if updated."""
+        cover_url = (getattr(info, "cover_url", None) or "").strip()
+        if not cover_url:
+            return False
+        try:
+            session = getattr(parser, "session", None)
+            if session is None:
+                from core.parser import create_http_session
+                session = create_http_session()
+            r = session.get(cover_url, timeout=20)
+            if not getattr(r, "ok", False) or not r.content:
+                return False
+            ctype = ""
+            try:
+                ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip()
+            except Exception:
+                pass
+            # Store under cover URL and source URL so grid lookup always finds it
+            self.session.cache.put_cover(
+                r.content,
+                cover_url=cover_url,
+                source_url=entry.source_url or "",
+                content_type=ctype,
+            )
+            self.session.cache.put_cover(
+                r.content,
+                source_url=entry.source_url or "",
+                content_type=ctype,
+            )
+            self.session.library_store.update_metadata(
+                entry.source_url,
+                title=(info.title or "").strip(),
+                author=(info.author or "").strip(),
+                cover_url=cover_url,
+            )
+            return True
+        except Exception as e:
+            print(f"Cover refresh failed for {entry.source_url}: {e}")
+            return False
+
     @Slot()
     def run(self):
         with_updates = 0
@@ -358,14 +399,19 @@ class LibraryCheckWorker(QObject):
                 parser = get_parser_for_url(entry.source_url)
                 if not parser:
                     raise Exception("Unsupported site")
+                info = None
                 if hasattr(parser, "fetch_all_parallel"):
-                    _info, chapters = parser.fetch_all_parallel(entry.source_url)
+                    info, chapters = parser.fetch_all_parallel(entry.source_url)
                 else:
+                    info = parser.get_novel_info(entry.source_url)
                     chapters = parser.get_chapter_list(entry.source_url)
                 try:
                     self.session.cache.put_chapter_list(entry.source_url, chapters)
                 except Exception:
                     pass
+                cover_refreshed = False
+                if info is not None:
+                    cover_refreshed = self._refresh_cover(entry, info, parser)
                 new_only, _ = new_chapters_since(
                     chapters, entry.last_chapter_url, entry.chapter_count
                 )
@@ -376,6 +422,7 @@ class LibraryCheckWorker(QObject):
                         "new_count": len(new_only),
                         "total": len(chapters),
                         "error": "",
+                        "cover_refreshed": cover_refreshed,
                     }
                 else:
                     st = {
@@ -383,9 +430,16 @@ class LibraryCheckWorker(QObject):
                         "new_count": 0,
                         "total": len(chapters),
                         "error": "",
+                        "cover_refreshed": cover_refreshed,
                     }
             except Exception as e:
-                st = {"state": "error", "new_count": 0, "total": 0, "error": str(e)}
+                st = {
+                    "state": "error",
+                    "new_count": 0,
+                    "total": 0,
+                    "error": str(e),
+                    "cover_refreshed": False,
+                }
             self.entry_done.emit(entry.source_url, st)
             import time
             if idx < total - 1:
