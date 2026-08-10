@@ -7,7 +7,7 @@ APP_DESCRIPTION = "Download Chinese web novels and build English EPUBs"
 
 APP_AUTHOR = "Joel Sunil"
 APP_AUTHOR_HANDLE = "joelsnl"
-APP_REPO_URL = "https://github.com/joelsnl/novelDownloader"
+APP_REPO_URL = "https://github.com/joelsnl/HuaEPUB"
 APP_LICENSE = "MIT"
 
 # User data dir under ~ (migrates from legacy)

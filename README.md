@@ -47,7 +47,7 @@ Works on Windows, macOS, and Linux.
 
 ### Option 2: Prebuilt Executables (Windows, macOS & Linux)
 
-Download the latest release from the [Releases](https://github.com/joelsnl/novelDownloader/releases) page:
+Download the latest release from the [Releases](https://github.com/joelsnl/HuaEPUB/releases) page:
 - `HuaEPUB-windows.zip`
 - `HuaEPUB-macos.zip`
 - `HuaEPUB-linux.zip`
@@ -179,7 +179,7 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 ### Auto-update & trust
 
 - Updates install only when the downloaded zip matches the release’s `SHA256SUMS.txt` (fail closed if the sum is missing or wrong).
-- Checksums and zips come from the **same** GitHub release — treat the [joelsnl/novelDownloader](https://github.com/joelsnl/novelDownloader) publisher account as your trust root (enable 2FA on that account).
+- Checksums and zips come from the **same** GitHub release — treat the [joelsnl/HuaEPUB](https://github.com/joelsnl/HuaEPUB) publisher account as your trust root (enable 2FA on that account).
 - On **macOS / Linux**, confirm the “update ready” dialog; the app closes so a small shell helper can replace the binary and reopen. On **Windows**, the binary is swapped while running, then relaunched after exit.
 - Novel page / cover / LibreTranslate fetches block private/loopback hosts and re-check redirect targets. Translation still sends chapter text to Google or your LibreTranslate URL when enabled.
 
@@ -296,7 +296,7 @@ python -m pytest tests/
 ### Update installed but the old version keeps opening (macOS / Linux)
 - Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update).
 - After “Update ready”, allow the app to quit; do not force-quit the helper. Reopen `HuaEPUB` from the same folder you installed into.
-- If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/novelDownloader/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
+- If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/HuaEPUB/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
 
 ### Update refused / checksum error
 - The release may be incomplete, or the download was corrupted — try again later, or install the zip from Releases manually after checking `SHA256SUMS.txt`.

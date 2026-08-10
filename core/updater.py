@@ -33,8 +33,8 @@ from core.security import safe_extract_zip, write_update_helper_config
 # Current version - UPDATE THIS WITH EACH RELEASE
 __version__ = "2.6.4"
 
-# GitHub repository info (repo path kept for update continuity)
-GITHUB_REPO = "joelsnl/novelDownloader"
+# GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
+GITHUB_REPO = "joelsnl/HuaEPUB"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # Set when a frozen Windows update already swapped the on-disk exe and the
