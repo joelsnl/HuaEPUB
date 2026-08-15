@@ -86,6 +86,8 @@ QHeaderView::section {
     border-right: 1px solid #555;
 }
 QCheckBox, QLabel { background: transparent; }
+QCheckBox:disabled { color: #888; }
+QLabel#hintLabel { color: #aaa; font-size: 12px; }
 QFrame#libraryTile {
     background-color: #333;
     border: 1px solid #444;

@@ -3,11 +3,12 @@
 import pytest
 from bs4 import BeautifulSoup
 
-from core.parser import get_parser_for_url, Chapter
+from core.parser import get_parser_for_url, Chapter, _parser_registry
 from parsers.twkan import TwkanParser
 from parsers.shuba69 import Shuba69Parser
 from parsers.uukanshu import UUKanshuParser
 from parsers.generic import GenericParser
+from parsers.selector import SelectorParser
 
 from conftest import load_fixture
 
@@ -24,7 +25,17 @@ class TestRegistry:
 
     def test_generic_is_fallback_for_unknown_sites(self):
         parser = get_parser_for_url('https://some-random-novel-site.example/book/1')
-        assert isinstance(parser, GenericParser)
+        assert type(parser) is GenericParser
+
+    def test_generic_is_last_in_registry(self):
+        assert _parser_registry[-1] is GenericParser
+        assert _parser_registry[0] is TwkanParser
+
+    def test_webtoepub_selector_wins_over_generic(self):
+        parser = get_parser_for_url('https://101kks.com/book/1')
+        assert isinstance(parser, SelectorParser)
+        assert type(parser) is not GenericParser
+        assert parser.SITE_NAME == '101kks.com'
 
     def test_non_http_not_handled(self):
         assert get_parser_for_url('ftp://example.com/x') is None
@@ -127,3 +138,52 @@ class TestGeneric:
     def test_content_too_short_returns_none(self):
         soup = BeautifulSoup('<div>short</div>', 'lxml')
         assert GenericParser._find_content_element(soup) is None
+
+
+class TestSelectorParser:
+    def _parser(self):
+        class Demo(SelectorParser):
+            SITE_NAME = "demo.test"
+            SITE_DOMAINS = ["demo.test"]
+            SPEC = {
+                "content": ["div.chapter-body"],
+                "chapter_list": "ul.toc a",
+                "title": "h1.book",
+                "author": "span.author",
+                "chapter_title": "h2.ch",
+                "remove": ".ad",
+            }
+        return Demo()
+
+    def test_chapter_list_from_selector(self):
+        html = """
+        <ul class="toc">
+          <li><a href="/c/1">Ch 1</a></li>
+          <li><a href="/c/2">Ch 2</a></li>
+        </ul>
+        """
+        chapters = self._parser()._chapters_from_selector(
+            BeautifulSoup(html, 'lxml'), 'https://demo.test/book', 'ul.toc a'
+        )
+        assert [c.title for c in chapters] == ['Ch 1', 'Ch 2']
+        assert chapters[0].url == 'https://demo.test/c/1'
+
+    def test_container_selector_collects_all_links(self):
+        html = """
+        <div id="chapterlist">
+          <a href="/c/1">One</a>
+          <a href="/c/2">Two</a>
+        </div>
+        """
+        chapters = self._parser()._chapters_from_selector(
+            BeautifulSoup(html, 'lxml'), 'https://demo.test/book', '#chapterlist'
+        )
+        assert len(chapters) == 2
+
+    def test_generic_selector_a_is_ignored(self):
+        html = '<div><a href="/c/1">One</a></div>'
+        chapters = self._parser()._chapters_from_selector(
+            BeautifulSoup(html, 'lxml'), 'https://demo.test/book', 'a'
+        )
+        assert chapters == []
+

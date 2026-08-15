@@ -23,6 +23,14 @@ _BLOCKED_HOSTNAMES = {
     "metadata",
 }
 
+_LOOPBACK_HOSTS = {
+    "localhost",
+    "localhost.localdomain",
+    "127.0.0.1",
+    "::1",
+    "0:0:0:0:0:0:0:1",
+}
+
 _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 
 # Zip bomb guards
@@ -87,6 +95,19 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True for localhost names and loopback IP literals (no DNS)."""
+    h = (host or "").strip("[]").lower().rstrip(".")
+    if not h:
+        return False
+    if h in _LOOPBACK_HOSTS or h.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
 def _hostname_resolves_to_blocked(hostname: str) -> Tuple[bool, str]:
     host = (hostname or "").strip(".").lower()
     if not host:
@@ -125,10 +146,12 @@ def validate_fetch_url(
     *,
     allow_http: bool = True,
     resolve_dns: bool = True,
+    allow_loopback: bool = False,
 ) -> None:
     """
     Raise UnsafeURLError if url is not safe to fetch from this app.
     Blocks non-http(s), credentials-in-URL, and private/loopback hosts.
+    Set allow_loopback=True only for user-configured local services (Ollama).
     """
     raw = (url or "").strip()
     if not raw:
@@ -150,6 +173,9 @@ def validate_fetch_url(
     host = parsed.hostname
     if not host:
         raise UnsafeURLError("URL missing host")
+
+    if allow_loopback and _is_loopback_host(host):
+        return
 
     if not resolve_dns:
         # Still block obvious literals / localhost names
@@ -189,12 +215,36 @@ def validate_libretranslate_url(url: str, *, resolve_dns: bool = True) -> str:
     return rebuilt.rstrip("/")
 
 
+def validate_ollama_url(url: str) -> str:
+    """
+    Normalize an Ollama base URL. Must be loopback (127.0.0.1 / localhost)
+    so a translator setting cannot be turned into an SSRF trampoline.
+    """
+    raw = (url or "").strip().rstrip("/")
+    if not raw:
+        raise UnsafeURLError("Ollama URL is empty")
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise UnsafeURLError(f"Disallowed URL scheme: {scheme or '(none)'}")
+    if parsed.username or parsed.password:
+        raise UnsafeURLError("URLs with embedded credentials are not allowed")
+    host = parsed.hostname
+    if not host or not _is_loopback_host(host):
+        raise UnsafeURLError(
+            "Ollama URL must be localhost (e.g. http://127.0.0.1:11434)"
+        )
+    rebuilt = f"{scheme}://{parsed.netloc}"
+    return rebuilt.rstrip("/")
+
+
 def safe_http_request(
     session: Any,
     method: str,
     url: str,
     *,
     allow_http: bool = True,
+    allow_loopback: bool = False,
     max_redirects: int = 5,
     timeout: float = 30,
     **kwargs: Any,
@@ -211,7 +261,12 @@ def safe_http_request(
     kwargs.pop("allow_redirects", None)
 
     for _ in range(max_redirects + 1):
-        validate_fetch_url(current, allow_http=allow_http, resolve_dns=True)
+        validate_fetch_url(
+            current,
+            allow_http=allow_http,
+            resolve_dns=True,
+            allow_loopback=allow_loopback,
+        )
 
         def _call(fn, *args, **kw):
             try:

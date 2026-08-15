@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.6.4**
+**Current version: 2.7.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -18,7 +18,8 @@ GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window
 - **Pause / Resume** — pause a long download, or close the app / shut down the PC and resume later from a banner on startup (local only; not synced to Drive)
 - **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default)
 - **Remove watermarks** and ads automatically
-- **Translate to English** using Google Translate (free, concurrent) or a LibreTranslate server
+- **Translate to English** using Google Translate (free, concurrent), a LibreTranslate server, or local **Ollama**
+- **Polish English** — optional local copy-edit after Google or LibreTranslate (uses Ollama if you have it; much faster than translating with Ollama)
 - **Chapter cache** — downloaded chapters are stored locally so re-runs and resumes skip network fetches
 - **Translation cache** — previously translated text is reused across runs, costing zero API requests
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes
@@ -90,11 +91,24 @@ HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Optio
 | Translate to English | Machine-translates text while building the EPUB |
 | Use chapter cache (resume) | Reuses chapters already saved on this PC |
 | Watch clipboard for URLs | When on, copied novel URLs are queued into Multi (and fill Single if empty) |
-| Translator | Google (default) or LibreTranslate |
-| Translation Workers | Concurrent translate requests (default 200); use the **−** / **+** buttons |
+| Translator | Google (default), LibreTranslate, or local **Ollama** |
+| Polish English | After Google/LibreTranslate, copy-edit English on this PC with Ollama. Greyed out if Translate is off or Translator is already Ollama. |
+| Translation Workers | Concurrent Google/LibreTranslate requests (default 200). Ollama auto-drops to 2. Polish does not use this number. |
+| Ollama model / URL | Shown when Translator is Ollama or Polish English is on. If you already have a model, HuaEPUB uses it. If you have none, it asks to download `qwen2.5:3b` (~2 GB). URL must be localhost. |
 | Save to | Where EPUB files are written |
 
 Keep **Use chapter cache** on unless you intentionally want a full re-download.
+
+### Local translation with Ollama
+
+Ollama runs a model on your PC (no Google quota, no cloud). Install from [ollama.com](https://ollama.com). The suggested model is **`qwen2.5:3b`**: Apache-2.0, strong Chinese→English, about 2 GB, usable on CPU. Untagged `qwen2.5` can pull a much larger 7B+ build.
+
+```bash
+ollama list            # what you already have
+# or let HuaEPUB ask to download qwen2.5:3b when you pick Ollama
+```
+
+In HuaEPUB set **Translator** to **Ollama** for a full local translation (slow). Or keep **Google** / **LibreTranslate** and tick **Polish English** to copy-edit afterward (one batched request per several paragraphs, not per paragraph). If you already have any Ollama model, HuaEPUB uses it. If you have none, it **asks** before downloading `qwen2.5:3b` (~2 GB, one-time). **No** keeps polish off / the previous translator. It never pulls on startup or in the background. URL must stay on localhost (`http://127.0.0.1:11434`). Use 1–4 workers when Translator is Ollama. Translations and polish results are cached per model. Help → **How translation works** summarizes this in the app.
 
 ### Pause, cancel, and resume after shutdown
 
@@ -131,7 +145,7 @@ After you download a novel, it appears in **Library** so you can update it later
 4. Filter **All** or **Updates** (novels that have new chapters).
 5. Select a novel → **Update** (rebuilds a full EPUB; old chapters come from cache).
 6. Or use **Update All** when several books have new chapters.
-7. **Open URL** / **Download EPUB** / **Remove** as needed (**Remove** drops library tracking only; files/cache stay unless you delete them yourself).
+7. **Open URL** / **Download EPUB** / **Remove** as needed. **Remove** deletes the local EPUB, this novel’s chapter/cover/TOC cache, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
 
 The cover grid reflows when you resize the window and scrolls when there are more novels than fit on screen.
 
@@ -159,7 +173,7 @@ If Drive is offline, downloads and the local library still work.
 2. On the PC that already has novels: **Library → Open folder** and confirm `library.json` + `books/` are inside that Drive folder.
 3. On the new device: **Change folder** → paste that folder’s URL → the app checks list access and then syncs. You should see `library.json novels: N` in the confirmation.
 4. Status should look like `Synced “HuaEPUB”: library (N novel(s))`. If N is 0 or you get an access error, fix the OAuth client / folder — Sync will no longer silently invent a second empty HuaEPUB folder.
-5. EPUB sync uploads local files that are missing on Drive; it does not wipe or re-upload every book on every sync. On a new Mac, use **Download EPUB** per novel (or copy `books/` once) after the library list appears.
+5. EPUB sync uploads missing books and **overwrites Drive copies when your local EPUB is newer or a different size** (e.g. after a library update adds chapters). It will not overwrite a Drive file that is clearly newer than your local copy. On a new Mac, use **Download EPUB** per novel (or copy `books/` once) after the library list appears if the files are not on that machine yet.
 
 ### Where files live
 
@@ -197,6 +211,7 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 | twkan.com | `https://twkan.com/book/{id}.html` | ✅ Working |
 | 69shuba.com | `https://69shuba.com/book/{id}/` | ✅ Working |
 | uukanshu.cc | `https://uukanshu.cc/book/{id}/` | ✅ Working |
+| WebToEpub selector pack | 340+ hosts (CSS selectors from [WebToEpub](https://github.com/dteviot/WebToEpub)) | ✅ Best-effort |
 | Other sites | any novel table-of-contents URL | 🧪 Experimental (generic parser) |
 
 ## Adding New Sites
@@ -251,7 +266,7 @@ python -m pytest tests/
 │   ├── branding.py     # Product name + legacy aliases
 │   ├── parser.py       # Base parser class + registry
 │   ├── cleaner.py      # Watermark/ad removal
-│   ├── translator.py   # Translation (Google / LibreTranslate)
+│   ├── translator.py   # Translation (Google / LibreTranslate / Ollama)
 │   ├── epub_builder.py # EPUB creation
 │   ├── download_runner.py  # Pause/cancel/chapter download (UI-agnostic)
 │   ├── settings.py     # Persistent app settings
@@ -267,11 +282,23 @@ python -m pytest tests/
 │   ├── twkan.py        # twkan.com parser
 │   ├── shuba69.py      # 69shuba.com parser
 │   ├── uukanshu.py     # uukanshu.cc parser
+│   ├── selector.py     # CSS-selector parsers (WebToEpub site pack)
+│   ├── webtoepub_sites.py  # Generated host + selector table
 │   └── generic.py      # Fallback parser for other sites
 └── tests/              # Offline pytest suite
 ```
 
 ## Troubleshooting
+
+### Polish English is greyed out
+- Turn on **Translate to English**
+- Set **Translator** to Google or LibreTranslate (not Ollama — that already translates locally)
+
+### Polish English wants a 2 GB download
+- If Ollama already has any model, HuaEPUB uses that and will not force another download
+- First time with no models: one ~2 GB pull of `qwen2.5:3b` (you can decline)
+- After that, only awkward sentences are polished; fluent Google English is skipped
+- GPU is used automatically when Ollama can see one
 
 ### "Translation failed" errors
 - Reduce workers (try 20-30 instead of 50)
@@ -294,7 +321,7 @@ python -m pytest tests/
 - Cached chapters still help if you fetch the same book again with cache enabled
 
 ### Update installed but the old version keeps opening (macOS / Linux)
-- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update).
+- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update). A 2.7.0+ build is required for Polish English and the in-app translation help.
 - After “Update ready”, allow the app to quit; do not force-quit the helper. Reopen `HuaEPUB` from the same folder you installed into.
 - If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/HuaEPUB/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
 

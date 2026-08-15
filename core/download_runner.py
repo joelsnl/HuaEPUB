@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.cache import NovelCache
 from core.cleaner import ContentCleaner
@@ -238,17 +238,57 @@ def download_chapters_with_cache(
     return still_failed
 
 
+def translator_backend_kwargs(
+    settings: Dict[str, Any],
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Backend args shared by make_translator / build_epub / FetchWorker."""
+    o = options or {}
+    return {
+        "backend": o.get("backend") or settings.get("translation_backend", "google"),
+        "libretranslate_url": (
+            o.get("libretranslate_url")
+            or settings.get("libretranslate_url", "https://libretranslate.com")
+        ),
+        "ollama_url": (
+            o.get("ollama_url")
+            or settings.get("ollama_url", "http://127.0.0.1:11434")
+        ),
+        "ollama_model": (
+            o.get("ollama_model")
+            or settings.get("ollama_model", "qwen2.5:3b")
+        ),
+    }
+
+
+def epub_translate_kwargs(
+    settings: Dict[str, Any],
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Like translator_backend_kwargs, plus the optional Ollama polish pass."""
+    o = options or {}
+    kwargs = translator_backend_kwargs(settings, options)
+    kwargs["ollama_polish"] = bool(
+        o.get("ollama_polish", settings.get("ollama_polish", False))
+    )
+    return kwargs
+
+
 def make_translator(
     *,
     cache: NovelCache,
     max_workers: int,
     backend: str = "google",
     libretranslate_url: str = "https://libretranslate.com",
+    ollama_url: str = "http://127.0.0.1:11434",
+    ollama_model: str = "qwen2.5:3b",
 ) -> GoogleTranslator:
     return GoogleTranslator(
         max_workers=max_workers,
         backend=backend,
         libretranslate_url=libretranslate_url,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
         persistent_cache=cache,
     )
 
@@ -267,9 +307,16 @@ def build_epub(
     libretranslate_url: str,
     set_status: StatusFn,
     set_progress: ProgressFn,
+    ollama_url: str = "http://127.0.0.1:11434",
+    ollama_model: str = "qwen2.5:3b",
+    ollama_polish: bool = False,
 ):
     """Phase 2: build EPUB (optionally with translation). Progress 0..1 within this phase."""
-    set_status("Building EPUB...")
+    polish = bool(ollama_polish) and backend != "ollama"
+    if translate and polish:
+        set_status("Translating, then polishing English…")
+    else:
+        set_status("Building EPUB...")
     cleaner = ContentCleaner() if clean else None
     translator = None
     if translate:
@@ -278,11 +325,16 @@ def build_epub(
             max_workers=workers,
             backend=backend,
             libretranslate_url=libretranslate_url,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
         )
 
     if translator:
         builder = TranslatedEPUBBuilder(
-            cleaner=cleaner, translator=translator, image_cache=cache
+            cleaner=cleaner,
+            translator=translator,
+            image_cache=cache,
+            polish=polish,
         )
 
         def progress_cb(current, total_steps, status):
@@ -321,6 +373,9 @@ def run_single_download(
     libretranslate_url: str,
     set_status: StatusFn,
     set_progress: ProgressFn,
+    ollama_url: str = "http://127.0.0.1:11434",
+    ollama_model: str = "qwen2.5:3b",
+    ollama_polish: bool = False,
 ) -> List[str]:
     """
     Full single-novel download + EPUB. Progress 0..1 overall.
@@ -356,6 +411,9 @@ def run_single_download(
         workers=workers,
         backend=backend,
         libretranslate_url=libretranslate_url,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
+        ollama_polish=ollama_polish,
         set_status=set_status,
         set_progress=set_prog_build,
     )

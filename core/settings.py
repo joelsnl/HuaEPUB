@@ -46,9 +46,13 @@ DEFAULTS: Dict[str, Any] = {
     'workers': 200,
     # '' means "use ~/.huaepub/books"
     'output_dir': '',
-    # 'google' or 'libretranslate'
+    # 'google', 'libretranslate', or 'ollama'
     'translation_backend': 'google',
     'libretranslate_url': 'https://libretranslate.com',
+    'ollama_url': 'http://127.0.0.1:11434',
+    'ollama_model': 'qwen2.5:3b',
+    # After Google/LibreTranslate, optional local grammar pass (not a translator swap)
+    'ollama_polish': False,
     # Use cached chapters from previous runs (resume support)
     'use_chapter_cache': True,
     # Watch system clipboard for novel URLs and queue them

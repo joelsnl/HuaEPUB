@@ -41,6 +41,12 @@ class TestTranslationApplication:
         result = builder._apply_content_translations(html, [('你好', '你好')])
         assert '你好' in result
 
+    def test_polish_flag_defaults_off(self):
+        builder = TranslatedEPUBBuilder(translator=object())
+        assert builder.polish is False
+        builder = TranslatedEPUBBuilder(translator=object(), polish=True)
+        assert builder.polish is True
+
 
 class TestVolumeToc:
     def make_builder(self):

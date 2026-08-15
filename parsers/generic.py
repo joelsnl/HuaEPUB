@@ -17,7 +17,7 @@ from typing import List, Optional
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
-from core.parser import BaseParser, Chapter, NovelInfo, register_parser
+from core.parser import BaseParser, Chapter, NovelInfo
 
 # Link text that looks like a chapter
 CHAPTER_TEXT_RE = re.compile(
@@ -32,8 +32,25 @@ CHAPTER_TEXT_RE = re.compile(
 NOISE_TAGS = ['script', 'style', 'nav', 'header', 'footer', 'aside', 'form',
               'iframe', 'ins', 'button', 'select', 'noscript']
 
+# Common novel CMS content blocks (WordPress / Madara / chapter wrappers).
+# Tried before the density heuristic so known layouts win on unknown hosts.
+CMS_CONTENT_SELECTORS = [
+    '.reading-content .text-left',
+    'div.reading-content',
+    'div#chapter-content',
+    'div.chapter-content',
+    'article.chapter-content',
+    'div.entry-content',
+    'div.post-content',
+]
+CMS_CHAPTER_LIST_SELECTORS = [
+    'li.wp-manga-chapter a',
+    'ul.list-chapter a',
+    'div.eplister a',
+    'div.chapter-list a',
+]
 
-@register_parser
+
 class GenericParser(BaseParser):
     """Best-effort parser for sites without a dedicated implementation."""
 
@@ -103,14 +120,30 @@ class GenericParser(BaseParser):
         return chapters
 
     def _parse_chapter_list(self, soup: BeautifulSoup, base_url: str) -> List[Chapter]:
+        for selector in CMS_CHAPTER_LIST_SELECTORS:
+            try:
+                links = soup.select(selector)
+            except Exception:
+                links = []
+            if len(links) >= 5:
+                chapters = self._links_to_chapters(links, base_url)
+                if len(chapters) >= 5:
+                    return chapters
+
         best_container = self._find_chapter_container(soup)
         if best_container is None:
             return []
 
+        return self._links_to_chapters(
+            best_container.find_all('a', href=True), base_url
+        )
+
+    @staticmethod
+    def _links_to_chapters(links, base_url: str) -> List[Chapter]:
         chapters = []
         seen = set()
-        for link in best_container.find_all('a', href=True):
-            href = link['href'].strip()
+        for link in links:
+            href = (link.get('href') or '').strip()
             title = link.get_text(strip=True)
             if not href or not title or href.startswith(('javascript:', '#', 'mailto:')):
                 continue
@@ -119,7 +152,6 @@ class GenericParser(BaseParser):
                 continue
             seen.add(absolute)
             chapters.append(Chapter(title=title, url=absolute, index=len(chapters)))
-
         return chapters
 
     @staticmethod
@@ -164,7 +196,17 @@ class GenericParser(BaseParser):
             for el in soup.find_all(tag):
                 el.decompose()
 
-        content_el = self._find_content_element(soup)
+        content_el = None
+        for selector in CMS_CONTENT_SELECTORS:
+            try:
+                el = soup.select_one(selector)
+            except Exception:
+                el = None
+            if el and len(el.get_text(strip=True)) >= 200:
+                content_el = el
+                break
+        if content_el is None:
+            content_el = self._find_content_element(soup)
         if content_el is None:
             raise ValueError(f"Could not find chapter content at {chapter.url}")
 

@@ -20,6 +20,8 @@ class FetchWorker(QObject):
         translate_title: bool = False,
         backend: str = "google",
         libretranslate_url: str = "https://libretranslate.com",
+        ollama_url: str = "http://127.0.0.1:11434",
+        ollama_model: str = "qwen2.5:3b",
         parent=None,
     ):
         super().__init__(parent)
@@ -28,6 +30,8 @@ class FetchWorker(QObject):
         self.translate_title = translate_title
         self.backend = backend
         self.libretranslate_url = libretranslate_url
+        self.ollama_url = ollama_url
+        self.ollama_model = ollama_model
 
     @Slot()
     def run(self):
@@ -68,6 +72,8 @@ class FetchWorker(QObject):
                 max_workers=1,
                 backend=self.backend,
                 libretranslate_url=self.libretranslate_url,
+                ollama_url=self.ollama_url,
+                ollama_model=self.ollama_model,
             ).translate_text(title)
         except Exception:
             return None

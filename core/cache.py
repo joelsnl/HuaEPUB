@@ -151,6 +151,40 @@ class NovelCache:
         except Exception:
             pass
 
+    def delete_cover(self, cover_url: str = "", source_url: str = ""):
+        key = self.cover_key(cover_url, source_url)
+        if not self._conn or not key:
+            return
+        try:
+            with self._lock:
+                self._conn.execute("DELETE FROM covers WHERE key = ?", (key,))
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def delete_chapter_list(self, source_url: str):
+        if not self._conn or not source_url:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "DELETE FROM chapter_lists WHERE source_url = ?",
+                    (source_url.strip(),),
+                )
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def purge_book(self, source_url: str, cover_url: str = ""):
+        """Drop chapter HTML, TOC snapshot, and cover bytes for one novel."""
+        url = (source_url or "").strip()
+        if url:
+            self.clear_book(url)
+            self.delete_chapter_list(url)
+            self.delete_cover(source_url=url)
+        if cover_url:
+            self.delete_cover(cover_url=cover_url)
+
     # ------------------------------------------------------------------
     # Translations
     # ------------------------------------------------------------------

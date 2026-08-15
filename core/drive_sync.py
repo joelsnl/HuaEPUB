@@ -17,6 +17,8 @@ import json
 import re
 import threading
 import traceback
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -43,6 +45,62 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 _FOLDER_ID_RE = re.compile(
     r'(?:/folders/|id=|/drive/u/\d+/folders/)([a-zA-Z0-9_-]{10,})'
 )
+
+
+@dataclass(frozen=True)
+class RemoteEpubInfo:
+    """Drive metadata for a file under books/."""
+    id: str
+    size: int = 0
+    modified_time: str = ""  # RFC3339 from Drive
+
+
+def _parse_drive_rfc3339(value: str) -> Optional[float]:
+    """Parse Drive modifiedTime to UTC epoch seconds."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def local_epub_needs_push(local_path: Path, remote: Optional[RemoteEpubInfo]) -> bool:
+    """
+    True if local EPUB should be uploaded/updated on Drive.
+
+    - Missing remotely → upload
+    - Remote newer than local (by mtime) → keep remote (other device won)
+    - Different size, or local clearly newer → push/overwrite
+    """
+    path = Path(local_path)
+    if not path.is_file():
+        return False
+    if remote is None:
+        return True
+
+    st = path.stat()
+    local_size = int(st.st_size)
+    local_mtime = float(st.st_mtime)
+    remote_size = int(remote.size or 0)
+    remote_mtime = _parse_drive_rfc3339(remote.modified_time)
+
+    # Don't clobber a newer copy that another device already uploaded
+    if remote_mtime is not None and local_mtime < remote_mtime - 5:
+        return False
+
+    if remote_size > 0 and local_size != remote_size:
+        return True
+    if remote_mtime is not None and local_mtime > remote_mtime + 2:
+        return True
+    # Remote size unknown / zero: push if local is newer or sizes differ when known
+    if remote_size == 0 and remote_mtime is None:
+        return True
+    return False
+
 
 # Soft dependency — import errors become clear messages at connect time
 _GOOGLE_IMPORT_ERROR: Optional[str] = None
@@ -791,7 +849,11 @@ class DriveSync:
                 f"remote={len(remote.library)} → {len(merged.library)}"
             )
             # Never let an empty local wipe a populated remote due to bad merge
-            if not merged.library and remote.library:
+            if (
+                not merged.library
+                and remote.library
+                and not getattr(local, "removed", None)
+            ):
                 print("Merge produced empty library; keeping remote copy")
                 merged = remote
 
@@ -804,15 +866,24 @@ class DriveSync:
                         Path(entry.output_path).name if entry.output_path else ""
                     )
                     if name and name in remote_books:
-                        entry.drive_file_id = remote_books[name]
+                        entry.drive_file_id = remote_books[name].id
                         if not entry.epub_filename:
                             entry.epub_filename = name
         except Exception as e:
             print(f"Warning: could not attach remote EPUB ids: {e}")
 
         store.replace_data(merged)
+        try:
+            self.purge_removed_epubs(merged)
+        except Exception as e:
+            print(f"Warning: could not delete removed Drive EPUBs: {e}")
         # Avoid uploading an empty library over a non-empty remote we failed to read
-        if merged.library or remote is None or not getattr(remote, "library", None):
+        if (
+            merged.library
+            or getattr(merged, "removed", None)
+            or remote is None
+            or not getattr(remote, "library", None)
+        ):
             self.push_library(merged)
         else:
             print("Skipping push of empty library over known remote novels")
@@ -822,15 +893,15 @@ class DriveSync:
     # EPUBs
     # ------------------------------------------------------------------
 
-    def list_remote_books(self) -> Dict[str, str]:
-        """Map filename → file id for books/ contents."""
+    def list_remote_books(self) -> Dict[str, RemoteEpubInfo]:
+        """Map filename → Drive metadata for books/ contents."""
         _, books_id = self.ensure_folder_layout()
-        result: Dict[str, str] = {}
+        result: Dict[str, RemoteEpubInfo] = {}
         page_token = None
         while True:
             kwargs = {
                 "q": f"'{books_id}' in parents and trashed = false",
-                "fields": "nextPageToken, files(id, name)",
+                "fields": "nextPageToken, files(id, name, size, modifiedTime)",
                 "pageSize": 100,
             }
             if page_token:
@@ -839,7 +910,15 @@ class DriveSync:
             for f in resp.get("files") or []:
                 name = f.get("name") or ""
                 if name.lower().endswith(".epub"):
-                    result[name] = f["id"]
+                    try:
+                        size = int(f.get("size") or 0)
+                    except (TypeError, ValueError):
+                        size = 0
+                    result[name] = RemoteEpubInfo(
+                        id=f["id"],
+                        size=size,
+                        modified_time=f.get("modifiedTime") or "",
+                    )
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
@@ -879,6 +958,63 @@ class DriveSync:
             raise DriveSyncError(
                 f"Failed to upload EPUB: {self._format_api_error(e)}"
             ) from e
+
+    def delete_epub(self, file_id: str = "", remote_name: str = "") -> bool:
+        """Trash a Drive EPUB (by id or filename under books/)."""
+        service = self._require_service()
+        _, books_id = self.ensure_folder_layout()
+        target = (file_id or "").strip()
+        name = (remote_name or "").strip()
+        if not target and name:
+            target = self._find_child(name, books_id) or ""
+        if not target:
+            return False
+        try:
+            service.files().update(
+                fileId=target,
+                body={"trashed": True},
+                supportsAllDrives=True,
+            ).execute()
+            print(f"Trashed Drive EPUB id={target} name={name}")
+            return True
+        except Exception as e:
+            err = str(e).lower()
+            if "404" in err or "not found" in err:
+                return True
+            print(f"Failed to trash Drive EPUB {name or target}: {e}")
+            return False
+
+    def purge_removed_epubs(self, data: LibraryData) -> int:
+        """Trash Drive EPUBs listed on tombstones and not used by a live entry."""
+        removed = list(getattr(data, "removed", None) or [])
+        if not removed:
+            return 0
+        live_ids = {
+            (e.drive_file_id or "").strip()
+            for e in data.library
+            if (e.drive_file_id or "").strip()
+        }
+        live_names = set()
+        for e in data.library:
+            name = (e.epub_filename or "").strip()
+            if not name and e.output_path:
+                try:
+                    name = Path(e.output_path).name
+                except Exception:
+                    name = ""
+            if name:
+                live_names.add(name)
+        deleted = 0
+        for tomb in removed:
+            fid = (tomb.drive_file_id or "").strip()
+            name = (tomb.epub_filename or "").strip()
+            if fid and fid in live_ids:
+                continue
+            if name and name in live_names:
+                continue
+            if self.delete_epub(file_id=fid, remote_name=name):
+                deleted += 1
+        return deleted
 
     def download_epub(self, file_id: str, dest_path: str) -> str:
         """Download a Drive EPUB to dest_path. Returns dest_path."""

@@ -1,7 +1,13 @@
 """Offline tests for Drive sync helpers (no network)."""
 
+import os
+import time
+from datetime import datetime, timezone
+
 from core.drive_sync import (
     DriveSync,
+    RemoteEpubInfo,
+    local_epub_needs_push,
     oauth_client_path,
     oauth_setup_instructions,
     SCOPES,
@@ -56,3 +62,45 @@ class TestDriveSyncHelpers:
     def test_escape_query_name(self):
         sync = DriveSync()
         assert "\\'" in sync._escape_query_name("O'Brien")
+
+
+class TestLocalEpubNeedsPush:
+    def test_missing_remote_uploads(self, tmp_path):
+        local = tmp_path / "book.epub"
+        local.write_bytes(b"epub-bytes")
+        assert local_epub_needs_push(local, None) is True
+
+    def test_size_change_uploads(self, tmp_path):
+        local = tmp_path / "book.epub"
+        local.write_bytes(b"x" * 1000)
+        remote = RemoteEpubInfo(
+            id="abc",
+            size=500,
+            modified_time="2020-01-01T00:00:00.000Z",
+        )
+        assert local_epub_needs_push(local, remote) is True
+
+    def test_same_size_same_age_skips(self, tmp_path):
+        local = tmp_path / "book.epub"
+        local.write_bytes(b"x" * 500)
+        # Use UTC epoch matching the remote RFC3339 timestamp
+        remote_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(local, (remote_ts, remote_ts))
+        remote = RemoteEpubInfo(
+            id="abc",
+            size=500,
+            modified_time="2024-06-01T12:00:00.000Z",
+        )
+        assert local_epub_needs_push(local, remote) is False
+
+    def test_remote_newer_skips_even_if_size_differs(self, tmp_path):
+        local = tmp_path / "book.epub"
+        local.write_bytes(b"old")
+        old = time.time() - 3600
+        os.utime(local, (old, old))
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        remote = RemoteEpubInfo(id="abc", size=9999, modified_time=now)
+        assert local_epub_needs_push(local, remote) is False
+
+    def test_missing_local_file(self, tmp_path):
+        assert local_epub_needs_push(tmp_path / "missing.epub", None) is False

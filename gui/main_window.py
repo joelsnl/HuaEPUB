@@ -37,6 +37,7 @@ from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
 from gui.pages.single_page import SinglePage
 from gui.session import AppSession
+from core.download_runner import translator_backend_kwargs
 from gui.widgets.options_bar import OptionsBar
 from gui.widgets.progress_panel import ProgressPanel
 from gui.widgets.resume_banner import ResumeBanner
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
         act.setChecked(bool(get_auto_check_updates()))
         act.toggled.connect(set_auto_check_updates)
         help_m.addAction(act)
+        help_m.addAction("How translation works…", self._translation_help)
         help_m.addAction("About", self._about)
         help_m.addAction("Drive OAuth setup…", self._drive_setup_help)
 
@@ -182,6 +184,9 @@ class MainWindow(QMainWindow):
             clipboard=o["clipboard"],
             workers=o["workers"],
             backend=o["backend"],
+            ollama_model=o.get("ollama_model", "qwen2.5:3b"),
+            ollama_url=o.get("ollama_url", "http://127.0.0.1:11434"),
+            ollama_polish=bool(o.get("ollama_polish", False)),
             drive_enabled=self.library.drive_enabled.isChecked(),
             drive_library=self.library.drive_library.isChecked(),
             drive_epubs=self.library.drive_epubs.isChecked(),
@@ -431,10 +436,7 @@ class MainWindow(QMainWindow):
             url,
             self.session.cache,
             translate_title=bool(o.get("translate")),
-            backend=o.get("backend", "google"),
-            libretranslate_url=self.session.settings.get(
-                "libretranslate_url", "https://libretranslate.com"
-            ),
+            **translator_backend_kwargs(self.session.settings, o),
         )
         if not self._bind_and_run(
             worker,
@@ -586,10 +588,7 @@ class MainWindow(QMainWindow):
             urls[i],
             self.session.cache,
             translate_title=bool(o.get("translate")),
-            backend=o.get("backend", "google"),
-            libretranslate_url=self.session.settings.get(
-                "libretranslate_url", "https://libretranslate.com"
-            ),
+            **translator_backend_kwargs(self.session.settings, o),
         )
         if not self._bind_and_run(
             worker,
@@ -824,12 +823,42 @@ class MainWindow(QMainWindow):
         self.single.set_url(url)
 
     def _remove_library(self, url: str):
-        if QMessageBox.question(
-            self, "Remove", "Remove this novel from your library?\n(Cached chapters are kept.)"
-        ) != QMessageBox.Yes:
+        entry = self.session.library_store.get_library_entry(url)
+        title = ""
+        if entry:
+            title = entry.translated_title or entry.title or url
+        drive_on = bool(self.library.drive_enabled.isChecked())
+        extra = (
+            "\n• the Google Drive EPUB and library.json entry "
+            "(it will not come back on the next sync)"
+            if drive_on
+            else "\n• a sync marker so Google Drive cannot restore it later"
+        )
+        msg = (
+            f'Remove “{title}” from your library?\n\n'
+            "This deletes:\n"
+            "• the local EPUB in your books folder\n"
+            "• chapter, cover, and table-of-contents cache for this novel"
+            f"{extra}"
+        )
+        if QMessageBox.question(self, "Remove", msg) != QMessageBox.Yes:
             return
-        self.session.library_store.remove_library(url)
+        from core.library import purge_novel_artifacts
+        from core.settings import get_default_books_dir
+
+        extra_dirs = [get_default_books_dir()]
+        custom = (self.session.output_dir or "").strip()
+        if custom:
+            extra_dirs.append(Path(custom))
+        removed = self.session.library_store.remove_library(url)
+        target = removed or entry
+        if target:
+            purge_novel_artifacts(
+                target, cache=self.session.cache, extra_dirs=extra_dirs
+            )
         self.library.refresh()
+        if drive_on and self.session.drive_sync.is_connected():
+            self._start_drive_sync(silent=True)
 
     def _download_library_epub(self, entry):
         # Prefer Drive download if remote id known
@@ -852,12 +881,15 @@ class MainWindow(QMainWindow):
     def _reset_library(self):
         if QMessageBox.question(
             self, "Reset library",
-            "Clear all tracked novels from your local library?",
+            "Clear all tracked novels from your local library?\n\n"
+            "They will not come back on Drive sync. Local EPUB files are kept.",
         ) != QMessageBox.Yes:
             return
         self.session.library_store.clear(clear_library=True, clear_history=False)
         self.library.check_status.clear()
         self.library.refresh()
+        if self.library.drive_enabled.isChecked() and self.session.drive_sync.is_connected():
+            self._start_drive_sync(silent=True)
 
     # ------------------------------------------------------------------
     # Drive
@@ -1088,6 +1120,28 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Log", f"No log yet at:\n{log}")
 
+    def _translation_help(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("How translation works")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            "<p><b>Google</b> (default) — fast, free, online. Best for most novels.</p>"
+            "<p><b>LibreTranslate</b> — your own server. More private, usually slower.</p>"
+            "<p><b>Ollama</b> — full local translation. Slow (hours for a long novel). "
+            "Needs <a href='https://ollama.com'>Ollama</a> installed and running.</p>"
+            "<p><b>Polish English</b> — keep Google (or LibreTranslate) as the translator, "
+            "then copy-edit the English with a local Ollama model. Much faster than "
+            "translating with Ollama. If you already have a model, HuaEPUB uses it. "
+            "If you have none, it asks before downloading about 2 GB.</p>"
+            "<p>Workers apply to Google/LibreTranslate only. Polish runs separately.</p>"
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        for lbl in box.findChildren(QLabel):
+            lbl.setOpenExternalLinks(True)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.exec()
+
     def _about(self):
         version = get_current_version()
         box = QMessageBox(self)
@@ -1097,6 +1151,8 @@ class MainWindow(QMainWindow):
         box.setText(
             f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
             f"<p>{APP_DESCRIPTION}</p>"
+            "<p>Optional: polish Google English with a local Ollama model "
+            "(Help → How translation works).</p>"
             "<p>"
             f"<b>Developer:</b> {APP_AUTHOR} "
             f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"

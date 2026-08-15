@@ -38,6 +38,9 @@ class AppSession:
         library_view: str,
         library_filter: str,
         drive_panel_expanded: bool,
+        ollama_model: str = "qwen2.5:3b",
+        ollama_url: str = "http://127.0.0.1:11434",
+        ollama_polish: bool = False,
     ):
         self.settings["translate"] = translate
         self.settings["clean"] = clean
@@ -45,6 +48,9 @@ class AppSession:
         self.settings["clipboard_watcher"] = clipboard
         self.settings["workers"] = workers
         self.settings["translation_backend"] = backend
+        self.settings["ollama_model"] = ollama_model
+        self.settings["ollama_url"] = ollama_url
+        self.settings["ollama_polish"] = bool(ollama_polish)
         self.settings["output_dir"] = self.output_dir
         self.settings["drive_sync_enabled"] = drive_enabled
         self.settings["drive_sync_library"] = drive_library

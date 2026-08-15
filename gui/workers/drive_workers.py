@@ -55,8 +55,11 @@ class DriveSyncWorker(QObject):
                 summary_parts.append(f"library ({novel_count} novel(s))")
             if self.session.settings.get("drive_sync_epubs", True):
                 self.progress.emit("Listing remote EPUBs…")
+                from core.drive_sync import local_epub_needs_push
+
                 remote = ds.list_remote_books()
                 uploaded = 0
+                updated = 0
                 library = self.session.library_store.get_library()
                 # Link remote EPUBs onto entries missing drive_file_id
                 for entry in library:
@@ -67,7 +70,7 @@ class DriveSyncWorker(QObject):
                         try:
                             self.session.library_store.update_drive_file(
                                 entry.source_url,
-                                drive_file_id=remote[name],
+                                drive_file_id=remote[name].id,
                                 epub_filename=name,
                             )
                         except Exception:
@@ -76,13 +79,22 @@ class DriveSyncWorker(QObject):
                 for entry in library:
                     path = entry.output_path or ""
                     name = entry.epub_filename or (Path(path).name if path else "")
-                    if path and name and Path(path).is_file() and name not in remote:
-                        pending.append((path, name))
-                for i, (path, name) in enumerate(pending):
-                    self.progress.emit(f"Uploading EPUB {i + 1}/{len(pending)}: {name[:40]}")
+                    if not (path and name and Path(path).is_file()):
+                        continue
+                    info = remote.get(name)
+                    if local_epub_needs_push(Path(path), info):
+                        pending.append((path, name, info is not None))
+                for i, (path, name, is_update) in enumerate(pending):
+                    action = "Updating" if is_update else "Uploading"
+                    self.progress.emit(
+                        f"{action} EPUB {i + 1}/{len(pending)}: {name[:40]}"
+                    )
                     try:
                         file_id = ds.upload_epub(path, name)
-                        uploaded += 1
+                        if is_update:
+                            updated += 1
+                        else:
+                            uploaded += 1
                         # Keep Drive id on the library entry
                         for entry in library:
                             en = entry.epub_filename or (
@@ -97,7 +109,9 @@ class DriveSyncWorker(QObject):
                                 break
                     except Exception as e:
                         print(f"Drive upload failed for {name}: {e}")
-                summary_parts.append(f"epubs(remote={len(remote)}, uploaded={uploaded})")
+                summary_parts.append(
+                    f"epubs(remote={len(remote)}, uploaded={uploaded}, updated={updated})"
+                )
             from core.settings import save_settings
             import time
             self.session.settings["drive_last_synced_at"] = time.time()

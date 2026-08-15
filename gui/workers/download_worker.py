@@ -12,8 +12,10 @@ from core.download_runner import (
     download_chapters_with_cache,
     downloads_folder,
     epub_path,
+    epub_translate_kwargs,
     record_successful_download,
     run_single_download,
+    translator_backend_kwargs,
 )
 from core.library import new_chapters_since
 from core.notify import notify
@@ -59,10 +61,7 @@ class SingleDownloadWorker(QObject):
                 clean=bool(self.options.get("clean", True)),
                 translate=bool(self.options.get("translate", True)),
                 workers=int(self.options.get("workers", 200)),
-                backend=self.options.get("backend", "google"),
-                libretranslate_url=self.session.settings.get(
-                    "libretranslate_url", "https://libretranslate.com"
-                ),
+                **epub_translate_kwargs(self.session.settings, self.options),
                 set_status=set_status,
                 set_progress=set_progress,
             )
@@ -152,10 +151,7 @@ class MultiDownloadWorker(QObject):
                         clean=bool(self.options.get("clean", True)),
                         translate=bool(self.options.get("translate", True)),
                         workers=int(self.options.get("workers", 200)),
-                        backend=self.options.get("backend", "google"),
-                        libretranslate_url=self.session.settings.get(
-                            "libretranslate_url", "https://libretranslate.com"
-                        ),
+                        **epub_translate_kwargs(self.session.settings, self.options),
                         set_status=set_status,
                         set_progress=set_prog_b,
                     )
@@ -252,9 +248,8 @@ class LibraryUpdateWorker(QObject):
                     translated_title = (
                         make_translator(
                             cache=self.session.cache, max_workers=1,
-                            backend=self.options.get("backend", "google"),
-                            libretranslate_url=self.session.settings.get(
-                                "libretranslate_url", "https://libretranslate.com"
+                            **translator_backend_kwargs(
+                                self.session.settings, self.options
                             ),
                         ).translate_text(info.title)
                         or info.title
@@ -312,10 +307,7 @@ class LibraryUpdateWorker(QObject):
                 clean=bool(self.options.get("clean", True)),
                 translate=bool(self.options.get("translate", True)),
                 workers=int(self.options.get("workers", 200)),
-                backend=self.options.get("backend", "google"),
-                libretranslate_url=self.session.settings.get(
-                    "libretranslate_url", "https://libretranslate.com"
-                ),
+                **epub_translate_kwargs(self.session.settings, self.options),
                 set_status=set_status,
                 set_progress=set_prog_b,
             )
@@ -530,10 +522,7 @@ class LibraryUpdateAllWorker(QObject):
                         clean=bool(self.options.get("clean", True)),
                         translate=bool(self.options.get("translate", True)),
                         workers=int(self.options.get("workers", 200)),
-                        backend=self.options.get("backend", "google"),
-                        libretranslate_url=self.session.settings.get(
-                            "libretranslate_url", "https://libretranslate.com"
-                        ),
+                        **epub_translate_kwargs(self.session.settings, self.options),
                         set_status=set_status,
                         set_progress=set_prog_b,
                     )

@@ -91,8 +91,18 @@ class TestChapterListCache:
             {"url": "https://book/1/c2", "title": "Ch2"},
         ]
 
-    def test_miss(self, cache):
-        assert cache.get_chapter_list("https://nope") is None
+    def test_purge_book_drops_chapters_cover_and_toc(self, cache):
+        cache.put_chapter("https://book/1", "https://book/1/c1", "t", "c")
+        cache.put_cover(b"img", source_url="https://book/1")
+        cache.put_cover(b"jpg", cover_url="https://book/1/cover.jpg")
+        cache.put_chapter_list("https://book/1", [{"url": "https://book/1/c1", "title": "t"}])
+        cache.put_chapter("https://other", "https://other/c1", "t", "keep")
+        cache.purge_book("https://book/1", cover_url="https://book/1/cover.jpg")
+        assert cache.count_chapters("https://book/1") == 0
+        assert cache.get_chapter("https://other/c1") == "keep"
+        assert cache.get_cover(source_url="https://book/1") is None
+        assert cache.get_cover(cover_url="https://book/1/cover.jpg") is None
+        assert cache.get_chapter_list("https://book/1") is None
 
 
 class TestBrokenCache:

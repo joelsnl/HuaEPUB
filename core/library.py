@@ -53,9 +53,19 @@ class LibraryEntry:
 
 
 @dataclass
+class RemovedEntry:
+    """Tombstone so Drive merge cannot resurrect a novel the user removed."""
+    source_url: str
+    removed_at: float = 0.0
+    epub_filename: str = ""
+    drive_file_id: str = ""
+
+
+@dataclass
 class LibraryData:
     history: List[HistoryEntry] = field(default_factory=list)
     library: List[LibraryEntry] = field(default_factory=list)
+    removed: List[RemovedEntry] = field(default_factory=list)
 
 
 def _history_from_dict(e: dict) -> Optional[HistoryEntry]:
@@ -99,6 +109,21 @@ def _library_from_dict(e: dict) -> Optional[LibraryEntry]:
         return None
 
 
+def _removed_from_dict(e: dict) -> Optional[RemovedEntry]:
+    url = (e.get('source_url') or '').strip()
+    if not url:
+        return None
+    try:
+        return RemovedEntry(
+            source_url=url,
+            removed_at=float(e.get('removed_at') or 0),
+            epub_filename=e.get('epub_filename', '') or '',
+            drive_file_id=e.get('drive_file_id', '') or '',
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def library_data_from_dict(raw: dict) -> LibraryData:
     """Parse a library.json-shaped dict into LibraryData."""
     data = LibraryData()
@@ -114,6 +139,11 @@ def library_data_from_dict(raw: dict) -> LibraryData:
             entry = _library_from_dict(e)
             if entry:
                 data.library.append(entry)
+    for e in raw.get('removed', []):
+        if isinstance(e, dict):
+            entry = _removed_from_dict(e)
+            if entry:
+                data.removed.append(entry)
     return data
 
 
@@ -121,6 +151,7 @@ def library_data_to_dict(data: LibraryData) -> dict:
     return {
         'history': [asdict(e) for e in data.history],
         'library': [asdict(e) for e in data.library],
+        'removed': [asdict(e) for e in data.removed],
     }
 
 
@@ -158,6 +189,28 @@ def _prefer_library_entry(a: LibraryEntry, b: LibraryEntry) -> LibraryEntry:
     return merged
 
 
+def _prefer_removed_entry(a: RemovedEntry, b: RemovedEntry) -> RemovedEntry:
+    winner = a if a.removed_at >= b.removed_at else b
+    loser = b if winner is a else a
+    merged = RemovedEntry(**asdict(winner))
+    if not merged.epub_filename and loser.epub_filename:
+        merged.epub_filename = loser.epub_filename
+    if not merged.drive_file_id and loser.drive_file_id:
+        merged.drive_file_id = loser.drive_file_id
+    return merged
+
+
+def _tombstone_map(entries: List[RemovedEntry]) -> dict:
+    out = {}
+    for entry in entries:
+        url = (entry.source_url or "").strip()
+        if not url:
+            continue
+        prev = out.get(url)
+        out[url] = entry if prev is None else _prefer_removed_entry(prev, entry)
+    return out
+
+
 def merge_library(local: LibraryData, remote: LibraryData) -> LibraryData:
     """
     Merge local and remote library data.
@@ -165,20 +218,30 @@ def merge_library(local: LibraryData, remote: LibraryData) -> LibraryData:
     - Union novels by source_url; newer last_downloaded_at wins
       (ties → higher chapter_count).
     - History by source_url; newer downloaded_at wins; capped at MAX_HISTORY.
+    - Tombstones (`removed`) win over older library/history rows so a local
+      Remove is not undone by the next Drive sync.
     """
+    removed_map = _tombstone_map(list(remote.removed) + list(local.removed))
+
     lib_map = {}
     for entry in list(remote.library) + list(local.library):
-        # Process remote first then local so equal timestamps keep local
-        # unless remote is newer — iterate remote then local with prefer
         existing = lib_map.get(entry.source_url)
         if existing is None:
             lib_map[entry.source_url] = entry
         else:
             lib_map[entry.source_url] = _prefer_library_entry(existing, entry)
 
-    # Sort by last_downloaded_at descending
+    library = []
+    for entry in lib_map.values():
+        tomb = removed_map.get(entry.source_url)
+        if tomb and float(entry.last_downloaded_at or 0) <= float(tomb.removed_at or 0):
+            continue
+        if tomb and float(entry.last_downloaded_at or 0) > float(tomb.removed_at or 0):
+            removed_map.pop(entry.source_url, None)
+        library.append(entry)
+
     library = sorted(
-        lib_map.values(),
+        library,
         key=lambda e: e.last_downloaded_at,
         reverse=True,
     )
@@ -189,13 +252,24 @@ def merge_library(local: LibraryData, remote: LibraryData) -> LibraryData:
         if existing is None or entry.downloaded_at > existing.downloaded_at:
             hist_map[entry.source_url] = entry
 
+    history = []
+    for entry in hist_map.values():
+        tomb = removed_map.get(entry.source_url)
+        if tomb and float(entry.downloaded_at or 0) <= float(tomb.removed_at or 0):
+            continue
+        history.append(entry)
     history = sorted(
-        hist_map.values(),
+        history,
         key=lambda e: e.downloaded_at,
         reverse=True,
     )[:MAX_HISTORY]
 
-    return LibraryData(history=history, library=library)
+    removed = sorted(
+        removed_map.values(),
+        key=lambda e: e.removed_at,
+        reverse=True,
+    )
+    return LibraryData(history=history, library=library, removed=removed)
 
 
 class LibraryStore:
@@ -236,6 +310,7 @@ class LibraryStore:
             return LibraryData(
                 history=list(self._data.history),
                 library=list(self._data.library),
+                removed=list(self._data.removed),
             )
 
     def replace_data(self, data: LibraryData):
@@ -244,6 +319,7 @@ class LibraryStore:
             self._data = LibraryData(
                 history=list(data.history),
                 library=list(data.library),
+                removed=list(getattr(data, "removed", None) or []),
             )
             self._save()
             print(
@@ -332,6 +408,9 @@ class LibraryStore:
                 e for e in self._data.library if e.source_url != source_url
             ]
             self._data.library.insert(0, entry)
+            self._data.removed = [
+                r for r in self._data.removed if r.source_url != source_url
+            ]
             self._save()
 
     def update_drive_file(
@@ -393,16 +472,52 @@ class LibraryStore:
                     return e
         return None
 
-    def remove_library(self, source_url: str) -> bool:
+    def remove_library(self, source_url: str) -> Optional[LibraryEntry]:
+        """
+        Drop the novel from library + history and write a tombstone so Drive
+        sync cannot resurrect it. Returns the removed entry (for file/cache
+        cleanup), or None if it was not in the library.
+        """
+        url = (source_url or "").strip()
+        if not url:
+            return None
         with self._lock:
-            before = len(self._data.library)
+            found = None
+            for e in self._data.library:
+                if e.source_url == url:
+                    found = e
+                    break
             self._data.library = [
-                e for e in self._data.library if e.source_url != source_url
+                e for e in self._data.library if e.source_url != url
             ]
-            if len(self._data.library) != before:
-                self._save()
-                return True
-            return False
+            self._data.history = [
+                h for h in self._data.history if h.source_url != url
+            ]
+            filename = ""
+            drive_id = ""
+            if found:
+                filename = found.epub_filename or (
+                    Path(found.output_path).name if found.output_path else ""
+                )
+                drive_id = found.drive_file_id or ""
+            self._data.removed = [
+                r for r in self._data.removed if r.source_url != url
+            ]
+            self._data.removed.insert(
+                0,
+                RemovedEntry(
+                    source_url=url,
+                    removed_at=time.time(),
+                    epub_filename=filename,
+                    drive_file_id=drive_id,
+                ),
+            )
+            self._save()
+            return found
+
+    def get_removed(self) -> List[RemovedEntry]:
+        with self._lock:
+            return list(self._data.removed)
 
     def clear(
         self,
@@ -416,6 +531,19 @@ class LibraryStore:
         """
         with self._lock:
             if clear_library:
+                now = time.time()
+                tombs = {r.source_url: r for r in self._data.removed}
+                for e in self._data.library:
+                    filename = e.epub_filename or (
+                        Path(e.output_path).name if e.output_path else ""
+                    )
+                    tombs[e.source_url] = RemovedEntry(
+                        source_url=e.source_url,
+                        removed_at=now,
+                        epub_filename=filename,
+                        drive_file_id=e.drive_file_id or "",
+                    )
+                self._data.removed = list(tombs.values())
                 self._data.library = []
             if clear_history:
                 self._data.history = []
@@ -442,3 +570,47 @@ def new_chapters_since(chapters, last_chapter_url: str, last_chapter_count: int 
         return chapters[start:], start
 
     return chapters, 0
+
+
+def _unlink_epub(path: Path) -> bool:
+    try:
+        p = Path(path)
+        if p.is_file() and p.suffix.lower() == ".epub":
+            p.unlink()
+            print(f"Deleted local EPUB: {p}")
+            return True
+    except Exception as e:
+        print(f"Could not delete local EPUB {path}: {e}")
+    return False
+
+
+def purge_novel_artifacts(entry: LibraryEntry, cache=None, extra_dirs=None) -> None:
+    """
+    Delete this novel's local EPUB and per-book caches (chapters, TOC, cover).
+    Does not wipe the shared translation cache (phrases are reused across books).
+    """
+    if cache is not None:
+        try:
+            cache.purge_book(entry.source_url, cover_url=entry.cover_url or "")
+        except Exception as e:
+            print(f"Could not purge cache for {entry.source_url}: {e}")
+
+    seen = set()
+    candidates = []
+    if entry.output_path:
+        candidates.append(Path(entry.output_path))
+    name = (entry.epub_filename or "").strip()
+    if not name and entry.output_path:
+        try:
+            name = Path(entry.output_path).name
+        except Exception:
+            name = ""
+    for folder in extra_dirs or []:
+        if name:
+            candidates.append(Path(folder) / name)
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        _unlink_epub(path)

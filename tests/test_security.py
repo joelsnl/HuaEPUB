@@ -14,6 +14,7 @@ from core.security import (
     safe_http_request,
     validate_fetch_url,
     validate_libretranslate_url,
+    validate_ollama_url,
     validate_update_helper_paths,
     write_secret_file,
     write_update_helper_config,
@@ -50,6 +51,23 @@ class TestLibreTranslateUrl:
     def test_rejects_loopback(self):
         with pytest.raises(UnsafeURLError):
             validate_libretranslate_url("http://127.0.0.1:5000")
+
+
+class TestOllamaUrl:
+    def test_accepts_loopback(self):
+        assert validate_ollama_url("http://127.0.0.1:11434/") == "http://127.0.0.1:11434"
+        assert validate_ollama_url("http://localhost:11434") == "http://localhost:11434"
+
+    def test_rejects_non_local(self):
+        with pytest.raises(UnsafeURLError):
+            validate_ollama_url("https://example.com/ollama")
+        with pytest.raises(UnsafeURLError):
+            validate_ollama_url("http://192.168.1.10:11434")
+
+    def test_fetch_url_loopback_opt_in(self):
+        validate_fetch_url("http://127.0.0.1:11434/api/chat", allow_loopback=True)
+        with pytest.raises(UnsafeURLError):
+            validate_fetch_url("http://127.0.0.1:11434/api/chat")
 
 
 class TestSafeHttpRequest:

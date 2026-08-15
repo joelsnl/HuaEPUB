@@ -23,6 +23,9 @@ class TestSettings:
         assert loaded['translate'] is True
         assert loaded['workers'] == 200
         assert loaded['translation_backend'] == 'google'
+        assert loaded['ollama_url'] == 'http://127.0.0.1:11434'
+        assert loaded['ollama_model'] == 'qwen2.5:3b'
+        assert loaded['ollama_polish'] is False
         assert loaded['drive_sync_enabled'] is False
         assert loaded['drive_sync_library'] is True
         assert loaded['drive_sync_epubs'] is True

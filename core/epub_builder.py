@@ -328,10 +328,12 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         translator=None,
         verify_translation: bool = True,
         image_cache=None,
+        polish: bool = False,
     ):
         super().__init__(cleaner, image_cache=image_cache)
         self.translator = translator
         self.verify_translation = verify_translation
+        self.polish = bool(polish)
         
         # Track chapters with remaining Chinese after translation
         self.chapters_with_chinese: List[Tuple[str, int]] = []
@@ -472,6 +474,32 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                 )
             else:
                 translated = self.translator.translate_texts(texts_to_translate, translate_progress)
+
+            if self.polish and hasattr(self.translator, 'polish_texts'):
+                polish_start = time.monotonic()
+
+                def polish_progress(completed, total):
+                    if not progress_callback or total <= 0:
+                        return
+                    eta = ""
+                    if completed > 0 and completed < total:
+                        elapsed = time.monotonic() - polish_start
+                        if elapsed > 0:
+                            eta = (
+                                "  (ETA "
+                                f"{format_eta((total - completed) * (elapsed / completed))})"
+                            )
+                    progress_callback(
+                        int(len(chapters) * 1.5),
+                        total_steps,
+                        f"Polishing English: {completed}/{total}{eta}",
+                    )
+
+                print(f"Polishing {len(translated)} segments with Ollama "
+                      f"(batched, not per-paragraph)...")
+                translated = self.translator.polish_texts(
+                    translated, polish_progress
+                )
             
             # Apply translations back. Content translations are grouped per
             # chapter and applied at the text-node level (not raw string

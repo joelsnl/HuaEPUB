@@ -7,10 +7,12 @@ from core.library import (
     LibraryData,
     LibraryEntry,
     LibraryStore,
+    RemovedEntry,
     merge_library,
     new_chapters_since,
     library_payload_hash,
     library_data_to_dict,
+    purge_novel_artifacts,
 )
 
 
@@ -87,6 +89,10 @@ class TestLibraryStore:
 
         assert store2.remove_library("http://x/book")
         assert store2.get_library() == []
+        tombs = store2.get_removed()
+        assert len(tombs) == 1
+        assert tombs[0].source_url == "http://x/book"
+        assert tombs[0].epub_filename == "Book.epub"
 
     def test_preserves_drive_fields_on_upsert(self, tmp_path):
         store = LibraryStore(tmp_path / "library.json")
@@ -117,6 +123,7 @@ class TestLibraryStore:
         store.clear(clear_library=True, clear_history=False)
         assert store.get_library() == []
         assert len(store.get_history()) == 1
+        assert any(r.source_url == "http://x/a" for r in store.get_removed())
 
     def test_clear_both(self, tmp_path):
         path = tmp_path / "library.json"
@@ -209,3 +216,58 @@ class TestMergeLibrary:
         ])
         payload = library_data_to_dict(data)
         assert library_payload_hash(payload) == library_payload_hash(payload)
+
+    def test_tombstone_blocks_remote_resurrect(self):
+        local = LibraryData(
+            library=[],
+            removed=[RemovedEntry(source_url="http://a", removed_at=500)],
+        )
+        remote = LibraryData(library=[
+            LibraryEntry(
+                source_url="http://a",
+                title="A",
+                last_downloaded_at=100,
+            )
+        ])
+        merged = merge_library(local, remote)
+        assert merged.library == []
+        assert merged.removed[0].source_url == "http://a"
+
+    def test_newer_download_clears_tombstone(self):
+        local = LibraryData(
+            removed=[RemovedEntry(source_url="http://a", removed_at=100)],
+        )
+        remote = LibraryData(library=[
+            LibraryEntry(
+                source_url="http://a",
+                title="A",
+                last_downloaded_at=200,
+            )
+        ])
+        merged = merge_library(local, remote)
+        assert len(merged.library) == 1
+        assert merged.removed == []
+
+    def test_upsert_after_remove_clears_tombstone(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library(source_url="http://x/book", title="Book", chapter_count=1)
+        store.remove_library("http://x/book")
+        assert store.get_library() == []
+        store.upsert_library(source_url="http://x/book", title="Book", chapter_count=2)
+        assert len(store.get_library()) == 1
+        assert store.get_removed() == []
+
+    def test_purge_deletes_local_epub(self, tmp_path):
+        epub = tmp_path / "books" / "A.epub"
+        epub.parent.mkdir()
+        epub.write_bytes(b"epub")
+        other = tmp_path / "books" / "B.epub"
+        other.write_bytes(b"keep")
+        entry = LibraryEntry(
+            source_url="http://a",
+            output_path=str(epub),
+            epub_filename="A.epub",
+        )
+        purge_novel_artifacts(entry, extra_dirs=[tmp_path / "books"])
+        assert not epub.exists()
+        assert other.exists()
