@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.7.0**
+**Current version: 2.7.1**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -321,7 +321,7 @@ python -m pytest tests/
 - Cached chapters still help if you fetch the same book again with cache enabled
 
 ### Update installed but the old version keeps opening (macOS / Linux)
-- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update). A 2.7.0+ build is required for Polish English and the in-app translation help.
+- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update). A 2.7.1+ build is required for Polish English and the in-app translation help.
 - After “Update ready”, allow the app to quit; do not force-quit the helper. Reopen `HuaEPUB` from the same folder you installed into.
 - If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/HuaEPUB/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
 

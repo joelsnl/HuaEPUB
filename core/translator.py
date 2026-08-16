@@ -1080,6 +1080,12 @@ def probe_ollama(
     return names
 
 
+def _is_windows() -> bool:
+    """Isolated so tests can fake Windows without patching os.name (Path breaks)."""
+    import os
+    return os.name == "nt"
+
+
 def ollama_is_installed() -> bool:
     """True if the Ollama app/CLI looks present (not whether it is running)."""
     import os
@@ -1089,7 +1095,7 @@ def ollama_is_installed() -> bool:
     if shutil.which("ollama"):
         return True
     candidates: List[Path] = []
-    if os.name == "nt":
+    if _is_windows():
         local = os.environ.get("LOCALAPPDATA") or ""
         pf = os.environ.get("PROGRAMFILES") or r"C:\Program Files"
         pf86 = os.environ.get("PROGRAMFILES(X86)") or r"C:\Program Files (x86)"

@@ -373,24 +373,39 @@ class TestOllamaModelPick:
         assert any(p == 40 for p, _ in seen)
 
     def test_ollama_is_installed_uses_path(self, monkeypatch, tmp_path):
-        import os
         import shutil
-        from core.translator import ollama_is_installed
+        import core.translator as tr
 
         monkeypatch.setattr(shutil, 'which', lambda _name: str(tmp_path / 'ollama'))
-        assert ollama_is_installed() is True
+        assert tr.ollama_is_installed() is True
 
         monkeypatch.setattr(shutil, 'which', lambda _name: None)
-        monkeypatch.setattr(os, 'name', 'nt')
+        # Do not patch os.name — pathlib.Path then tries WindowsPath and
+        # crashes pytest on Linux CI.
+        monkeypatch.setattr(tr, '_is_windows', lambda: True)
         monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
         monkeypatch.setenv('PROGRAMFILES', str(tmp_path / 'pf'))
         monkeypatch.setenv('PROGRAMFILES(X86)', str(tmp_path / 'pf86'))
-        assert ollama_is_installed() is False
+        assert tr.ollama_is_installed() is False
 
         exe = tmp_path / 'local' / 'Programs' / 'Ollama' / 'ollama.exe'
         exe.parent.mkdir(parents=True)
         exe.write_text('')
-        assert ollama_is_installed() is True
+        assert tr.ollama_is_installed() is True
+
+    def test_ollama_is_installed_posix_home_path(self, monkeypatch, tmp_path):
+        import shutil
+        import core.translator as tr
+        from pathlib import Path
+
+        monkeypatch.setattr(shutil, 'which', lambda _name: None)
+        monkeypatch.setattr(tr, '_is_windows', lambda: False)
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: tmp_path))
+        assert tr.ollama_is_installed() is False
+        exe = tmp_path / '.local' / 'bin' / 'ollama'
+        exe.parent.mkdir(parents=True)
+        exe.write_text('')
+        assert tr.ollama_is_installed() is True
 
 
 class TestHttpSession:
