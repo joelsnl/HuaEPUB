@@ -140,6 +140,35 @@ class TestBackends:
         assert captured['url'] == 'https://lt.example/translate'
         assert captured['json']['source'] == 'zh'  # zh-CN mapped to plain ISO code
 
+    def test_google_skips_dns_on_hardcoded_endpoint(self, monkeypatch):
+        import socket
+
+        t = make_translator(backend='google')
+        monkeypatch.setattr(
+            socket, 'getaddrinfo',
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError('Google translate must not DNS-check every request')
+            ),
+        )
+
+        class FakeResponse:
+            status_code = 200
+            headers = {}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {'sentences': [{'trans': 'Hello'}]}
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                assert 'translate.googleapis.com' in url
+                return FakeResponse()
+
+        monkeypatch.setattr(t, '_get_http_session', lambda: FakeSession())
+        assert t._request_translation('你好') == 'Hello'
+
     def test_ollama_caps_workers_and_namespaces_cache(self):
         t = GoogleTranslator(
             max_workers=200,
@@ -340,7 +369,7 @@ class TestOllamaModelPick:
 
     def test_pull_streams_until_success(self, monkeypatch):
         from core.translator import pull_ollama_model
-        import requests as req_mod
+        import core.security as sec
 
         lines = [
             b'{"status":"pulling manifest"}',
@@ -361,16 +390,23 @@ class TestOllamaModelPick:
             def close(self):
                 pass
 
-        class FakeSession:
-            def post(self, *a, **k):
-                assert k.get('stream') is True
-                assert k.get('allow_redirects') is False
-                return FakeResponse()
+        def fake_safe(session, method, url, **kwargs):
+            assert method == 'POST'
+            assert url.endswith('/api/pull')
+            assert kwargs.get('allow_loopback') is True
+            assert kwargs.get('stream') is True
+            return FakeResponse()
 
-        monkeypatch.setattr(req_mod, 'Session', lambda: FakeSession())
+        monkeypatch.setattr(sec, 'safe_http_request', fake_safe)
         pull_ollama_model('qwen2.5:3b', progress_callback=lambda p, s: seen.append((p, s)))
         assert seen[-1] == (100, 'success')
         assert any(p == 40 for p, _ in seen)
+
+    def test_pull_rejects_non_loopback(self):
+        from core.translator import pull_ollama_model
+
+        with pytest.raises(ValueError, match='localhost|Blocked|Invalid'):
+            pull_ollama_model('qwen2.5:3b', ollama_url='https://example.com/ollama')
 
     def test_ollama_is_installed_uses_path(self, monkeypatch, tmp_path):
         import shutil

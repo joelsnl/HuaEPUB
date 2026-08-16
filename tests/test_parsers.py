@@ -3,12 +3,10 @@
 import pytest
 from bs4 import BeautifulSoup
 
-from core.parser import get_parser_for_url, Chapter, _parser_registry
-from parsers.twkan import TwkanParser
-from parsers.shuba69 import Shuba69Parser
-from parsers.uukanshu import UUKanshuParser
+import parsers  # noqa: F401 — register SiteConfigParser + GenericParser
+from core.parser import get_parser_for_url, _parser_registry
+from parsers.config import SiteConfigParser
 from parsers.generic import GenericParser
-from parsers.selector import SelectorParser
 
 from conftest import load_fixture
 
@@ -17,11 +15,21 @@ def soup_of(fixture_name: str) -> BeautifulSoup:
     return BeautifulSoup(load_fixture(fixture_name), 'lxml')
 
 
+def parser_for(url: str) -> SiteConfigParser:
+    return SiteConfigParser.for_url(url)
+
+
 class TestRegistry:
-    def test_dedicated_parsers_win_over_generic(self):
-        assert isinstance(get_parser_for_url('https://twkan.com/book/76222.html'), TwkanParser)
-        assert isinstance(get_parser_for_url('https://69shuba.com/book/123.htm'), Shuba69Parser)
-        assert isinstance(get_parser_for_url('https://uukanshu.cc/book/22432/'), UUKanshuParser)
+    def test_configured_sites_win_over_generic(self):
+        twkan = get_parser_for_url('https://twkan.com/book/76222.html')
+        shuba = get_parser_for_url('https://69shuba.com/book/123.htm')
+        uu = get_parser_for_url('https://uukanshu.cc/book/22432/')
+        assert isinstance(twkan, SiteConfigParser)
+        assert isinstance(shuba, SiteConfigParser)
+        assert isinstance(uu, SiteConfigParser)
+        assert twkan.SITE_NAME == 'twkan.com'
+        assert shuba.SITE_NAME == '69shuba.com'
+        assert uu.SITE_NAME == 'uukanshu.cc'
 
     def test_generic_is_fallback_for_unknown_sites(self):
         parser = get_parser_for_url('https://some-random-novel-site.example/book/1')
@@ -29,22 +37,35 @@ class TestRegistry:
 
     def test_generic_is_last_in_registry(self):
         assert _parser_registry[-1] is GenericParser
-        assert _parser_registry[0] is TwkanParser
+        assert _parser_registry[0] is SiteConfigParser
 
-    def test_webtoepub_selector_wins_over_generic(self):
+    def test_json_site_wins_over_generic(self):
         parser = get_parser_for_url('https://101kks.com/book/1')
-        assert isinstance(parser, SelectorParser)
+        assert isinstance(parser, SiteConfigParser)
         assert type(parser) is not GenericParser
         assert parser.SITE_NAME == '101kks.com'
 
     def test_non_http_not_handled(self):
         assert get_parser_for_url('ftp://example.com/x') is None
 
+    def test_www_subdomain_matches_site_config(self):
+        parser = get_parser_for_url('https://www.twkan.com/book/1.html')
+        assert isinstance(parser, SiteConfigParser)
+        assert parser.SITE_NAME == 'twkan.com'
+
+    def test_query_string_does_not_steal_site_config(self):
+        parser = get_parser_for_url('https://evil.example/?next=https://twkan.com/book/1')
+        assert type(parser) is GenericParser
+
+    def test_suffix_lookalike_host_does_not_match(self):
+        parser = get_parser_for_url('https://nottwkan.com/book/1')
+        assert type(parser) is GenericParser
+
 
 class TestTwkan:
     def test_parse_novel_info(self):
-        parser = TwkanParser()
-        info = parser._parse_novel_info(
+        parser = parser_for('https://twkan.com/book/76222.html')
+        info = parser.parse_novel_info(
             soup_of('twkan_book.html'), 'https://twkan.com/book/76222.html'
         )
         assert info.title == '測試小說'
@@ -54,18 +75,26 @@ class TestTwkan:
         assert '玄幻' in info.tags
 
     def test_parse_chapter_list(self):
-        parser = TwkanParser()
-        chapters = parser._parse_chapter_list(load_fixture('twkan_chapterlist.html'))
+        parser = parser_for('https://twkan.com/book/76222.html')
+        chapters = parser.parse_chapter_list(
+            BeautifulSoup(load_fixture('twkan_chapterlist.html'), 'lxml'),
+            'https://twkan.com/book/76222.html',
+        )
         assert len(chapters) == 3  # the /book/ link is filtered out
         assert chapters[0].title == '第1章 開始'
         assert chapters[0].url == 'https://twkan.com/txt/76222/1000001'
         assert chapters[2].url == 'https://twkan.com/txt/76222/1000003'
 
+    def test_book_id_from_url(self):
+        parser = parser_for('https://twkan.com/book/76222.html')
+        assert parser._book_id('https://twkan.com/book/76222.html') == '76222'
+        assert parser._book_id('https://twkan.com/txt/76222/1000001') == '76222'
+
 
 class TestShuba69:
     def test_parse_novel_info(self):
-        parser = Shuba69Parser()
-        info = parser._parse_novel_info(
+        parser = parser_for('https://69shuba.com/book/123.htm')
+        info = parser.parse_novel_info(
             soup_of('shuba69_book.html'), 'https://69shuba.com/book/123.htm'
         )
         assert info.title == '测试书'
@@ -73,23 +102,21 @@ class TestShuba69:
         assert info.description == '这是一本测试书的简介。'
         assert info.cover_url.startswith('http')
         assert '玄幻小说' in info.tags
+        assert parser._encoding == 'gb18030'
+        assert parser.request_delay == 1.5
 
     def test_parse_chapter_list_reverses_order(self):
-        parser = Shuba69Parser()
-        chapters = parser._parse_chapter_list(
+        parser = parser_for('https://69shuba.com/book/123.htm')
+        chapters = parser.parse_chapter_list(
             soup_of('shuba69_toc.html'), 'https://69shuba.com/book/123/'
         )
-        assert len(chapters) == 3
-        # Site lists newest first; parser must reverse to reading order
-        assert chapters[0].title == '第1章 开头'
-        assert chapters[-1].title == '第3章 结尾'
-        assert [c.index for c in chapters] == [0, 1, 2]
+        assert [c.title for c in chapters] == ['第1章 开头', '第2章 中间', '第3章 结尾']
 
 
 class TestUUKanshu:
     def test_parse_novel_info(self):
-        parser = UUKanshuParser()
-        info = parser._parse_novel_info(
+        parser = parser_for('https://uukanshu.cc/book/22432/')
+        info = parser.parse_novel_info(
             soup_of('uukanshu_book.html'), 'https://uukanshu.cc/book/22432/'
         )
         assert info.title == '繁體測試書'
@@ -97,8 +124,10 @@ class TestUUKanshu:
         assert info.language == 'zh-Hant'
 
     def test_parse_chapter_list(self):
-        parser = UUKanshuParser()
-        chapters = parser._parse_chapter_list(soup_of('uukanshu_book.html'), '22432')
+        parser = parser_for('https://uukanshu.cc/book/22432/')
+        chapters = parser.parse_chapter_list(
+            soup_of('uukanshu_book.html'), 'https://uukanshu.cc/book/22432/'
+        )
         assert len(chapters) == 3
         assert chapters[0].title == '第一章 起點'
         assert chapters[0].url.startswith('http')
@@ -142,18 +171,16 @@ class TestGeneric:
 
 class TestSelectorParser:
     def _parser(self):
-        class Demo(SelectorParser):
-            SITE_NAME = "demo.test"
-            SITE_DOMAINS = ["demo.test"]
-            SPEC = {
-                "content": ["div.chapter-body"],
-                "chapter_list": "ul.toc a",
-                "title": "h1.book",
-                "author": "span.author",
-                "chapter_title": "h2.ch",
-                "remove": ".ad",
-            }
-        return Demo()
+        return SiteConfigParser(spec={
+            "name": "demo.test",
+            "domains": ["demo.test"],
+            "content": ["div.chapter-body"],
+            "chapter_list": "ul.toc a",
+            "title": "h1.book",
+            "author": "span.author",
+            "chapter_title": "h2.ch",
+            "remove": ".ad",
+        })
 
     def test_chapter_list_from_selector(self):
         html = """
@@ -186,4 +213,3 @@ class TestSelectorParser:
             BeautifulSoup(html, 'lxml'), 'https://demo.test/book', 'a'
         )
         assert chapters == []
-

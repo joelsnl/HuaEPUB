@@ -7,6 +7,10 @@ from pathlib import Path
 
 from core import updater
 
+_GITHUB_SUMS = (
+    "https://github.com/joelsnl/HuaEPUB/releases/download/v9.9.9/SHA256SUMS.txt"
+)
+
 
 class FakeResponse:
     status_code = 200
@@ -78,7 +82,7 @@ class TestRequireChecksum:
 
         release = {
             "assets": [
-                {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
+                {"name": "SHA256SUMS.txt", "browser_download_url": _GITHUB_SUMS},
             ]
         }
         ok, msg = updater._require_checksum(Sess(), release, "HuaEPUB-windows.zip", b"data")
@@ -100,12 +104,31 @@ class TestRequireChecksum:
 
         release = {
             "assets": [
-                {"name": "SHA256SUMS.txt", "browser_download_url": "https://example/sums"},
+                {"name": "SHA256SUMS.txt", "browser_download_url": _GITHUB_SUMS},
             ]
         }
         ok, msg = updater._require_checksum(Sess(), release, "HuaEPUB-windows.zip", payload)
         assert ok is True
         assert msg == digest
+
+    def test_rejects_non_github_sums_host(self):
+        class Sess:
+            def get(self, *a, **k):
+                raise AssertionError("must not fetch a non-GitHub checksum URL")
+
+        release = {
+            "assets": [
+                {
+                    "name": "SHA256SUMS.txt",
+                    "browser_download_url": "https://evil.example/SHA256SUMS.txt",
+                },
+            ]
+        }
+        ok, msg = updater._require_checksum(
+            Sess(), release, "HuaEPUB-windows.zip", b"data"
+        )
+        assert ok is False
+        assert "SHA256SUMS" in msg
 
 
 class TestReplacementHelper:

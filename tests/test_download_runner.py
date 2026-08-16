@@ -17,6 +17,12 @@ def test_epub_path_preferred_strips_copy_suffix(tmp_path):
     assert Path(p).name == "Book.epub"
 
 
+def test_epub_path_strips_parent_directories(tmp_path):
+    p = epub_path(tmp_path, "Title", preferred_name=r"..\..\Windows\evil.epub")
+    assert Path(p).resolve().parent == tmp_path.resolve()
+    assert Path(p).name == "evil.epub"
+
+
 def test_downloads_folder_custom(tmp_path):
     d = tmp_path / "out"
     assert downloads_folder(str(d)) == d

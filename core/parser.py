@@ -76,8 +76,10 @@ class NovelInfo:
 
 class BaseParser(ABC):
     """
-    Base class for all site parsers.
-    Each site (twkan, royalroad, etc.) implements its own parser.
+    Base class for site parsers.
+
+    Configured hosts use SiteConfigParser (parsers/sites.json). Unknown
+    hosts fall through to GenericParser.
     """
     
     # Subclasses should set these
@@ -87,10 +89,12 @@ class BaseParser(ABC):
     def __init__(self):
         self.session = create_http_session()
         
-        # Rate limiting - default 2 seconds between requests (like WebToEpub)
+        # Rate limiting — default 2 seconds between requests
         self.request_delay = 2.0
-        # 429 retry delays in seconds (like WebToEpub: 15, 30, 60, 120)
+        # 429 retry delays in seconds
         self.rate_limit_delays = [15, 30, 60, 120]
+        self._encoding: Optional[str] = None
+        self._referer: Optional[str] = None
     
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -112,10 +116,24 @@ class BaseParser(ABC):
     def get_chapter_content(self, chapter: Chapter) -> str:
         pass
     
+    def _apply_referer(self, referer: Optional[str] = None):
+        ref = referer or self._referer
+        if not ref:
+            return
+        try:
+            self.session.headers["Referer"] = ref
+        except Exception:
+            pass
+
+    def _html_from_response(self, response) -> str:
+        if self._encoding:
+            return response.content.decode(self._encoding, errors="replace")
+        return response.text
+
     def fetch_page(self, url: str, retries: int = 3) -> BeautifulSoup:
         """
         Fetch a page and return BeautifulSoup object.
-        Handles 429 errors with longer waits (like WebToEpub).
+        Handles 429 errors with longer waits.
         """
         from core.security import UnsafeURLError, safe_http_request
 
@@ -124,6 +142,7 @@ class BaseParser(ABC):
         
         for attempt in range(retries):
             try:
+                self._apply_referer()
                 response = safe_http_request(
                     self.session, "GET", url, allow_http=True, timeout=30
                 )
@@ -140,7 +159,8 @@ class BaseParser(ABC):
                         response.raise_for_status()
                 
                 response.raise_for_status()
-                return BeautifulSoup(response.text, 'lxml')
+                self._referer = url
+                return BeautifulSoup(self._html_from_response(response), 'lxml')
 
             except UnsafeURLError as e:
                 raise ValueError(f"Blocked URL: {e}") from e
@@ -174,6 +194,7 @@ class BaseParser(ABC):
         
         for attempt in range(retries):
             try:
+                self._apply_referer()
                 response = safe_http_request(
                     self.session, "GET", url, allow_http=True, timeout=30
                 )
@@ -188,7 +209,8 @@ class BaseParser(ABC):
                         continue
                 
                 response.raise_for_status()
-                return response.text
+                self._referer = url
+                return self._html_from_response(response)
 
             except UnsafeURLError as e:
                 raise ValueError(f"Blocked URL: {e}") from e
@@ -225,13 +247,23 @@ def get_parser_for_url(url: str) -> Optional[BaseParser]:
     """Find and instantiate the appropriate parser for a URL."""
     for parser_class in _parser_registry:
         if parser_class.can_handle(url):
+            factory = getattr(parser_class, "for_url", None)
+            if callable(factory):
+                return factory(url)
             return parser_class()
     return None
 
 
 def get_supported_sites() -> List[str]:
     """Get list of all supported site names."""
-    return [p.SITE_NAME for p in _parser_registry]
+    names: List[str] = []
+    for p in _parser_registry:
+        extra = getattr(p, "configured_site_names", None)
+        if callable(extra):
+            names.extend(extra())
+        else:
+            names.append(p.SITE_NAME)
+    return names
 
 
 def cleanup_browser():

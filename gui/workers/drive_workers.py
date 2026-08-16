@@ -61,10 +61,21 @@ class DriveSyncWorker(QObject):
                 uploaded = 0
                 updated = 0
                 library = self.session.library_store.get_library()
+                from core.download_runner import downloads_folder
+                from core.security import is_allowed_epub_path, safe_epub_basename
+                from core.settings import get_default_books_dir
+
+                out = getattr(self.session, "output_dir", "") or ""
+                roots = [get_default_books_dir(), downloads_folder(out)]
+                if out:
+                    roots.append(Path(out))
                 # Link remote EPUBs onto entries missing drive_file_id
                 for entry in library:
-                    name = entry.epub_filename or (
-                        Path(entry.output_path).name if entry.output_path else ""
+                    name = safe_epub_basename(
+                        entry.epub_filename
+                        or (
+                            Path(entry.output_path).name if entry.output_path else ""
+                        )
                     )
                     if name and name in remote and not entry.drive_file_id:
                         try:
@@ -78,8 +89,15 @@ class DriveSyncWorker(QObject):
                 pending = []
                 for entry in library:
                     path = entry.output_path or ""
-                    name = entry.epub_filename or (Path(path).name if path else "")
-                    if not (path and name and Path(path).is_file()):
+                    name = safe_epub_basename(
+                        entry.epub_filename or (Path(path).name if path else "")
+                    )
+                    if not (
+                        path
+                        and name
+                        and Path(path).is_file()
+                        and is_allowed_epub_path(Path(path), roots)
+                    ):
                         continue
                     info = remote.get(name)
                     if local_epub_needs_push(Path(path), info):

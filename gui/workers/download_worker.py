@@ -349,23 +349,20 @@ class LibraryCheckWorker(QObject):
             if session is None:
                 from core.parser import create_http_session
                 session = create_http_session()
-            r = session.get(cover_url, timeout=20)
-            if not getattr(r, "ok", False) or not r.content:
+            from core.security import fetch_cover_bytes
+            data = fetch_cover_bytes(session, cover_url, timeout=20)
+            if not data:
                 return False
             ctype = ""
-            try:
-                ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip()
-            except Exception:
-                pass
             # Store under cover URL and source URL so grid lookup always finds it
             self.session.cache.put_cover(
-                r.content,
+                data,
                 cover_url=cover_url,
                 source_url=entry.source_url or "",
                 content_type=ctype,
             )
             self.session.cache.put_cover(
-                r.content,
+                data,
                 source_url=entry.source_url or "",
                 content_type=ctype,
             )

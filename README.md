@@ -1,17 +1,17 @@
 # HuaEPUB
 
-**Current version: 2.7.1**
+**Current version: 2.8.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
-GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window move/resize and stabler threading). Formerly *Novel Downloader & Translator*. Based on WebToEpub extension (by dteviot) and fixTranslate.py.
+GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window move/resize and stabler threading). Formerly *Novel Downloader & Translator*.
 
 <img width="1838" height="1124" alt="Screenshot 2026-08-08 at 16 30 03" src="https://github.com/user-attachments/assets/6ffa080a-5ba0-4bde-a506-e52de3a90fd5" />
 
 
 ## Features
 
-- **Download novels** from supported sites (currently: twkan.com, 69shuba.com, uukanshu.cc)
+- **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
 - **Library mode** — cover-grid or list shelf, track novels, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
@@ -211,39 +211,25 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 | twkan.com | `https://twkan.com/book/{id}.html` | ✅ Working |
 | 69shuba.com | `https://69shuba.com/book/{id}/` | ✅ Working |
 | uukanshu.cc | `https://uukanshu.cc/book/{id}/` | ✅ Working |
-| WebToEpub selector pack | 340+ hosts (CSS selectors from [WebToEpub](https://github.com/dteviot/WebToEpub)) | ✅ Best-effort |
-| Other sites | any novel table-of-contents URL | 🧪 Experimental (generic parser) |
+| Other configured hosts | see `parsers/sites.json` | ✅ Best-effort (CSS selectors) |
+| Unlisted sites | any novel table-of-contents URL | 🧪 Experimental (generic parser) |
 
 ## Adding New Sites
 
-To add support for a new site, create a new parser in `parsers/`:
+Add an object to `parsers/sites.json`. First matching `domains` entry wins. `generic.py` stays last as a heuristic fallback.
 
-```python
-# parsers/newsite.py
-from core.parser import BaseParser, Chapter, NovelInfo, register_parser
-
-@register_parser
-class NewSiteParser(BaseParser):
-    SITE_NAME = "newsite.com"
-    SITE_DOMAINS = ["newsite.com", "www.newsite.com"]
-    
-    def get_novel_info(self, url: str) -> NovelInfo:
-        # Extract title, author, cover, etc.
-        pass
-    
-    def get_chapter_list(self, url: str) -> List[Chapter]:
-        # Return list of chapters
-        pass
-    
-    def get_chapter_content(self, chapter: Chapter) -> str:
-        # Fetch and return chapter HTML content
-        pass
+```json
+{
+  "name": "example.com",
+  "domains": ["example.com"],
+  "title": "h1",
+  "author": ".author",
+  "content": ["#chapter"],
+  "chapter_list": "ul.toc a"
+}
 ```
 
-Then import it in `parsers/__init__.py` **before** the generic parser (registration order matters — the generic parser matches any URL and must stay last):
-```python
-from parsers.newsite import NewSiteParser
-```
+Optional fields: `description`, `cover`, `chapter_title`, `remove`, `toc_link`, `reverse`, `delay`, `encoding`, `language`, `book_id` (regex), `chapter_list_url` (may include `{book_id}`), `chapter_href_contains`, `referer`, `visit_toc_first`.
 
 ## Running Tests
 
@@ -279,11 +265,8 @@ python -m pytest tests/
 │   ├── logger.py       # Log-to-file setup
 │   └── updater.py      # Auto-updater (version + GitHub releases)
 ├── parsers/
-│   ├── twkan.py        # twkan.com parser
-│   ├── shuba69.py      # 69shuba.com parser
-│   ├── uukanshu.py     # uukanshu.cc parser
-│   ├── selector.py     # CSS-selector parsers (WebToEpub site pack)
-│   ├── webtoepub_sites.py  # Generated host + selector table
+│   ├── sites.json      # Host + CSS selector configs
+│   ├── config.py       # Single parser that reads sites.json
 │   └── generic.py      # Fallback parser for other sites
 └── tests/              # Offline pytest suite
 ```
@@ -330,7 +313,7 @@ python -m pytest tests/
 
 ## Credits
 
-- Based on [WebToEpub](https://github.com/dteviot/WebToEpub) browser extension
+- Inspired by [WebToEpub](https://github.com/dteviot/WebToEpub) (dteviot, Apache-2.0); some site CSS selectors in `parsers/sites.json` are adapted from it
 - Translation logic from fixTranslate.py
 - Uses [ebooklib](https://github.com/aerkalov/ebooklib) for EPUB creation
 - GUI built with [PySide6](https://doc.qt.io/qtforpython/) (Qt)

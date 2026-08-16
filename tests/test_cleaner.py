@@ -79,6 +79,17 @@ class TestCleanHtml:
         assert '<custom>' not in cleaned
         assert 'keep me' in cleaned
 
+    def test_file_entities_are_not_expanded(self, tmp_path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("SECRET_PROBE_123", encoding="utf-8")
+        uri = secret.resolve().as_uri()
+        html = (
+            f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "{uri}">]>'
+            "<html><body><p>&xxe;</p></body></html>"
+        )
+        cleaned = make_cleaner().clean_html(html)
+        assert "SECRET_PROBE_123" not in cleaned
+
 
 class TestSelfClosingTags:
     def test_fix_self_closing(self):

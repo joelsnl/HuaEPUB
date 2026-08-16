@@ -11,8 +11,10 @@ Persistent retry system:
 - Cancellable at any point via cancel() method
 
 HTTP: each worker thread keeps a Session (curl_cffi when available) so TCP/TLS
-connections are reused. On Windows, urllib3 IPv6 is disabled for translate
-requests — broken AAAA routes otherwise add multi-second stalls per call.
+connections are reused. On Windows and macOS, translate sessions prefer IPv4 —
+broken AAAA routes otherwise add multi-second stalls per call. The hardcoded
+Google endpoint skips per-request DNS in the SSRF layer (redirect hops still
+checked).
 """
 
 import json
@@ -27,14 +29,17 @@ import threading
 import concurrent.futures
 from typing import List, Tuple, Dict, Optional, Callable, Any
 
-# Windows often has broken/slow IPv6; urllib3 tries AAAA first and burns the
-# connect timeout per address. Prefer IPv4 for requests-based translate calls.
-if sys.platform == "win32":
+# Windows and macOS often have broken/slow IPv6; urllib3 tries AAAA first and
+# burns the connect timeout per address. Prefer IPv4 for requests fallback.
+if sys.platform in ("win32", "darwin"):
     try:
         import urllib3.util.connection as _urllib3_conn
         _urllib3_conn.HAS_IPV6 = False
     except Exception:
         pass
+
+# libcurl CURL_IPRESOLVE_V4 — used when curl_cffi is available.
+_CURL_IPRESOLVE_V4 = 1
 
 
 _gpu_lock = threading.Lock()
@@ -261,7 +266,19 @@ class GoogleTranslator:
             return sess
         try:
             from curl_cffi.requests import Session as CurlSession
-            sess = CurlSession(impersonate="chrome120")
+            curl_kw: Dict[str, Any] = {"impersonate": "chrome120"}
+            if sys.platform in ("win32", "darwin"):
+                try:
+                    from curl_cffi import CurlOpt
+                    curl_kw["curl_options"] = {
+                        CurlOpt.IPRESOLVE: _CURL_IPRESOLVE_V4
+                    }
+                except Exception:
+                    pass
+            try:
+                sess = CurlSession(**curl_kw)
+            except TypeError:
+                sess = CurlSession(impersonate="chrome120")
             self._thread_local.http_backend = "curl_cffi"
         except ImportError:
             sess = requests.Session()
@@ -299,13 +316,15 @@ class GoogleTranslator:
         if len(text) <= 1800:
             response = safe_http_request(
                 session, "GET", self.ENDPOINT,
-                allow_http=False, params=params, headers=headers,
+                allow_http=False, resolve_dns=False,
+                params=params, headers=headers,
                 timeout=self._timeout,
             )
         else:
             response = safe_http_request(
                 session, "POST", self.ENDPOINT,
-                allow_http=False, data=params, headers=headers,
+                allow_http=False, resolve_dns=False,
+                data=params, headers=headers,
                 timeout=self._timeout,
             )
 
@@ -1144,9 +1163,10 @@ def pull_ollama_model(
 ) -> None:
     """
     Stream-pull a model into local Ollama. Loopback only. Raises on failure
-    or cancel. progress_callback(percent_or_-1, status).
+    or cancel. progress_callback(percent_or_-1, status). Uses safe_http_request
+    so redirect hops are re-validated (still loopback-only).
     """
-    from core.security import UnsafeURLError, validate_ollama_url
+    from core.security import UnsafeURLError, safe_http_request, validate_ollama_url
 
     name = (model or "").strip()
     if not name:
@@ -1158,17 +1178,22 @@ def pull_ollama_model(
 
     session = requests.Session()
     try:
-        response = session.post(
+        response = safe_http_request(
+            session,
+            "POST",
             f"{base}/api/pull",
+            allow_http=True,
+            allow_loopback=True,
+            timeout=(10, 3600),
             json={"model": name, "name": name, "stream": True},
             stream=True,
-            allow_redirects=False,
-            timeout=(10, 3600),
             headers={
                 "User-Agent": GoogleTranslator.USER_AGENT,
                 "Content-Type": "application/json",
             },
         )
+    except UnsafeURLError as e:
+        raise ValueError(f"Blocked Ollama URL: {e}") from e
     except Exception as e:
         err = str(e).lower()
         if any(s in err for s in ("connection", "refused", "10061")):
@@ -1177,8 +1202,6 @@ def pull_ollama_model(
             ) from e
         raise
     status_code = int(getattr(response, "status_code", 0) or 0)
-    if status_code in (301, 302, 303, 307, 308):
-        raise ValueError("Unexpected redirect from Ollama")
     if status_code == 404:
         raise ValueError(f"Ollama does not know how to pull '{name}'")
     response.raise_for_status()

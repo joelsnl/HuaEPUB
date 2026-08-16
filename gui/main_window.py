@@ -461,18 +461,18 @@ class MainWindow(QMainWindow):
         cover = None
         if info and info.cover_url:
             try:
-                r = self._http.get(info.cover_url, timeout=15)
-                if r.ok:
-                    pix = QPixmap()
-                    if pix.loadFromData(r.content):
-                        cover = pix
-                        try:
-                            self.session.cache.put_cover(
-                                r.content, cover_url=info.cover_url,
-                                source_url=info.source_url or "",
-                            )
-                        except Exception:
-                            pass
+                from core.security import fetch_cover_bytes
+                data = fetch_cover_bytes(self._http, info.cover_url, timeout=15)
+                pix = QPixmap()
+                if pix.loadFromData(data):
+                    cover = pix
+                    try:
+                        self.session.cache.put_cover(
+                            data, cover_url=info.cover_url,
+                            source_url=info.source_url or "",
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
         self.single.show_novel(info, chapters, parser, cover)
@@ -862,16 +862,25 @@ class MainWindow(QMainWindow):
 
     def _download_library_epub(self, entry):
         # Prefer Drive download if remote id known
+        from core.security import is_allowed_epub_path
+        from core.settings import get_default_books_dir
+
+        folder = downloads_folder(self.options.snapshot().get("output_dir", ""))
+        roots = [get_default_books_dir(), folder]
         path = entry.output_path
-        if path and Path(path).is_file():
+        if path and Path(path).is_file() and is_allowed_epub_path(Path(path), roots):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
             return
         if entry.drive_file_id:
-            dest = downloads_folder(self.options.snapshot().get("output_dir", "")) / (
-                entry.epub_filename or f"{entry.title}.epub"
+            dest = epub_path(
+                folder,
+                entry.title or "book",
+                preferred_name=entry.epub_filename or "",
             )
             try:
-                self.session.drive_sync.download_epub(entry.drive_file_id, str(dest))
+                self.session.drive_sync.download_epub(
+                    entry.drive_file_id, dest, allowed_root=folder
+                )
                 QMessageBox.information(self, "Download", f"Saved to:\n{dest}")
             except Exception as e:
                 QMessageBox.warning(self, "Download EPUB", str(e))
@@ -1163,7 +1172,9 @@ class MainWindow(QMainWindow):
             "<b>Data folder:</b> ~/.huaepub/"
             "</p>"
             "<p style='color:#aaa;font-size:11px;'>"
-            "Based on WebToEpub (dteviot) and fixTranslate.py.<br>"
+            "Inspired by "
+            "<a href='https://github.com/dteviot/WebToEpub'>WebToEpub</a> "
+            "(dteviot), which this project started from, and by fixTranslate.py.<br>"
             "Not affiliated with novel sites or Google."
             "</p>"
         )

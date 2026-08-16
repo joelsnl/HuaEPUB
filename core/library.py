@@ -21,6 +21,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from core.security import (
+    is_allowed_epub_path,
+    safe_epub_basename,
+)
+
 LIBRARY_FILE = "library.json"
 MAX_HISTORY = 40
 
@@ -588,6 +593,7 @@ def purge_novel_artifacts(entry: LibraryEntry, cache=None, extra_dirs=None) -> N
     """
     Delete this novel's local EPUB and per-book caches (chapters, TOC, cover).
     Does not wipe the shared translation cache (phrases are reused across books).
+    Only unlinks .epub files under extra_dirs (books folder / output folder).
     """
     if cache is not None:
         try:
@@ -595,16 +601,20 @@ def purge_novel_artifacts(entry: LibraryEntry, cache=None, extra_dirs=None) -> N
         except Exception as e:
             print(f"Could not purge cache for {entry.source_url}: {e}")
 
+    roots = []
+    for folder in extra_dirs or []:
+        try:
+            roots.append(Path(folder))
+        except Exception:
+            continue
+
     seen = set()
     candidates = []
     if entry.output_path:
         candidates.append(Path(entry.output_path))
-    name = (entry.epub_filename or "").strip()
-    if not name and entry.output_path:
-        try:
-            name = Path(entry.output_path).name
-        except Exception:
-            name = ""
+    name = safe_epub_basename(entry.epub_filename or "")
+    if not name:
+        name = safe_epub_basename(entry.output_path or "")
     for folder in extra_dirs or []:
         if name:
             candidates.append(Path(folder) / name)
@@ -613,4 +623,6 @@ def purge_novel_artifacts(entry: LibraryEntry, cache=None, extra_dirs=None) -> N
         if key in seen:
             continue
         seen.add(key)
+        if not roots or not is_allowed_epub_path(path, roots):
+            continue
         _unlink_epub(path)

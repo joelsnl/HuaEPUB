@@ -38,6 +38,18 @@ _MAX_ZIP_MEMBER_BYTES = 512 * 1024 * 1024  # 512 MiB per entry
 _MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB uncompressed total
 _MAX_ZIP_ENTRIES = 10_000
 
+# Cover preview / EPUB image cap (hostile pages can serve gigabyte "covers")
+MAX_COVER_BYTES = 8 * 1024 * 1024
+
+# GitHub release asset hosts (browser_download_url + CDN redirects)
+_GITHUB_ASSET_HOSTS = {
+    "github.com",
+    "www.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+}
+
 
 class UnsafeURLError(Exception):
     """Raised when a URL targets a disallowed scheme or private/internal host."""
@@ -202,6 +214,68 @@ def is_fetch_url_safe(url: str, **kwargs) -> bool:
         return False
 
 
+def github_asset_host_ok(host: str) -> bool:
+    """True for github.com and GitHub release CDN hostnames."""
+    h = (host or "").strip("[]").lower().rstrip(".")
+    if not h:
+        return False
+    if h in _GITHUB_ASSET_HOSTS:
+        return True
+    if h.endswith(".githubusercontent.com"):
+        return True
+    if h.endswith(".github.com"):
+        return True
+    return False
+
+
+def validate_github_asset_host(url: str) -> None:
+    """Raise UnsafeURLError if url is not a GitHub release/CDN https host."""
+    host = urlparse(url or "").hostname
+    if not github_asset_host_ok(host or ""):
+        raise UnsafeURLError(f"Update download host not allowed: {host or '(none)'}")
+
+
+def safe_epub_basename(value: str, *, fallback_title: str = "") -> str:
+    """
+    Single-component *.epub name. Strips directories so library.json cannot
+    walk outside the books folder.
+    """
+    raw = (value or "").strip().replace("\\", "/")
+    base = Path(raw).name
+    if base in ("", ".", ".."):
+        base = ""
+    if base.lower().endswith(".epub") and len(base) > 5:
+        stem = Path(base).stem.strip()
+        if stem and stem not in (".", "..") and "/" not in stem and "\\" not in stem:
+            return f"{stem}.epub"
+    if fallback_title:
+        from core.utils import safe_filename
+        return f"{safe_filename(fallback_title)}.epub"
+    return ""
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True if path.resolve() is root or a descendant of root.resolve()."""
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def is_allowed_epub_path(path: Path, roots: Iterable[Path]) -> bool:
+    """True if path is a .epub file under one of roots (after resolve)."""
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return False
+    if resolved.suffix.lower() != ".epub":
+        return False
+    if resolved.name != safe_epub_basename(resolved.name):
+        return False
+    return any(path_is_under(resolved, root) for root in roots if root)
+
+
 def validate_libretranslate_url(url: str, *, resolve_dns: bool = True) -> str:
     """Normalize and validate a LibreTranslate base URL; return stripped form."""
     raw = (url or "").strip().rstrip("/")
@@ -245,8 +319,10 @@ def safe_http_request(
     *,
     allow_http: bool = True,
     allow_loopback: bool = False,
+    resolve_dns: bool = True,
     max_redirects: int = 5,
     timeout: float = 30,
+    extra_check: Optional[Any] = None,
     **kwargs: Any,
 ) -> Any:
     """
@@ -254,19 +330,30 @@ def safe_http_request(
 
     Does not follow redirects automatically — each Location is checked with
     validate_fetch_url (including DNS) before the next request.
+
+    resolve_dns=False skips getaddrinfo on the *first* hop only (hardcoded
+    public endpoints such as Google Translate). Redirect targets are still
+    DNS-checked. Literal loopback/private IPs stay blocked either way.
+
+    extra_check(url), if set, runs on every hop after validate_fetch_url
+    (used to pin update downloads to GitHub CDN hosts).
     """
     current = (url or "").strip()
     method = (method or "GET").upper()
     # Callers must not bypass redirect checks
     kwargs.pop("allow_redirects", None)
+    first_hop = True
 
     for _ in range(max_redirects + 1):
         validate_fetch_url(
             current,
             allow_http=allow_http,
-            resolve_dns=True,
+            resolve_dns=resolve_dns if first_hop else True,
             allow_loopback=allow_loopback,
         )
+        if extra_check:
+            extra_check(current)
+        first_hop = False
 
         def _call(fn, *args, **kw):
             try:
@@ -303,6 +390,28 @@ def safe_http_request(
         return resp
 
     raise UnsafeURLError(f"Too many redirects (>{max_redirects})")
+
+
+def fetch_cover_bytes(session: Any, url: str, *, timeout: float = 20) -> bytes:
+    """
+    Download a novel cover through the SSRF guard. Raises UnsafeURLError
+    (or the session's HTTP error) on failure. Caps body size.
+    """
+    resp = safe_http_request(
+        session, "GET", url, allow_http=True, timeout=timeout
+    )
+    try:
+        resp.raise_for_status()
+    except Exception as e:
+        raise UnsafeURLError(f"Cover fetch failed: {e}") from e
+    data = getattr(resp, "content", None) or b""
+    if not data:
+        raise UnsafeURLError("Cover fetch returned no data")
+    if len(data) > MAX_COVER_BYTES:
+        raise UnsafeURLError(
+            f"Cover image exceeds size limit ({MAX_COVER_BYTES} bytes)"
+        )
+    return data
 
 
 def safe_extract_zip(

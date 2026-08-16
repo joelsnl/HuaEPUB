@@ -9,7 +9,7 @@ Heuristics instead of site-specific selectors:
 - Chapter content: the element with the highest density of non-link text
 
 Registered LAST (see parsers/__init__.py) so it only handles URLs that
-no dedicated parser claims.
+no sites.json config claims.
 """
 
 import re

@@ -22,6 +22,7 @@ from core.parser import Chapter, NovelInfo
 from core.settings import get_default_books_dir
 from core.translator import GoogleTranslator
 from core.utils import format_eta, safe_filename
+from core.security import safe_epub_basename
 
 
 class DownloadCancelled(Exception):
@@ -110,19 +111,20 @@ def epub_path(
 ) -> str:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    name = (preferred_name or "").strip()
-    if not name and preferred_path:
-        try:
-            name = Path(preferred_path).name
-        except Exception:
-            name = ""
-    if name and name.lower().endswith(".epub"):
+    name = safe_epub_basename(preferred_name or preferred_path or "")
+    if name:
         stem = Path(name).stem
         stem = re.sub(r" \(\d+\)$", "", stem)
         name = f"{stem}.epub"
     else:
         name = f"{safe_filename(title)}.epub"
-    return str(folder / name)
+    dest = (folder / name).resolve()
+    try:
+        dest.relative_to(folder.resolve())
+    except ValueError:
+        name = f"{safe_filename(title)}.epub"
+        dest = (folder / name).resolve()
+    return str(dest)
 
 
 def record_successful_download(

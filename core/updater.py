@@ -28,10 +28,16 @@ from core.branding import (
     SOURCE_ASSET_NAME,
     UPDATER_USER_AGENT,
 )
-from core.security import safe_extract_zip, write_update_helper_config
+from core.security import (
+    UnsafeURLError,
+    safe_extract_zip,
+    safe_http_request,
+    validate_github_asset_host,
+    write_update_helper_config,
+)
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.7.1"
+__version__ = "2.8.0"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"
@@ -588,12 +594,22 @@ def _get_expected_checksum(session, release_data: dict, asset_name: str) -> Opti
     if not url:
         return None
     try:
-        resp = session.get(url, timeout=30)
+        resp = safe_http_request(
+            session,
+            "GET",
+            url,
+            allow_http=False,
+            resolve_dns=False,
+            extra_check=validate_github_asset_host,
+            timeout=30,
+        )
         resp.raise_for_status()
         for line in resp.text.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[-1].lstrip('*') == asset_name:
                 return parts[0].lower()
+    except UnsafeURLError:
+        return None
     except Exception:
         return None
     return None
@@ -622,9 +638,20 @@ def _download_release_asset(session, asset: dict) -> Tuple[Optional[bytes], str]
     name = asset.get('name') or 'asset'
     if not url:
         return None, f"Release asset '{name}' has no download URL."
-    response = session.get(url, timeout=300)
-    response.raise_for_status()
-    return response.content, name
+    try:
+        response = safe_http_request(
+            session,
+            "GET",
+            url,
+            allow_http=False,
+            resolve_dns=False,
+            extra_check=validate_github_asset_host,
+            timeout=300,
+        )
+        response.raise_for_status()
+        return response.content, name
+    except UnsafeURLError as e:
+        return None, f"Update download blocked: {e}"
 
 
 def download_update(

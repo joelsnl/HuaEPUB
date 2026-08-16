@@ -216,7 +216,12 @@ class ContentCleaner:
         
         try:
             # Try parsing as XML first (preserves XHTML namespace)
-            parser = etree.XMLParser(recover=True, no_network=True)
+            parser = etree.XMLParser(
+                recover=True,
+                no_network=True,
+                resolve_entities=False,
+                load_dtd=False,
+            )
             root = etree.fromstring(text.encode('utf-8'), parser)
         except Exception:
             try:

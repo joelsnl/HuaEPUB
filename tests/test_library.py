@@ -271,3 +271,16 @@ class TestMergeLibrary:
         purge_novel_artifacts(entry, extra_dirs=[tmp_path / "books"])
         assert not epub.exists()
         assert other.exists()
+
+    def test_purge_does_not_delete_epub_outside_books(self, tmp_path):
+        victim = tmp_path / "victim.epub"
+        victim.write_bytes(b"keep")
+        books = tmp_path / "books"
+        books.mkdir()
+        entry = LibraryEntry(
+            source_url="http://a",
+            output_path=str(victim),
+            epub_filename="../../victim.epub",
+        )
+        purge_novel_artifacts(entry, extra_dirs=[books])
+        assert victim.exists()

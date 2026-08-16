@@ -1016,10 +1016,25 @@ class DriveSync:
                 deleted += 1
         return deleted
 
-    def download_epub(self, file_id: str, dest_path: str) -> str:
+    def download_epub(
+        self, file_id: str, dest_path: str, *, allowed_root: Optional[Path] = None
+    ) -> str:
         """Download a Drive EPUB to dest_path. Returns dest_path."""
+        from core.security import path_is_under, safe_epub_basename
+
         service = self._require_service()
         dest = Path(dest_path)
+        name = safe_epub_basename(dest.name)
+        if not name:
+            raise DriveSyncError("Refusing Drive save: destination must be a .epub file")
+        try:
+            parent = dest.parent.resolve()
+            dest = (parent / name).resolve()
+            dest.relative_to(parent)
+        except (ValueError, OSError) as e:
+            raise DriveSyncError(f"Refusing Drive save: invalid path ({e})") from e
+        if allowed_root is not None and not path_is_under(dest, Path(allowed_root)):
+            raise DriveSyncError("Refusing Drive save outside the books folder")
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             request = service.files().get_media(fileId=file_id)
@@ -1029,6 +1044,8 @@ class DriveSync:
                 while not done:
                     _, done = downloader.next_chunk()
             return str(dest)
+        except DriveSyncError:
+            raise
         except Exception as e:
             raise DriveSyncError(
                 f"Failed to download EPUB: {self._format_api_error(e)}"
