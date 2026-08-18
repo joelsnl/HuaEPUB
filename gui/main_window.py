@@ -1140,9 +1140,12 @@ class MainWindow(QMainWindow):
             "<p><b>Ollama</b> — full local translation. Slow (hours for a long novel). "
             "Needs <a href='https://ollama.com'>Ollama</a> installed and running.</p>"
             "<p><b>Polish English</b> — keep Google (or LibreTranslate) as the translator, "
-            "then copy-edit the English with a local Ollama model. Much faster than "
-            "translating with Ollama. If you already have a model, HuaEPUB uses it. "
-            "If you have none, it asks before downloading about 2 GB.</p>"
+            "then copy-edit awkward English on this PC. <b>Ollama is not required.</b> "
+            "The first run downloads llama.cpp and a Qwen2.5 GGUF that fits this GPU "
+            "(3B / 7B / 14B) into ~/.huaepub/polish. Fluent sentences are copied; "
+            "only dirty spans hit the GPU. The same EPUB is written. "
+            "Progress is in Help → Open log. If llama.cpp cannot start because Ollama "
+            "is using the GPU, quit Ollama from the tray and retry.</p>"
             "<p>Workers apply to Google/LibreTranslate only. Polish runs separately.</p>"
         )
         box.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -1160,8 +1163,9 @@ class MainWindow(QMainWindow):
         box.setText(
             f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
             f"<p>{APP_DESCRIPTION}</p>"
-            "<p>Optional: polish Google English with a local Ollama model "
-            "(Help → How translation works).</p>"
+            "<p>Optional: after Google, polish awkward English locally with llama.cpp "
+            "(auto-installed Qwen GGUF). Ollama is not required. "
+            "Help → How translation works.</p>"
             "<p>"
             f"<b>Developer:</b> {APP_AUTHOR} "
             f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"

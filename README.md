@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.8.0**
+**Current version: 2.9.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -19,7 +19,7 @@ GUI is **PySide6 (Qt)** (CustomTkinter was replaced in 2.6.0 for smoother window
 - **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default)
 - **Remove watermarks** and ads automatically
 - **Translate to English** using Google Translate (free, concurrent), a LibreTranslate server, or local **Ollama**
-- **Polish English** — optional local copy-edit after Google or LibreTranslate (uses Ollama if you have it; much faster than translating with Ollama)
+- **Polish English** — after Google or LibreTranslate, a fast local copy-edit (llama.cpp + Qwen). Only awkward MTL spans are rewritten; fluent sentences are copied. Ollama is not required.
 - **Chapter cache** — downloaded chapters are stored locally so re-runs and resumes skip network fetches
 - **Translation cache** — previously translated text is reused across runs, costing zero API requests
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes
@@ -92,23 +92,34 @@ HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Optio
 | Use chapter cache (resume) | Reuses chapters already saved on this PC |
 | Watch clipboard for URLs | When on, copied novel URLs are queued into Multi (and fill Single if empty) |
 | Translator | Google (default), LibreTranslate, or local **Ollama** |
-| Polish English | After Google/LibreTranslate, copy-edit English on this PC with Ollama. Greyed out if Translate is off or Translator is already Ollama. |
+| Polish English | After Google/LibreTranslate, local copy-edit on this PC. First run downloads llama.cpp + a Qwen GGUF that fits this GPU (`~/.huaepub/polish`). Greyed out if Translate is off or Translator is already Ollama. |
 | Translation Workers | Concurrent Google/LibreTranslate requests (default 200). Ollama auto-drops to 2. Polish does not use this number. |
-| Ollama model / URL | Shown when Translator is Ollama or Polish English is on. If you already have a model, HuaEPUB uses it. If you have none, it asks to download `qwen2.5:3b` (~2 GB). URL must be localhost. |
+| Ollama model / URL | Shown only when Translator is Ollama (full local translation). If you have no models, HuaEPUB asks to download `qwen2.5:3b` (~2 GB). URL must be localhost. |
 | Save to | Where EPUB files are written |
 
 Keep **Use chapter cache** on unless you intentionally want a full re-download.
 
+### Polish English (local copy-edit)
+
+Keep **Translator** on **Google** (or LibreTranslate) and tick **Polish English**. Google still does the translation; a local LLM then copy-edits awkward English in the same EPUB.
+
+- **Ollama is not required.** The first polish run downloads [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`) and a **Qwen2.5 Instruct** GGUF into `~/.huaepub/polish`. Later runs reuse that.
+- Model size follows this PC: roughly **3B** on CPU / low VRAM, **7B** on mid-range GPUs, **14B** when there is enough VRAM (NVIDIA CUDA, AMD Vulkan, or Apple Silicon). First download is a few GB.
+- Only dirty MTL **spans** go to the GPU. Fluent Google sentences, titles, and Chinese leftovers are copied as-is. Results are cached in `cache.db`.
+- If llama.cpp is already listening on `:8080` (or vLLM on `:8000`), that server is used instead of starting a new one.
+- Progress and errors go to `~/.huaepub/logs/huaepub.log` (Help → Open log). Help → **How translation works** summarizes this in the app.
+- If Ollama is occupying the GPU so llama.cpp cannot start, polish can fall back to Ollama. Quit Ollama from the tray icon if you want the llama.cpp path.
+
 ### Local translation with Ollama
 
-Ollama runs a model on your PC (no Google quota, no cloud). Install from [ollama.com](https://ollama.com). The suggested model is **`qwen2.5:3b`**: Apache-2.0, strong Chinese→English, about 2 GB, usable on CPU. Untagged `qwen2.5` can pull a much larger 7B+ build.
+Ollama is only for **full** on-PC translation (no Google). It is much slower than Google + Polish. Install from [ollama.com](https://ollama.com). The suggested model is **`qwen2.5:3b`**: Apache-2.0, strong Chinese→English, about 2 GB, usable on CPU. Untagged `qwen2.5` can pull a much larger 7B+ build.
 
 ```bash
 ollama list            # what you already have
 # or let HuaEPUB ask to download qwen2.5:3b when you pick Ollama
 ```
 
-In HuaEPUB set **Translator** to **Ollama** for a full local translation (slow). Or keep **Google** / **LibreTranslate** and tick **Polish English** to copy-edit afterward (one batched request per several paragraphs, not per paragraph). If you already have any Ollama model, HuaEPUB uses it. If you have none, it **asks** before downloading `qwen2.5:3b` (~2 GB, one-time). **No** keeps polish off / the previous translator. It never pulls on startup or in the background. URL must stay on localhost (`http://127.0.0.1:11434`). Use 1–4 workers when Translator is Ollama. Translations and polish results are cached per model. Help → **How translation works** summarizes this in the app.
+In HuaEPUB set **Translator** to **Ollama**. Use 1–4 workers. Polish is greyed out in this mode (the model is already rewriting the whole book). Translations are cached.
 
 ### Pause, cancel, and resume after shutdown
 
@@ -153,9 +164,9 @@ The cover grid reflows when you resize the window and scrolls when there are mor
 
 Use this only if you want the same library list (and optionally EPUBs) on more than one PC.
 
-**Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, logs).
+**Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, logs, polish models).
 
-**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state.
+**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `polish/`.
 
 1. Create a Google Cloud project, enable **Google Drive API**, create an OAuth client (**Desktop app**).
 2. Save the client JSON as:
@@ -181,7 +192,8 @@ If Drive is offline, downloads and the local library still work.
 |------|----------|
 | `~/.huaepub/books/` | Default EPUB output |
 | `~/.huaepub/library.json` | Tracked library + recent history |
-| `~/.huaepub/cache.db` | Chapter HTML, translations, covers, TOCs |
+| `~/.huaepub/cache.db` | Chapter HTML, translations, covers, TOCs, polish cache |
+| `~/.huaepub/polish/` | llama.cpp + Qwen GGUF for Polish English (first-run download) |
 | `~/.huaepub/active_download.json` | Incomplete download resume point (if any) |
 | `~/.huaepub/settings.json` | App options |
 | `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
@@ -195,7 +207,7 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 - Updates install only when the downloaded zip matches the release’s `SHA256SUMS.txt` (fail closed if the sum is missing or wrong).
 - Checksums and zips come from the **same** GitHub release — treat the [joelsnl/HuaEPUB](https://github.com/joelsnl/HuaEPUB) publisher account as your trust root (enable 2FA on that account).
 - On **macOS / Linux**, confirm the “update ready” dialog; the app closes so a small shell helper can replace the binary and reopen. On **Windows**, the binary is swapped while running, then relaunched after exit.
-- Novel page / cover / LibreTranslate fetches block private/loopback hosts and re-check redirect targets. Translation still sends chapter text to Google or your LibreTranslate URL when enabled.
+- Novel page / cover / LibreTranslate fetches block private/loopback hosts and re-check redirect targets. Translation still sends chapter text to Google or your LibreTranslate URL when enabled. Polish English stays on this PC.
 
 ### Tips
 
@@ -253,6 +265,8 @@ python -m pytest tests/
 │   ├── parser.py       # Base parser class + registry
 │   ├── cleaner.py      # Watermark/ad removal
 │   ├── translator.py   # Translation (Google / LibreTranslate / Ollama)
+│   ├── local_polish.py # Polish English entry (KEEP/REPLACE)
+│   ├── polish/         # llama.cpp serve + span copy-edit
 │   ├── epub_builder.py # EPUB creation
 │   ├── download_runner.py  # Pause/cancel/chapter download (UI-agnostic)
 │   ├── settings.py     # Persistent app settings
@@ -277,11 +291,15 @@ python -m pytest tests/
 - Turn on **Translate to English**
 - Set **Translator** to Google or LibreTranslate (not Ollama — that already translates locally)
 
-### Polish English wants a 2 GB download
-- If Ollama already has any model, HuaEPUB uses that and will not force another download
-- First time with no models: one ~2 GB pull of `qwen2.5:3b` (you can decline)
-- After that, only awkward sentences are polished; fluent Google English is skipped
-- GPU is used automatically when Ollama can see one
+### Polish English
+- Does **not** need Ollama
+- First run downloads llama.cpp + a Qwen2.5 Instruct GGUF that fits this GPU (into `~/.huaepub/polish`). Later runs skip the download.
+- NVIDIA / AMD / Apple Silicon use CUDA / Vulkan / Metal; otherwise CPU (3B, slower)
+- If llama.cpp is already on `:8080` (or vLLM on `:8000`), that server is used
+- Only awkward MTL spans are sent to the GPU; fluent Google English is copied
+- Writes the same EPUB as a normal translated download (no extra polished copy)
+- Progress and errors go to `~/.huaepub/logs/huaepub.log` (Help → Open log)
+- If polish never starts and the log mentions GPU busy: quit **Ollama** from the tray (Quit Ollama), then retry
 
 ### "Translation failed" errors
 - Reduce workers (try 20-30 instead of 50)
@@ -304,7 +322,7 @@ python -m pytest tests/
 - Cached chapters still help if you fetch the same book again with cache enabled
 
 ### Update installed but the old version keeps opening (macOS / Linux)
-- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update). A 2.7.1+ build is required for Polish English and the in-app translation help.
+- Confirm you are on **2.6.4+** (older builds could relaunch a second copy of the old app instead of applying the update). Polish English in **2.9+** uses llama.cpp (Ollama is not required); 2.7.x used Ollama for polish.
 - After “Update ready”, allow the app to quit; do not force-quit the helper. Reopen `HuaEPUB` from the same folder you installed into.
 - If it still fails, download `HuaEPUB-macos.zip` / `HuaEPUB-linux.zip` from [Releases](https://github.com/joelsnl/HuaEPUB/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
 
@@ -315,6 +333,7 @@ python -m pytest tests/
 
 - Inspired by [WebToEpub](https://github.com/dteviot/WebToEpub) (dteviot, Apache-2.0); some site CSS selectors in `parsers/sites.json` are adapted from it
 - Translation logic from fixTranslate.py
+- Polish English uses [llama.cpp](https://github.com/ggml-org/llama.cpp) and [Qwen2.5](https://huggingface.co/Qwen) Instruct GGUFs
 - Uses [ebooklib](https://github.com/aerkalov/ebooklib) for EPUB creation
 - GUI built with [PySide6](https://doc.qt.io/qtforpython/) (Qt)
 

@@ -370,7 +370,7 @@ class GoogleTranslator:
         return self.backend
 
     def _polish_cache_backend(self) -> str:
-        return f'ollama-polish:{self.ollama_model}'
+        return 'span-polish:v2'
 
     def _request_ollama(
         self,
@@ -822,12 +822,15 @@ class GoogleTranslator:
         max_chars: int = POLISH_BATCH_CHARS,
     ) -> List[str]:
         """
-        Copy-edit already-English machine translation via Ollama.
-        Batches many segments into one request. On failure, keeps the original
-        English. Does not change worker count for Google/LibreTranslate.
+        Copy-edit already-English machine translation with the local
+        KEEP/REPLACE polisher (llama.cpp / vLLM / Ollama). On failure,
+        keeps the original English.
         """
+        del max_chars
         if not texts:
             return []
+        from core.local_polish import polish_paragraphs, wants_polish
+
         results = list(texts)
         cache_backend = self._polish_cache_backend()
         pending: List[int] = []
@@ -837,7 +840,7 @@ class GoogleTranslator:
             raw = (text or '').strip()
             if not raw or self.is_chinese(raw):
                 continue
-            if not should_polish_english(raw, min_chars=self.POLISH_MIN_CHARS):
+            if not wants_polish(raw):
                 continue
             with self.cache_lock:
                 cached = self.cache.get(f'{cache_backend}\0{raw}')
@@ -857,71 +860,50 @@ class GoogleTranslator:
                     continue
             pending.append(i)
 
-        batches: List[List[int]] = []
-        current: List[int] = []
-        current_chars = 0
-        budget = max(500, int(max_chars or self.POLISH_BATCH_CHARS))
-        for i in pending:
-            n = len(texts[i])
-            if current and current_chars + n > budget:
-                batches.append(current)
-                current = []
-                current_chars = 0
-            current.append(i)
-            current_chars += n
-        if current:
-            batches.append(current)
-
-        total_batches = len(batches)
         skipped = len(texts) - len(pending)
         print(
-            f"  Ollama polish: {len(pending)} segments in {total_batches} batch(es), "
-            f"{skipped} skipped (short/title/fluent/Chinese)"
+            f"  Local polish: {len(pending)} segments to copy-edit, "
+            f"{skipped} skipped (short/title/fluent/Chinese/cached)"
         )
-        if progress_callback:
-            progress_callback(0, max(total_batches, 1))
-        if not batches:
+        if not pending:
             if progress_callback:
                 progress_callback(1, 1)
             return results
 
-        polish_opts = {
-            'num_ctx': 8192,
-        }
-        for b_i, batch in enumerate(batches):
-            if self._cancel_requested:
-                break
-            originals = [texts[i] for i in batch]
-            packed = pack_numbered_segments(originals)
-            polished_map = None
-            try:
-                raw = self._request_ollama(
-                    packed,
-                    system=self._OLLAMA_POLISH_SYSTEM,
-                    timeout=(5, 180),
-                    temperature=0.1,
-                    extra_options=polish_opts,
-                    allow_empty=True,
-                    think=False,
-                )
-                polished_map = unpack_sparse_segments(raw, len(originals))
-            except Exception as e:
-                print(f"  Ollama polish batch {b_i + 1}/{total_batches} failed: {e}")
-            if polished_map:
-                for n, out in polished_map.items():
-                    if is_polish_skip(out):
-                        continue
-                    i = batch[n - 1]
-                    src = (texts[i] or '').strip()
-                    results[i] = out
-                    with self.cache_lock:
-                        self.cache[f'{cache_backend}\0{src}'] = out
-                    if self.persistent_cache is not None:
-                        self.persistent_cache.put_translation(src, out, cache_backend)
-                with self.stats_lock:
-                    self.stats['requests'] += 1
+        originals = [texts[i] for i in pending]
+
+        def on_progress(completed: int, total: int) -> None:
             if progress_callback:
-                progress_callback(b_i + 1, total_batches)
+                progress_callback(completed, total)
+
+        try:
+            polished, model_id = polish_paragraphs(
+                originals,
+                progress=on_progress,
+                cancelled=lambda: self._cancel_requested,
+                log=print,
+            )
+        except Exception as e:
+            print(f"  Local polish failed ({e}); keeping Google English.")
+            if progress_callback:
+                progress_callback(1, 1)
+            return results
+
+        if model_id:
+            print(f"  Local polish model: {model_id}")
+        edited = 0
+        for i, out in zip(pending, polished):
+            src = (texts[i] or '').strip()
+            results[i] = out
+            if out != texts[i]:
+                edited += 1
+                with self.cache_lock:
+                    self.cache[f'{cache_backend}\0{src}'] = out
+                if self.persistent_cache is not None:
+                    self.persistent_cache.put_translation(src, out, cache_backend)
+            with self.stats_lock:
+                self.stats['requests'] += 1
+        print(f"  Local polish: {edited} edited, {len(pending) - edited} kept original")
         return results
     
     @staticmethod

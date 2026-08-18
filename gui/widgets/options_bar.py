@@ -248,51 +248,8 @@ class OptionsBar(QWidget):
         self._sync_ollama_row()
 
     def _on_polish_changed(self, *_args):
-        if not self.polish_cb.isChecked():
-            self._sync_ollama_row()
-            self._emit_options()
-            return
-        QTimer.singleShot(0, self._finish_enable_polish)
-
-    @Slot()
-    def _finish_enable_polish(self):
-        if not self.polish_cb.isChecked():
-            return
-        if self.backend.currentText() == "Ollama":
-            self._uncheck_polish()
-            return
-        from core.translator import GoogleTranslator, probe_ollama
-
-        url = self.ollama_url.text().strip() or "http://127.0.0.1:11434"
-        recommended = GoogleTranslator.DEFAULT_OLLAMA_MODEL
-        installed = probe_ollama(url)
-        if installed is None:
-            self._warn_ollama_unavailable(for_polish=True)
-            self._uncheck_polish()
-            return
-        if installed:
-            self._use_installed_ollama_model(installed, recommended)
-            self._sync_ollama_row()
-            self._emit_options()
-            return
-
-        reply = QMessageBox.question(
-            self.window(),
-            "Download a local model?",
-            "Polish English uses a local Ollama model after Google "
-            "(or LibreTranslate) finishes.\n\n"
-            f"Download {recommended} now? About 2 GB, one-time.\n\n"
-            "If you choose No, polish stays off.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            self._uncheck_polish()
-            return
-        self._ollama_pull_purpose = "polish"
-        self._ollama_pull_model = recommended
-        self._ollama_pull_url = url
-        QTimer.singleShot(0, self._start_ollama_pull)
+        self._sync_ollama_row()
+        self._emit_options()
 
     def _uncheck_polish(self):
         self.polish_cb.blockSignals(True)
@@ -516,9 +473,10 @@ class OptionsBar(QWidget):
             )
         else:
             self.polish_cb.setToolTip(
-                "After Google or LibreTranslate finishes, copy-edit the "
-                "English on this PC.\nNeeds Ollama (ollama.com). Minutes, "
-                "not hours. Does not replace Google."
+                "After Google or LibreTranslate finishes, copy-edit awkward English "
+                "on this PC. First run downloads llama.cpp + a Qwen GGUF that fits "
+                "this GPU — Ollama is not required. Same EPUB (no extra copy). "
+                "Progress is in Help → Open log."
             )
             if polish_on:
                 self.workers.setToolTip(
@@ -533,7 +491,8 @@ class OptionsBar(QWidget):
         if hasattr(self, "ollama_hint"):
             if polish_on:
                 self.ollama_hint.setText(
-                    "Google still translates. This model only polishes the English afterward."
+                    "Google still translates. Polish then uses llama.cpp on this PC "
+                    "(vLLM/Ollama only if already running). Only awkward spans, not the whole book."
                 )
                 self.ollama_hint.setVisible(True)
             elif ollama:
@@ -545,9 +504,7 @@ class OptionsBar(QWidget):
                 self.ollama_hint.setVisible(False)
 
     def _sync_ollama_row(self):
-        visible = (
-            self.backend.currentText() == "Ollama" or self._polish_active()
-        )
+        visible = self.backend.currentText() == "Ollama"
         self.ollama_wrap.setVisible(visible)
         self._sync_option_hints()
         if visible:

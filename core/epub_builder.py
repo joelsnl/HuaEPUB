@@ -486,8 +486,7 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                         f"Polishing English: {completed}/{total}{eta}",
                     )
 
-                print(f"Polishing {len(translated)} segments with Ollama "
-                      f"(batched, not per-paragraph)...")
+                print(f"Polishing {len(translated)} segments (KEEP/REPLACE, local LLM)...")
                 translated = self.translator.polish_texts(
                     translated, polish_progress
                 )

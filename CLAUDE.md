@@ -16,6 +16,8 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/parser.py` - `BaseParser`, `Chapter`/`NovelInfo` dataclasses, parser registry, `create_http_session()` (curl_cffi Chrome impersonation with requests fallback)
 - `core/cleaner.py` - `ContentCleaner`: watermark/ad removal, XHTML structure fixing, br-to-p conversion
 - `core/translator.py` - `GoogleTranslator`: concurrent translation with bounded multi-pass retry (hard cap on passes; partial improvements are accepted so it never loops forever)
+- `core/local_polish.py` - after Google/LibreTranslate, KEEP/REPLACE polish via `core/polish/` (auto-installs llama.cpp + Qwen GGUF under `~/.huaepub/polish`; Ollama not required). In-memory on the same EPUB; logs via print() into `huaepub.log`.
+- `core/polish/` - llama.cpp download/serve, hardware caps (3B/7B/14B), span KEEP/REPLACE. Never Drive-sync this cache. Do not make polish depend on Ollama.
 - `core/epub_builder.py` - `EPUBBuilder` and `TranslatedEPUBBuilder` (ebooklib); translations are applied at the text-node level, never with raw string replacement
 - `core/download_runner.py` - UI-agnostic pause/cancel/chapter-cache/EPUB orchestration
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release)
@@ -34,7 +36,7 @@ All application code lives at the repository root (there used to be a duplicate 
 - `.github/workflows/release.yml` - builds Win/macOS/Linux zips on `v*` tag push
 
 ## Workflow
-Source Input → Parse → Clean → Translate (optional) → Build EPUB.
+Source Input → Parse → Clean → Translate (optional) → Polish English (optional, local llama.cpp) → Build EPUB.
 
 Chapter downloads are sequential on purpose (per-site `request_delay` avoids bans); do NOT parallelize them.
 
@@ -51,8 +53,8 @@ Library updates rebuild a full EPUB from cache + new chapters. Drive sync is off
 - To support a new site: add an object to `parsers/sites.json` (domains + CSS selectors). Keep `generic` registered last. Do not add per-site Python modules or a WebToEpub extractor.
 - Parsers must RAISE on failed content extraction (never return placeholder HTML); the app handles failures and retries them at the end of a run.
 - Text cleaning rules live in `core/cleaner.py`; output format changes in `core/epub_builder.py`.
-- Keep the default of 200 translation workers; the retry/backoff logic in `translator.py` handles rate limiting.
-- Drive OAuth uses `drive.file` only; client JSON at `~/.huaepub/google_oauth_client.json`. Do not reintroduce hidden `appDataFolder` sync.
+- Keep the default of 200 translation workers; the retry/backoff logic in `translator.py` handles rate limiting. Polish does not use that worker count.
+- Drive OAuth uses `drive.file` only; client JSON at `~/.huaepub/google_oauth_client.json`. Do not reintroduce hidden `appDataFolder` sync. Never Drive-sync `cache.db`, resume files, or `polish/`.
 - Auto-updates must fail closed without a matching `SHA256SUMS` entry; never fall back to unsigned `main.zip`. Release CI must publish `HuaEPUB-*.zip` (with legacy `NovelDownloader` binary inside), `HuaEPUB-source.zip`, legacy `novelDownloader-source.zip` alias, and `SHA256SUMS.txt`.
 - Frozen POSIX updates: launch `_update_helper.sh` via `/bin/sh` or `/bin/bash` — **never** `sys.executable` when frozen (that reopens the GUI). Prefer python3 inside the helper for replace; re-hash staged `_new_*` before `mv`. GUI must quit after a successful download so the helper can swap.
 - Product fetches (pages, covers, LibreTranslate) must go through `safe_http_request` / `validate_fetch_url`, not raw `session.get` with automatic redirects.

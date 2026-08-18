@@ -37,7 +37,7 @@ from core.security import (
 )
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.8.0"
+__version__ = "2.9.0"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"

@@ -249,58 +249,81 @@ class TestOllamaPolish:
         assert sparse == {1: 'Hi', 3: 'Bye'}
         assert unpack_sparse_segments('NONE', 4) == {}
 
-    def test_polish_batches_and_keeps_original_on_bad_output(self):
+    def test_polish_batches_and_keeps_original_on_bad_output(self, monkeypatch):
         t = make_translator(backend='google', ollama_url='http://127.0.0.1:11434')
         seen = []
 
-        def fake_ollama(text, **kwargs):
-            seen.append(text)
-            if 'broken' in text:
-                return 'not marked up at all'
-            return '<<<1>>>\nShe goes to school every morning.'
+        def fake_polish(texts, **kwargs):
+            seen.append(list(texts))
+            out = []
+            for text in texts:
+                if 'go to school' in text:
+                    out.append('She goes to school every morning.')
+                else:
+                    out.append(text)
+            return out, 'fake-model'
 
-        t._request_ollama = fake_ollama
+        monkeypatch.setattr('core.local_polish.polish_paragraphs', fake_polish)
         fluent = 'He walked into the room and sat down by the window.'
         awkward = 'She go to school every morning.'
         out = t.polish_texts([fluent, awkward], max_chars=5000)
         assert out[0] == fluent
         assert out[1] == 'She goes to school every morning.'
         assert len(seen) == 1
+        assert seen[0] == [awkward]
 
+        def boom(texts, **kwargs):
+            raise RuntimeError('server down')
+
+        monkeypatch.setattr('core.local_polish.polish_paragraphs', boom)
         bad = t.polish_texts(
             ['this broken english here is really awkward.'],
             max_chars=5000,
         )
         assert bad == ['this broken english here is really awkward.']
 
-    def test_polish_skips_fluent_google_english(self):
+    def test_polish_skips_fluent_google_english(self, monkeypatch):
         from core.translator import should_polish_english
         assert should_polish_english(
             'He walked into the room and sat down by the window.'
         ) is False
         t = make_translator()
-        t._request_ollama = lambda *a, **k: (_ for _ in ()).throw(AssertionError('skip fluent'))
+
+        def boom(*a, **k):
+            raise AssertionError('skip fluent')
+
+        monkeypatch.setattr('core.local_polish.polish_paragraphs', boom)
         text = 'He walked into the room and sat down by the window.'
         assert t.polish_texts([text]) == [text]
 
-    def test_polish_skips_still_chinese(self):
+    def test_polish_skips_still_chinese(self, monkeypatch):
         t = make_translator()
-        t._request_ollama = lambda *a, **k: (_ for _ in ()).throw(AssertionError('should skip'))
+        monkeypatch.setattr(
+            'core.local_polish.polish_paragraphs',
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError('should skip')),
+        )
         assert t.polish_texts(['这是中文段落内容测试']) == ['这是中文段落内容测试']
 
-    def test_polish_skips_short_titles(self):
+    def test_polish_skips_short_titles(self, monkeypatch):
         from core.translator import should_polish_english
         assert should_polish_english('Chapter 1') is False
         assert should_polish_english('Li Ming') is False
         assert should_polish_english('She go to school every morning.') is True
 
         t = make_translator()
-        t._request_ollama = lambda *a, **k: (_ for _ in ()).throw(AssertionError('skip titles'))
+        monkeypatch.setattr(
+            'core.local_polish.polish_paragraphs',
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError('skip titles')),
+        )
         assert t.polish_texts(['Chapter 12', 'Li Ming']) == ['Chapter 12', 'Li Ming']
 
-    def test_polish_skip_token_keeps_original(self):
+    def test_polish_skip_token_keeps_original(self, monkeypatch):
         t = make_translator()
-        t._request_ollama = lambda *a, **k: '<<<1>>>\nSKIP'
+
+        def identity(texts, **kwargs):
+            return list(texts), 'fake-model'
+
+        monkeypatch.setattr('core.local_polish.polish_paragraphs', identity)
         assert t.polish_texts(['She go to school every morning.']) == [
             'She go to school every morning.'
         ]
