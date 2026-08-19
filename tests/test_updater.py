@@ -147,6 +147,8 @@ class TestReplacementHelper:
         assert "for ($i = 1; $i -le 90; $i++)" in text
         assert "Start-Process -FilePath $oldExe" in text
         assert "$pidWait" in text
+        assert "PYINSTALLER_RESET_ENVIRONMENT" in text
+        assert "_PYI_" in text
         # Must not wait on PowerShell's automatic $PID by mistake
         assert "Get-Process -Id $pidWait" in text
         cfg = (tmp_path / "_update_helper.json").read_text(encoding="utf-8")
@@ -172,6 +174,13 @@ class TestReplacementHelper:
             assert "env -i" not in text
             assert "-u SSL_CERT_FILE" in text
             assert "com.apple.quarantine" in text
+            assert "trap '' HUP" in text
+            assert "os.spawnve" not in text
+            assert "start_new_session=True" in text
+            assert "/usr/bin/open" in text
+            assert "python3 helper failed" in text
+            assert "PYINSTALLER_RESET_ENVIRONMENT" in text
+            assert '_PYI_' in text
             cfg = (tmp_path / "_update_helper.json").read_text(encoding="utf-8")
             assert '"sha256"' in cfg
             assert '"pid": 99' in cfg
@@ -209,6 +218,46 @@ class TestReplacementHelper:
             assert interp != str(tmp_path / "HuaEPUB"), platform
             assert Path(interp).name in ("bash", "sh"), platform
             assert calls[-1][0][1] == str(script)
+            assert calls[-1][1].get("start_new_session") is True
+            assert calls[-1][1].get("stdin") is updater.subprocess.DEVNULL
+            env = calls[-1][1].get("env")
+            assert env is not None
+            assert "PYINSTALLER_RESET_ENVIRONMENT" not in env
+            assert not any(k.startswith("_PYI_") for k in env)
+
+
+    def test_windows_launch_uses_powershell_not_detached(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        calls = []
+
+        def fake_popen(*args, **kwargs):
+            calls.append((args, kwargs))
+            class P:
+                pass
+            return P()
+
+        monkeypatch.setattr(updater.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(
+            updater, "_windows_powershell", lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        )
+        script = tmp_path / "_update_helper.ps1"
+        script.write_text("# ps1\n", encoding="utf-8")
+        updater._win_start_ps1(script, cwd=str(tmp_path))
+        assert calls
+        argv = calls[0][0][0] if calls[0][0] else calls[0][1].get("args")
+        assert isinstance(argv, (list, tuple))
+        joined = " ".join(str(x) for x in argv)
+        assert "powershell" in joined.lower()
+        assert "-File" in argv
+        assert str(script.resolve()) in argv
+        flags = calls[0][1].get("creationflags", 0)
+        detached = getattr(updater.subprocess, "DETACHED_PROCESS", 0x00000008)
+        assert flags & detached == 0
+        assert calls[0][1].get("shell") in (False, None)
+        assert flags & updater._CREATE_BREAKAWAY_FROM_JOB
+        env = calls[0][1].get("env")
+        assert env is not None
+        assert not any(k.startswith("_PYI_") for k in env)
 
     def test_posix_interpreter_skips_frozen_exe(self, tmp_path, monkeypatch):
         fake_app = tmp_path / "HuaEPUB"
@@ -248,7 +297,34 @@ class TestPostSwapRelaunchHelper:
         assert "timeout /t" not in text.lower()
         assert "Start-Process" in text
         assert "SSL_CERT_FILE" in text
-        assert '"pid": 4242' in (tmp_path / "_update_relaunch.json").read_text(encoding="utf-8")
+        assert "PYINSTALLER_RESET_ENVIRONMENT" in text
+        assert "_PYI_" in text
+        cfg = (tmp_path / "_update_relaunch.json").read_text(encoding="utf-8")
+        assert '"pid": 4242' in cfg
+        assert '"args"' in cfg
+
+
+class TestSourceRelaunch:
+    def test_schedules_helper_instead_of_asking_for_manual_restart(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(updater, "get_app_dir", lambda: tmp_path)
+        monkeypatch.setattr(updater, "is_frozen", lambda: False)
+        monkeypatch.setattr(updater.os, "getpid", lambda: 4242)
+        scheduled = []
+
+        def fake_schedule():
+            scheduled.append(True)
+
+        monkeypatch.setattr(updater, "_schedule_relaunch_after_exit", fake_schedule)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "app.py").write_text("# new\n", encoding="utf-8")
+        ok, msg = updater._update_source_app(src, tmp_path)
+        assert ok
+        assert scheduled == [True]
+        assert "reopen" in msg.lower()
+        assert "please restart" not in msg.lower()
 
 
 class TestSourceUpdateItems:
@@ -256,3 +332,23 @@ class TestSourceUpdateItems:
         assert "gui" in SOURCE_UPDATE_ITEMS
         assert "core" in SOURCE_UPDATE_ITEMS
         assert "app.py" in SOURCE_UPDATE_ITEMS
+
+
+class TestRelaunchEnv:
+    def test_strips_pyinstaller_ipc_and_marks_independent(self, monkeypatch):
+        monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+        monkeypatch.setenv("_PYI_ARCHIVE_FILE", "/tmp/HuaEPUB")
+        monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", "/tmp/_MEI123")
+        monkeypatch.setenv("_MEIPASS2", "/tmp/_MEI123")
+        monkeypatch.setenv("SSL_CERT_FILE", "/tmp/_MEI123/cacert.pem")
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI123")
+        helper = updater._env_for_external_helper()
+        assert "_PYI_ARCHIVE_FILE" not in helper
+        assert "_PYI_APPLICATION_HOME_DIR" not in helper
+        assert "_MEIPASS2" not in helper
+        assert "SSL_CERT_FILE" not in helper
+        assert "LD_LIBRARY_PATH" not in helper
+        assert helper.get("PYINSTALLER_RESET_ENVIRONMENT") != "1"
+        relaunch = updater._env_for_app_relaunch()
+        assert relaunch.get("PYINSTALLER_RESET_ENVIRONMENT") == "1"
+        assert "_PYI_ARCHIVE_FILE" not in relaunch

@@ -33,6 +33,7 @@ from core.security import (
     safe_extract_zip,
     safe_http_request,
     validate_github_asset_host,
+    write_secret_file,
     write_update_helper_config,
 )
 
@@ -41,7 +42,7 @@ SOURCE_UPDATE_ITEMS = [
 ]
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.9.1"
+__version__ = "2.9.2"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"
@@ -50,6 +51,23 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # Set when a frozen Windows update already swapped the on-disk exe and the
 # GUI should relaunch that path after showing the success dialog.
 _pending_relaunch_exe: Optional[Path] = None
+
+# Inherited from the old frozen process; they make python3/powershell fail or
+# make the new onefile instance reuse a _MEI folder that is about to be deleted.
+_RELAUNCH_DROP_ENV = frozenset({
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONNOUSERSITE",
+    "_MEIPASS2",
+})
+
+# CREATE_BREAKAWAY_FROM_JOB — keep the helper alive if a job would kill children.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 def get_pending_relaunch() -> Optional[Path]:
@@ -85,6 +103,58 @@ def get_executable_path() -> Optional[Path]:
     if is_frozen():
         return Path(sys.executable)
     return None
+
+
+def _env_for_external_helper() -> dict:
+    """
+    Environment for powershell / system python3 / /bin/sh helpers.
+
+    A frozen onefile process points SSL, PYTHON*, LD_LIBRARY_PATH, and PATH at
+    its `_MEI*` extract. Helpers must not inherit that or they crash, and the
+    new app must not inherit `_PYI_*` or PyInstaller 6.9+ treats it as a worker
+    of the dying extract (the window never comes back).
+    """
+    env = dict(os.environ)
+    for key in list(env):
+        if key in _RELAUNCH_DROP_ENV or key.startswith("_PYI_"):
+            env.pop(key, None)
+    orig_ld = os.environ.get("LD_LIBRARY_PATH_ORIG")
+    if orig_ld is not None:
+        env["LD_LIBRARY_PATH"] = orig_ld
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        mei = os.path.normcase(os.path.abspath(str(meipass)))
+        sep = os.sep
+        for key in ("PATH", "DYLD_LIBRARY_PATH"):
+            val = env.get(key)
+            if not val:
+                continue
+            kept = []
+            for part in val.split(os.pathsep):
+                if not part:
+                    continue
+                try:
+                    normalized = os.path.normcase(os.path.abspath(part))
+                except OSError:
+                    kept.append(part)
+                    continue
+                if normalized == mei or normalized.startswith(mei + sep):
+                    continue
+                kept.append(part)
+            if kept:
+                env[key] = os.pathsep.join(kept)
+            else:
+                env.pop(key, None)
+    return env
+
+
+def _env_for_app_relaunch() -> dict:
+    """Env for the replacement HuaEPUB process (independent onefile instance)."""
+    env = _env_for_external_helper()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 def _exe_basenames() -> Tuple[str, ...]:
@@ -248,13 +318,18 @@ try {
     Write-UpdateLog "Launching updated app"
     foreach ($key in @(
         "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-        "PYTHONHOME", "PYTHONPATH", "_MEIPASS2"
+        "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2"
     )) {
         Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
     }
-    Start-Process -FilePath $oldExe
+    Get-ChildItem Env: -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "_PYI_*"
+    } | ForEach-Object {
+        Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
+    }
+    $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+    Start-Process -FilePath $oldExe -WorkingDirectory (Split-Path -Parent $oldExe)
     Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
 } catch {
     Write-UpdateLog "FATAL: $($_.Exception.Message)"
 }
@@ -267,6 +342,8 @@ try {
     script_path = app_dir / '_update_helper.sh'
     script_content = r'''#!/bin/sh
 set +e
+# Parent GUI is about to die — ignore SIGHUP so replace + relaunch still run.
+trap '' HUP
 DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 LOG="$DIR/_update_helper.log"
 CFG="$DIR/_update_helper.json"
@@ -278,10 +355,15 @@ log() {
 
 # Primary path: python3 owns wait / hash verify / replace / relaunch.
 # Paths stay inside Python — never assigned to shell vars for mv/exec.
+# If python3 is the Xcode stub or otherwise fails, fall through to the shell.
 if command -v python3 >/dev/null 2>&1; then
   python3 - "$CFG" "$LOG" "$SELF" <<'PY'
-import hashlib, json, os, sys, time
+import hashlib, json, os, signal, subprocess, sys, time
 from pathlib import Path
+try:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+except Exception:
+    pass
 
 cfg_path, log_path, self_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 
@@ -363,29 +445,60 @@ try:
             except Exception:
                 pass
     log("Launching updated app")
+    drop = {
+        "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2",
+    }
     clean = {
         k: v for k, v in os.environ.items()
-        if k not in {
-            "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-            "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2",
-        }
+        if k not in drop and not k.startswith("_PYI_")
     }
-    os.spawnve(os.P_NOWAIT, str(old_exe), [str(old_exe)], clean)
-    for p in (self_path, log_path):
+    orig_ld = os.environ.get("LD_LIBRARY_PATH_ORIG")
+    if orig_ld is not None:
+        clean["LD_LIBRARY_PATH"] = orig_ld
+    else:
+        clean.pop("LD_LIBRARY_PATH", None)
+    clean["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    popen_kw = dict(
+        cwd=str(old_exe.parent),
+        env=clean,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    launched = False
+    if sys.platform == "darwin" and os.path.isfile("/usr/bin/open"):
         try:
-            p.unlink()
-        except OSError:
-            pass
+            subprocess.Popen(
+                ["/usr/bin/open", "-n", "--", str(old_exe)], **popen_kw
+            )
+            launched = True
+            log("Launched via /usr/bin/open")
+        except Exception as e:
+            log(f"open failed: {e}")
+    if not launched:
+        subprocess.Popen([str(old_exe)], **popen_kw)
+        log("Launched via Popen")
+    try:
+        self_path.unlink()
+    except OSError:
+        pass
 except Exception:
     import traceback
     log("FATAL:\n" + traceback.format_exc())
     sys.exit(1)
 PY
-  exit $?
+  py_status=$?
+  if [ "$py_status" -eq 0 ]; then
+    exit 0
+  fi
+  log "python3 helper failed ($py_status); trying shell fallback"
 fi
 
 # Fallback without python3: reject metacharacters, then quoted mv only.
-log "python3 not found; using restricted shell fallback"
+log "using restricted shell fallback"
 PID=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$CFG" | head -1)
 NEW_EXE=$(sed -n 's/.*"new_exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -1)
 OLD_EXE=$(sed -n 's/.*"old_exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" | head -1)
@@ -472,12 +585,32 @@ if command -v xattr >/dev/null 2>&1; then
 fi
 
 log "Launching updated app"
-env \
-  -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
-  -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u _MEIPASS2 \
-  "$OLD_EXE" >/dev/null 2>&1 &
+# Drop PyInstaller IPC so the new onefile instance unpacks itself.
+for _pyi_k in $(env | sed -n 's/^\(_PYI_[^=]*\)=.*/\1/p'); do
+  unset "$_pyi_k"
+done
+if [ -n "${LD_LIBRARY_PATH_ORIG+x}" ]; then
+  LD_LIBRARY_PATH="$LD_LIBRARY_PATH_ORIG"
+  export LD_LIBRARY_PATH
+else
+  unset LD_LIBRARY_PATH
+fi
+export PYINSTALLER_RESET_ENVIRONMENT=1
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+  env \
+    -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
+    -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u _MEIPASS2 \
+    PYINSTALLER_RESET_ENVIRONMENT=1 \
+    open -n -- "$OLD_EXE" >/dev/null 2>&1 &
+else
+  env \
+    -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
+    -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u _MEIPASS2 \
+    PYINSTALLER_RESET_ENVIRONMENT=1 \
+    "$OLD_EXE" >/dev/null 2>&1 &
+fi
 
-rm -f "$SELF" "$LOG"
+rm -f "$SELF"
 '''
     script_path.write_text(script_content, encoding='utf-8', newline='\n')
     os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IEXEC)
@@ -518,21 +651,13 @@ def _posix_helper_interpreter() -> str:
 
 
 def _launch_replacement_script(script_path: Path):
-    """Run the replacement helper in the background."""
+    """Run the replacement helper so it outlives this process."""
     if sys.platform == 'win32':
-        _win_hidden_popen(
-            [
-                'powershell',
-                '-NoProfile',
-                '-ExecutionPolicy', 'Bypass',
-                '-WindowStyle', 'Hidden',
-                '-File', str(script_path),
-            ],
-            cwd=str(script_path.parent),
-        )
+        _win_start_ps1(script_path, cwd=str(script_path.parent))
         return
 
     # macOS + Linux: always a real shell — never sys.executable when frozen.
+    # Pass a sanitized env so system python3 is not poisoned by _MEI paths.
     shell = _posix_helper_interpreter()
     if is_frozen():
         try:
@@ -546,9 +671,12 @@ def _launch_replacement_script(script_path: Path):
     subprocess.Popen(
         [shell, str(script_path)],
         start_new_session=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=str(script_path.parent),
+        close_fds=True,
+        env=_env_for_external_helper(),
     )
 
 
@@ -814,6 +942,8 @@ def _cleanup_update_sidecars(app_dir: Path):
         "_update_helper.log",
         "_update_relaunch.ps1",
         "_update_relaunch.json",
+        "_update_relaunch.py",
+        "_update_relaunch.sh",
     ):
         try:
             (app_dir / name).unlink(missing_ok=True)
@@ -857,68 +987,142 @@ def _swap_running_exe_windows(new_exe: Path, old_exe: Path) -> Path:
     raise OSError(f"Could not replace running executable: {last_err}")
 
 
-def _win_hidden_popen(args: list, *, cwd: Optional[str] = None):
-    """Start a process with no console window, broken away from the GUI job."""
-    creationflags = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        | 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+def _windows_powershell() -> str:
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    for candidate in (
+        os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        os.path.join(system_root, "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return shutil.which("powershell.exe") or shutil.which("powershell") or "powershell.exe"
+
+
+def _win_creation_flags(*, breakaway: bool) -> int:
+    flags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
     )
-    return subprocess.Popen(
-        args,
-        creationflags=creationflags,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        cwd=cwd,
-        close_fds=True,
-    )
+    if breakaway:
+        flags |= getattr(
+            subprocess, "CREATE_BREAKAWAY_FROM_JOB", _CREATE_BREAKAWAY_FROM_JOB
+        )
+    return flags
+
+
+def _win_start_ps1(script_path: Path, *, cwd: Optional[str] = None):
+    """
+    Launch a PowerShell script so it outlives this GUI.
+
+    Do not use DETACHED_PROCESS — powershell -File often exits without running.
+    Do not use shell=True with `start ""` — Python wraps that in extra quotes
+    and `start` treats the next token as a window title.
+    CREATE_BREAKAWAY_FROM_JOB keeps the helper alive if a job would kill it
+    when the frozen onefile parent exits.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            pass
+    script = str(Path(script_path).resolve())
+    cwd = cwd or str(Path(script_path).parent)
+    args = [
+        _windows_powershell(),
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden",
+        "-File", script,
+    ]
+    last_err: Optional[BaseException] = None
+    helper_env = _env_for_external_helper()
+    for breakaway in (True, False):
+        try:
+            return subprocess.Popen(
+                args,
+                shell=False,
+                creationflags=_win_creation_flags(breakaway=breakaway),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                cwd=cwd,
+                close_fds=True,
+                env=helper_env,
+            )
+        except OSError as e:
+            last_err = e
+    raise OSError(f"Could not start update helper: {last_err}")
 
 
 def _create_post_swap_relaunch_helper(
-    exe_path: Path, backup_path: Path, app_dir: Path, pid: int
+    exe_path: Path,
+    backup_path: Optional[Path],
+    app_dir: Path,
+    pid: int,
+    extra_args: Optional[list] = None,
+    cwd: Optional[Path] = None,
 ) -> Path:
     """
-    After an in-process Windows exe swap: wait for this PID to exit, then
-    silently delete the backup and start the new exe (no console window).
+    Wait for this PID to exit, then start exe_path (optional extra_args).
+    Used after an in-process Windows exe swap and for source-install relaunch.
     """
     config_path = app_dir / '_update_relaunch.json'
-    config_path.write_text(
-        json.dumps({
-            "pid": int(pid),
-            "exe": str(Path(exe_path)),
-            "backup": str(Path(backup_path)),
-        }),
-        encoding="utf-8",
-    )
+    payload = {
+        "pid": int(pid),
+        "exe": str(Path(exe_path)),
+        "backup": str(Path(backup_path)) if backup_path else "",
+        "cwd": str(Path(cwd) if cwd is not None else Path(exe_path).parent),
+        "args": [str(a) for a in (extra_args or [])],
+    }
+    write_secret_file(config_path, json.dumps(payload))
     script_path = app_dir / '_update_relaunch.ps1'
     script_content = r'''$ErrorActionPreference = "SilentlyContinue"
+$logPath = Join-Path $PSScriptRoot "_update_helper.log"
+function Write-UpdateLog([string]$msg) {
+    $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
+    Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+}
 $cfgPath = Join-Path $PSScriptRoot "_update_relaunch.json"
 $cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
 $pidWait = [int]$cfg.pid
 $exe = [string]$cfg.exe
 $backup = [string]$cfg.backup
-# Wait until the old GUI process is fully gone (avoids PyInstaller DLL race).
+$workdir = [string]$cfg.cwd
+$launchArgs = @()
+if ($null -ne $cfg.args) { $launchArgs = @($cfg.args) }
+Write-UpdateLog "Relaunch helper waiting for PID $pidWait"
 Start-Sleep -Seconds 1
 while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
     Start-Sleep -Milliseconds 500
 }
-# Extra settle for AV / handle release — silent (no console countdown UI).
 Start-Sleep -Seconds 2
-if (Test-Path -LiteralPath $backup) {
+if ($backup -and (Test-Path -LiteralPath $backup)) {
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
 }
-# Critical: this script inherits env from the dying frozen app (SSL_CERT_FILE
-# → old _MEI*\certifi\cacert.pem). Clear those or the relaunched exe cannot TLS.
 foreach ($key in @(
     "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    "PYTHONHOME", "PYTHONPATH", "_MEIPASS2"
+    "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2"
 )) {
     Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
 }
+Get-ChildItem Env: -ErrorAction SilentlyContinue | Where-Object {
+    $_.Name -like "_PYI_*"
+} | ForEach-Object {
+    Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
+}
+$env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+if (-not $workdir) { $workdir = Split-Path -Parent $exe }
+Write-UpdateLog "Launching $exe"
 if (Test-Path -LiteralPath $exe) {
-    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+    if ($launchArgs.Count -gt 0) {
+        Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $workdir
+    } else {
+        Start-Process -FilePath $exe -WorkingDirectory $workdir
+    }
+} else {
+    Write-UpdateLog "FATAL: exe missing: $exe"
 }
 Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -964,16 +1168,7 @@ def _finalize_frozen_update_windows(
         script = _create_post_swap_relaunch_helper(
             old_exe, backup, old_exe.parent, os.getpid()
         )
-        _win_hidden_popen(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-WindowStyle", "Hidden",
-                "-File", str(script),
-            ],
-            cwd=str(old_exe.parent),
-        )
+        _win_start_ps1(script, cwd=str(old_exe.parent))
     except Exception as e:
         print(f"Failed to schedule relaunch helper: {e}")
         # Still leave the swapped exe in place; user can open it manually.
@@ -1078,7 +1273,150 @@ def _update_source_app(
     if progress_callback:
         progress_callback(100, 100, "Update complete!")
 
-    return (True, "Update installed successfully!\nPlease restart the application.")
+    try:
+        _schedule_relaunch_after_exit()
+    except Exception as e:
+        print(f"Failed to schedule relaunch: {e}")
+        return (True, "Update installed successfully!\nPlease restart the application.")
+    return (True,
+        "Update installed!\n\n"
+        "The application will now close and reopen."
+    )
+
+
+_SOURCE_RELAUNCH_PY = r'''
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+
+try:
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+except Exception:
+    pass
+
+cfg = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+pid = int(cfg["pid"])
+argv = [cfg["exe"]] + list(cfg.get("args") or [])
+cwd = cfg.get("cwd") or None
+log_path = Path(sys.argv[1]).parent / "_update_helper.log"
+
+
+def log(msg: str) -> None:
+    try:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
+
+
+def pid_alive(target: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, target)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(target, 0)
+        return True
+    except OSError:
+        return False
+
+
+log("Source relaunch waiting for PID %s" % pid)
+time.sleep(1)
+deadline = time.monotonic() + 120
+while time.monotonic() < deadline and pid_alive(pid):
+    time.sleep(0.3)
+time.sleep(1)
+log("Launching %s" % argv)
+env = os.environ.copy()
+drop = {
+    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2",
+}
+for k in list(env):
+    if k in drop or k.startswith("_PYI_"):
+        env.pop(k, None)
+orig_ld = os.environ.get("LD_LIBRARY_PATH_ORIG")
+if orig_ld is not None:
+    env["LD_LIBRARY_PATH"] = orig_ld
+else:
+    env.pop("LD_LIBRARY_PATH", None)
+env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+kw = dict(
+    cwd=cwd,
+    env=env,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    close_fds=True,
+)
+if sys.platform == "win32":
+    kw["creationflags"] = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+else:
+    kw["start_new_session"] = True
+subprocess.Popen(argv, **kw)
+try:
+    Path(sys.argv[1]).unlink()
+except OSError:
+    pass
+try:
+    Path(__file__).unlink()
+except OSError:
+    pass
+'''
+
+
+def _schedule_relaunch_after_exit() -> None:
+    """Wait for this PID to exit, then start the current app (source installs)."""
+    app_dir = get_app_dir()
+    pid = os.getpid()
+    if is_frozen():
+        launch_exe = get_executable_path()
+        extra: list = []
+        cwd = launch_exe.parent if launch_exe else app_dir
+    else:
+        launch_exe = Path(sys.executable)
+        app_py = app_dir / "app.py"
+        extra = [str(app_py)] if app_py.is_file() else [str(a) for a in sys.argv]
+        cwd = app_dir
+        if sys.platform == "win32" and launch_exe.name.lower() == "python.exe":
+            pythonw = launch_exe.with_name("pythonw.exe")
+            if pythonw.is_file():
+                launch_exe = pythonw
+    if launch_exe is None:
+        raise RuntimeError("Could not determine path to relaunch")
+
+    if sys.platform == "win32":
+        script = _create_post_swap_relaunch_helper(
+            launch_exe, None, app_dir, pid, extra_args=extra, cwd=cwd
+        )
+        _win_start_ps1(script, cwd=str(app_dir))
+        return
+
+    cfg = app_dir / "_update_relaunch.json"
+    write_secret_file(cfg, json.dumps({
+        "pid": int(pid),
+        "exe": str(launch_exe),
+        "args": extra,
+        "cwd": str(cwd),
+    }))
+    helper_py = app_dir / "_update_relaunch.py"
+    helper_py.write_text(_SOURCE_RELAUNCH_PY, encoding="utf-8", newline="\n")
+    subprocess.Popen(
+        [sys.executable, str(helper_py), str(cfg)],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(app_dir),
+        close_fds=True,
+        env=_env_for_external_helper(),
+    )
 
 
 def check_for_updates_async(callback: Callable[[bool, str, str], None]):

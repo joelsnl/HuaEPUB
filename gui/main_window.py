@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import threading
 import traceback
 from pathlib import Path
 
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self._worker_busy = False
         self._pending_drive_sync = False
         self._drive_sync_silent = True
+        self._exiting_for_update = False
         self._clipboard_last = ""
         self._clipboard_seen = set()
         self._http = create_http_session()
@@ -205,10 +208,11 @@ class MainWindow(QMainWindow):
             pass
         self.session.close()
         self._pending_drive_sync = False
-        self._stop_thread(drain_pending_sync=False)
+        wait_ms = 200 if getattr(self, "_exiting_for_update", False) else 5000
+        self._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
         event.accept()
 
-    def _stop_thread(self, drain_pending_sync: bool = True):
+    def _stop_thread(self, drain_pending_sync: bool = True, wait_ms: int = 5000):
         """Stop background worker. Must only be called from the GUI thread."""
         if QThread.currentThread() is not QApplication.instance().thread():
             # Never wait() from inside the worker thread
@@ -222,9 +226,9 @@ class MainWindow(QMainWindow):
         if thread is not None:
             if thread.isRunning():
                 thread.quit()
-                if not thread.wait(5000):
+                if not thread.wait(max(0, int(wait_ms))):
                     thread.terminate()
-                    thread.wait(1000)
+                    thread.wait(min(1000, max(0, int(wait_ms))))
             if worker is not None:
                 worker.deleteLater()
             thread.deleteLater()
@@ -1266,8 +1270,20 @@ class MainWindow(QMainWindow):
                 message
                 or "Update installed.\nThe application will now close and reopen.",
             )
-            # Helper waits for this PID to exit before swapping the binary.
-            QApplication.instance().quit()
+            self._exiting_for_update = True
+            self.close()
+            app = QApplication.instance()
+            if app is None:
+                os._exit(0)
+            app.quit()
+            # Helpers wait for this PID. Qt may tear down timers with the
+            # window; a daemon thread still force-exits if something hangs.
+            def _exit_soon():
+                import time
+                time.sleep(2.5)
+                os._exit(0)
+
+            threading.Thread(target=_exit_soon, daemon=True).start()
             return
         self.progress.set_status(message or "Update failed")
         QMessageBox.warning(
