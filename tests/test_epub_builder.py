@@ -1,10 +1,13 @@
 """Offline tests for core.epub_builder."""
 
 import hashlib
+from pathlib import Path
 
+import pytest
 from ebooklib import epub
 
 from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder, VOLUME_PREFIX_RE
+from core.parser import Chapter, NovelInfo
 
 
 def make_epub_chapter(title):
@@ -104,3 +107,36 @@ class TestVolumeRegex:
     def test_non_matches(self):
         for title in ['第一章 开始', 'Chapter 5', 'Prologue']:
             assert not VOLUME_PREFIX_RE.match(title), title
+
+
+class TestAtomicWrite:
+    def _info_chapters(self):
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content="<p>Hello there.</p>"),
+            Chapter(title="Chapter 2", url="https://example.com/2", content="<p>More words.</p>"),
+        ]
+        return info, chapters
+
+    def test_success_leaves_no_tmp(self, tmp_path):
+        dest = tmp_path / "novel.epub"
+        info, chapters = self._info_chapters()
+        EPUBBuilder().build(info, chapters, str(dest))
+        assert dest.is_file()
+        assert dest.stat().st_size > 0
+        assert not (tmp_path / "novel.epub.tmp").exists()
+
+    def test_failure_does_not_clobber_existing(self, tmp_path, monkeypatch):
+        dest = tmp_path / "novel.epub"
+        dest.write_bytes(b"good-old-epub")
+        info, chapters = self._info_chapters()
+
+        def boom(path, book, opts):
+            Path(path).write_bytes(b"partial")
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("core.epub_builder.epub.write_epub", boom)
+        with pytest.raises(RuntimeError, match="disk full"):
+            EPUBBuilder().build(info, chapters, str(dest))
+        assert dest.read_bytes() == b"good-old-epub"
+        assert not (tmp_path / "novel.epub.tmp").exists()

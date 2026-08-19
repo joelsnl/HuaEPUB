@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 from core import updater
+from core.updater import SOURCE_UPDATE_ITEMS
 
 _GITHUB_SUMS = (
     "https://github.com/joelsnl/HuaEPUB/releases/download/v9.9.9/SHA256SUMS.txt"
@@ -248,3 +249,10 @@ class TestPostSwapRelaunchHelper:
         assert "Start-Process" in text
         assert "SSL_CERT_FILE" in text
         assert '"pid": 4242' in (tmp_path / "_update_relaunch.json").read_text(encoding="utf-8")
+
+
+class TestSourceUpdateItems:
+    def test_includes_gui(self):
+        assert "gui" in SOURCE_UPDATE_ITEMS
+        assert "core" in SOURCE_UPDATE_ITEMS
+        assert "app.py" in SOURCE_UPDATE_ITEMS

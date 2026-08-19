@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.cache import NovelCache
 from core.cleaner import ContentCleaner
@@ -27,6 +27,53 @@ from core.security import safe_epub_basename
 
 class DownloadCancelled(Exception):
     """Raised when the user cancels a download."""
+
+
+@dataclass
+class EpubBuildResult:
+    """Outcome of phase-2 EPUB build (translation + write)."""
+    output_path: str
+    translation_warnings: List[Tuple[str, int]] = field(default_factory=list)
+    polish_cancelled: bool = False
+
+
+def format_completion_notes(
+    failed_chapters: Optional[List[str]] = None,
+    translation_warnings: Optional[List[Tuple[str, int]]] = None,
+    polish_cancelled: bool = False,
+) -> str:
+    """Extra lines for the completion dialog. Empty if the run was clean."""
+    parts: List[str] = []
+    if polish_cancelled:
+        parts.append(
+            "Polish was stopped — EPUB saved with machine translation "
+            "(already-polished sentences were kept)."
+        )
+    if failed_chapters:
+        parts.append(f"{len(failed_chapters)} chapter(s) had placeholders.")
+    if translation_warnings:
+        parts.append(
+            f"{len(translation_warnings)} chapter(s) still have significant Chinese."
+        )
+        for title, count in translation_warnings[:8]:
+            label = (title[:50] + "…") if len(title) > 50 else title
+            parts.append(f"  • {label}: {count} chars")
+        extra = len(translation_warnings) - 8
+        if extra > 0:
+            parts.append(f"  • … and {extra} more")
+    return "\n".join(parts)
+
+
+def eta_from_network_samples(
+    network_elapsed: float,
+    network_done: int,
+    network_remaining: int,
+) -> str:
+    """ETA text from uncached/network samples only. Empty until we have a sample."""
+    if network_done < 1 or network_remaining <= 0 or network_elapsed <= 0:
+        return ""
+    avg = network_elapsed / network_done
+    return f"  (ETA {format_eta(avg * network_remaining)})"
 
 
 StatusFn = Callable[[str], None]
@@ -178,12 +225,22 @@ def download_chapters_with_cache(
     """
     Sequential chapter download with cache + retry.
     Returns titles still failed after retry. Raises DownloadCancelled.
+
+    ETA is based only on uncached (network) chapters so library updates that
+    reuse hundreds of cached chapters do not report "ETA 0s".
     """
     total = len(chapters)
     delay = getattr(parser, "request_delay", 2.0)
     failed: List[Chapter] = []
-    start_time = time.monotonic()
     paused_for = 0.0
+
+    cached_html: List[Optional[str]] = [
+        (cache.get_chapter(ch.url) if use_cache else None) for ch in chapters
+    ]
+    uncached_total = sum(1 for hit in cached_html if hit is None)
+    uncached_done = 0
+    cached_done = 0
+    network_elapsed = 0.0
 
     for idx, chapter in enumerate(chapters):
         paused_for += control.wait_while_paused(set_status)
@@ -192,20 +249,27 @@ def download_chapters_with_cache(
 
         set_progress((idx + 1) / total)
 
-        eta_text = ""
-        if idx >= 3:
-            elapsed = max(0.001, (time.monotonic() - start_time) - paused_for)
-            avg = elapsed / idx
-            eta_text = f"  (ETA {format_eta(avg * (total - idx))})"
-
-        cached = cache.get_chapter(chapter.url) if use_cache else None
-        if cached:
-            chapter.content = cached
-            set_status(f"Chapter [{idx + 1}/{total}] from cache{eta_text}")
+        remaining_uncached = uncached_total - uncached_done
+        eta_text = eta_from_network_samples(
+            network_elapsed, uncached_done, remaining_uncached
+        )
+        hit = cached_html[idx]
+        if hit is not None:
+            chapter.content = hit
+            cached_done += 1
+            extra = ""
+            if uncached_total:
+                extra = f" · {uncached_done}/{uncached_total} new"
+            set_status(f"Cached {cached_done}/{total}{extra}{eta_text}")
             control.persist_job()
             continue
 
-        set_status(f"Downloading [{idx + 1}/{total}]: {chapter.title[:40]}{eta_text}")
+        set_status(
+            f"Downloading [{uncached_done + 1}/{uncached_total}]: "
+            f"{chapter.title[:40]}{eta_text}"
+        )
+        t0 = time.monotonic()
+        paused_here = 0.0
         try:
             chapter.content = parser.get_chapter_content(chapter)
             if use_cache:
@@ -216,7 +280,10 @@ def download_chapters_with_cache(
 
         control.persist_job()
         if idx < total - 1:
-            paused_for += control.interruptible_delay(delay, set_status)
+            paused_here += control.interruptible_delay(delay, set_status)
+        paused_for += paused_here
+        uncached_done += 1
+        network_elapsed += max(0.0, (time.monotonic() - t0) - paused_here)
 
     still_failed: List[str] = []
     if failed:
@@ -312,7 +379,7 @@ def build_epub(
     ollama_url: str = "http://127.0.0.1:11434",
     ollama_model: str = "qwen2.5:3b",
     ollama_polish: bool = False,
-):
+) -> EpubBuildResult:
     """Phase 2: build EPUB (optionally with translation). Progress 0..1 within this phase."""
     polish = bool(ollama_polish) and backend != "ollama"
     if translate and polish:
@@ -342,19 +409,26 @@ def build_epub(
         def progress_cb(current, total_steps, status):
             if control.cancel_requested:
                 translator.cancel()
-                return
             set_progress(current / max(total_steps, 1))
             set_status(status)
 
         builder.build_with_translation(info, chapters, output_path, progress_cb)
-    else:
-        builder = EPUBBuilder(cleaner=cleaner, image_cache=cache)
+        return EpubBuildResult(
+            output_path=output_path,
+            translation_warnings=builder.get_translation_warnings(),
+            polish_cancelled=bool(builder.polish_cancelled),
+        )
 
-        def progress_cb(current, total_steps, status):
-            set_progress(current / max(total_steps, 1))
-            set_status(status)
+    builder = EPUBBuilder(cleaner=cleaner, image_cache=cache)
 
-        builder.build(info, chapters, output_path, progress_cb)
+    def progress_cb(current, total_steps, status):
+        if control.cancel_requested:
+            raise DownloadCancelled()
+        set_progress(current / max(total_steps, 1))
+        set_status(status)
+
+    builder.build(info, chapters, output_path, progress_cb)
+    return EpubBuildResult(output_path=output_path)
 
 
 def run_single_download(
@@ -378,10 +452,10 @@ def run_single_download(
     ollama_url: str = "http://127.0.0.1:11434",
     ollama_model: str = "qwen2.5:3b",
     ollama_polish: bool = False,
-) -> List[str]:
+) -> Tuple[List[str], EpubBuildResult]:
     """
     Full single-novel download + EPUB. Progress 0..1 overall.
-    Returns failed chapter titles. Raises DownloadCancelled.
+    Returns (failed chapter titles, build result). Raises DownloadCancelled.
     """
     book_key = info.source_url if info else ""
 
@@ -402,7 +476,7 @@ def run_single_download(
     def set_prog_build(f: float):
         set_progress(0.5 + f * 0.5)
 
-    build_epub(
+    build_result = build_epub(
         control=control,
         cache=cache,
         info=info,
@@ -423,4 +497,4 @@ def run_single_download(
     record_successful_download(
         library_store, info, chapters, translated_title, output_path
     )
-    return failed
+    return failed, build_result

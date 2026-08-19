@@ -21,7 +21,7 @@ from core.download_job import (
     chapters_from_job, chapters_to_job, clear_job, load_job,
     novel_info_from_job, novel_info_to_job, save_job,
 )
-from core.download_runner import downloads_folder, epub_path
+from core.download_runner import downloads_folder, epub_path, format_completion_notes
 from core.logger import setup_logging
 from core.notify import notify
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
@@ -69,6 +69,8 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker = None
         self._worker_busy = False
+        self._pending_drive_sync = False
+        self._drive_sync_silent = True
         self._clipboard_last = ""
         self._clipboard_seen = set()
         self._http = create_http_session()
@@ -117,7 +119,7 @@ class MainWindow(QMainWindow):
         self._clipboard_timer.timeout.connect(self._poll_clipboard)
         self._clipboard_timer.start(3000)
         if self.session.settings.get("drive_sync_enabled"):
-            QTimer.singleShot(2500, lambda: self._start_drive_sync(silent=True))
+            QTimer.singleShot(2500, self._start_drive_sync_silent)
         if self.session.library_store.get_library():
             QTimer.singleShot(4000, self.library.refresh)
 
@@ -132,7 +134,7 @@ class MainWindow(QMainWindow):
 
         lib_m = mb.addMenu("Library")
         lib_m.addAction("Check for updates", lambda: self.library.check_requested.emit())
-        lib_m.addAction("Sync Drive now", lambda: self._start_drive_sync(silent=False))
+        lib_m.addAction("Sync Drive now", self._drive_sync_now)
         lib_m.addAction("Reset library…", self._reset_library)
 
         help_m = mb.addMenu("Help")
@@ -162,7 +164,7 @@ class MainWindow(QMainWindow):
         self.library.remove_selected.connect(self._remove_library)
         self.library.refresh_requested.connect(self.library.refresh)
         self.library.drive_connect.connect(self._drive_connect)
-        self.library.drive_sync.connect(lambda: self._start_drive_sync(silent=False))
+        self.library.drive_sync.connect(self._drive_sync_now)
         self.library.drive_disconnect.connect(self._drive_disconnect)
         self.library.drive_change_folder.connect(self._drive_change_folder)
         self.library.drive_open_folder.connect(self._drive_open_folder)
@@ -202,10 +204,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.session.close()
-        self._stop_thread()
+        self._pending_drive_sync = False
+        self._stop_thread(drain_pending_sync=False)
         event.accept()
 
-    def _stop_thread(self):
+    def _stop_thread(self, drain_pending_sync: bool = True):
         """Stop background worker. Must only be called from the GUI thread."""
         if QThread.currentThread() is not QApplication.instance().thread():
             # Never wait() from inside the worker thread
@@ -216,16 +219,17 @@ class MainWindow(QMainWindow):
         self._thread = None
         self._worker = None
         self._worker_busy = False
-        if thread is None:
-            return
-        if thread.isRunning():
-            thread.quit()
-            if not thread.wait(5000):
-                thread.terminate()
-                thread.wait(1000)
-        if worker is not None:
-            worker.deleteLater()
-        thread.deleteLater()
+        if thread is not None:
+            if thread.isRunning():
+                thread.quit()
+                if not thread.wait(5000):
+                    thread.terminate()
+                    thread.wait(1000)
+            if worker is not None:
+                worker.deleteLater()
+            thread.deleteLater()
+        if drain_pending_sync and self._pending_drive_sync:
+            QTimer.singleShot(0, self._start_drive_sync_silent)
 
     def _run_worker(self, worker) -> bool:
         """
@@ -240,7 +244,7 @@ class MainWindow(QMainWindow):
             return False
         if self._worker_busy and self._thread and self._thread.isRunning():
             return False
-        self._stop_thread()
+        self._stop_thread(drain_pending_sync=False)
         self._thread = QThread()  # no parent — avoids cross-thread parenting issues
         self._worker = worker
         self._worker_busy = True
@@ -295,11 +299,9 @@ class MainWindow(QMainWindow):
         if on:
             self.session.control.is_paused = False
         self.progress.set_controls_active(on, paused=False)
-        self.tabs.setEnabled(not on or True)  # keep tabs usable
         self.single.set_fetch_enabled(not on)
         self.multi.set_busy(on)
-        if not on:
-            self.progress.set_download_enabled(bool(self.single.chapters))
+        self.progress.set_download_enabled(bool(self.single.chapters) and not on)
 
     # ------------------------------------------------------------------
     # Resume banner
@@ -480,6 +482,8 @@ class MainWindow(QMainWindow):
         self.progress.set_status(f"Ready — {len(chapters)} chapters")
         self._finish_worker_later()
     def _start_single_download(self):
+        if self._worker_busy or self.session.control.is_downloading:
+            return
         if not self.single.novel_info or not self.single.chapters:
             return
         selected = self.single.selected_chapters()
@@ -534,17 +538,19 @@ class MainWindow(QMainWindow):
             self._set_downloading(False)
             return
 
-    @Slot(str, list)
-    def _single_done(self, path: str, failed: list):
+    @Slot(str, list, list, bool)
+    def _single_done(self, path: str, failed: list, warnings: list = None, polish_cancelled: bool = False):
         self._set_downloading(False)
         self.progress.set_progress(1.0, f"Done! Saved to: {path}")
+        notes = format_completion_notes(failed, warnings or [], polish_cancelled)
         msg = f"EPUB saved to:\n{path}"
-        if failed:
-            msg += f"\n\n{len(failed)} chapter(s) had placeholders."
-        QMessageBox.information(self, "Success", msg)
+        if notes:
+            msg += "\n\n" + notes
+        title = "Saved with warnings" if notes else "Success"
+        QMessageBox.information(self, title, msg)
         self.library.refresh()
+        self._queue_drive_sync()
         self._finish_worker_later()
-        self._maybe_drive_push(path)
 
     @Slot()
     def _download_cancelled(self):
@@ -626,6 +632,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(80, self._multi_fetch_next)
 
     def _start_multi_download(self):
+        if self._worker_busy or self.session.control.is_downloading:
+            return
         novels = self.multi.fetched_novels()
         if not novels:
             return
@@ -681,6 +689,7 @@ class MainWindow(QMainWindow):
             pending = [n for n in job.get("novels") or [] if not n.get("done")]
             if pending:
                 self.resume_banner.show_job(job, self.session.cache)
+        self._queue_drive_sync()
         self._finish_worker_later()
 
     # ------------------------------------------------------------------
@@ -727,7 +736,7 @@ class MainWindow(QMainWindow):
         self._finish_worker_later()
 
     def _start_library_update(self, entry):
-        if self.session.control.is_downloading:
+        if self.session.control.is_downloading or self._worker_busy:
             return
         self._persist_settings()
         self._set_downloading(True)
@@ -751,6 +760,7 @@ class MainWindow(QMainWindow):
         self.progress.set_progress(1.0, "Library updated")
         QMessageBox.information(self, "Library Updated", msg)
         self.library.refresh()
+        self._queue_drive_sync()
         self._finish_worker_later()
 
     @Slot(str)
@@ -760,6 +770,8 @@ class MainWindow(QMainWindow):
         self._finish_worker_later()
 
     def _start_library_update_all(self):
+        if self._worker_busy or self.session.control.is_downloading:
+            return
         entries = [
             e for e in self.session.library_store.get_library()
             if (self.library.check_status.get(e.source_url) or {}).get("state") == "update"
@@ -816,6 +828,7 @@ class MainWindow(QMainWindow):
             pending = [e for e in job.get("entries") or [] if not e.get("done")]
             if pending:
                 self.resume_banner.show_job(job, self.session.cache)
+        self._queue_drive_sync()
         self._finish_worker_later()
 
     def _open_library_url(self, url: str):
@@ -920,8 +933,8 @@ class MainWindow(QMainWindow):
             self.library.drive_status.setText(f"Connected: {email}")
             self.progress.set_status(f"Drive connected: {email}")
             # Finish connect thread first, then start sync (don't kill sync with stop)
+            self._queue_drive_sync()
             self._finish_worker_later()
-            QTimer.singleShot(100, lambda: self._start_drive_sync(silent=True))
         else:
             QMessageBox.critical(self, "Drive", err or "Connect failed")
             self._finish_worker_later()
@@ -935,12 +948,15 @@ class MainWindow(QMainWindow):
 
     def _start_drive_sync(self, silent: bool = True):
         if not self.library.drive_enabled.isChecked():
+            self._pending_drive_sync = False
             return
-        if self._worker_busy and self._thread and self._thread.isRunning():
-            self.progress.set_status("Sync already running…")
-            return
-        self._persist_settings()
         self._drive_sync_silent = silent
+        if self._worker_busy and self._thread and self._thread.isRunning():
+            self._pending_drive_sync = True
+            self.progress.set_status("Drive sync queued…")
+            return
+        self._pending_drive_sync = False
+        self._persist_settings()
         self.library.set_drive_busy(True)
         self.progress.set_status("Syncing with Google Drive…")
         self.library.drive_status.setText("Syncing…")
@@ -951,8 +967,22 @@ class MainWindow(QMainWindow):
             (worker.finished, self._on_drive_sync_finished),
         ):
             self.library.set_drive_busy(False)
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self._pending_drive_sync = True
+            self.progress.set_status("Drive sync queued…")
             return
+
+    @Slot()
+    def _start_drive_sync_silent(self):
+        self._start_drive_sync(silent=getattr(self, "_drive_sync_silent", True))
+
+    @Slot()
+    def _drive_sync_now(self):
+        self._start_drive_sync(silent=False)
+
+    def _queue_drive_sync(self):
+        if self.library.drive_enabled.isChecked():
+            self._pending_drive_sync = True
+            self._drive_sync_silent = True
 
     @Slot(str)
     def _on_drive_sync_progress(self, msg: str):
@@ -978,7 +1008,10 @@ class MainWindow(QMainWindow):
                 pass
             n = len(self.session.library_store.get_library())
             self.library.show_all()
-            self.tabs.setCurrentWidget(self.library)
+            if not silent:
+                self.tabs.setCurrentWidget(self.library)
+            else:
+                self.library.refresh()
             self.progress.set_status(summary or f"Drive sync done — {n} novel(s)")
             if not silent:
                 extra = ""
@@ -1036,7 +1069,7 @@ class MainWindow(QMainWindow):
                 f"{label} — {novels} novel(s), {epubs} EPUB(s) on Drive"
             )
             # Pull immediately so Library fills from this folder
-            QTimer.singleShot(100, lambda: self._start_drive_sync(silent=False))
+            QTimer.singleShot(100, self._drive_sync_now)
         except Exception as e:
             QMessageBox.critical(self, "Drive folder", str(e))
 
@@ -1053,10 +1086,6 @@ class MainWindow(QMainWindow):
 
     def _drive_setup_help(self):
         QMessageBox.information(self, "Drive OAuth setup", oauth_setup_instructions())
-
-    def _maybe_drive_push(self, path: str):
-        if self.library.drive_enabled.isChecked():
-            QTimer.singleShot(500, lambda: self._start_drive_sync(silent=True))
 
     # ------------------------------------------------------------------
     # Misc

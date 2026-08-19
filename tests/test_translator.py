@@ -102,6 +102,28 @@ class TestPersistentCache:
         assert cache.get_translation('你好', 'google') == 'Hello'
 
 
+class TestCancelLatch:
+    def test_translate_texts_does_not_clear_cancel(self):
+        t = make_translator()
+        t.cancel()
+
+        def boom(_text):
+            raise AssertionError("cancelled translator must not hit the network")
+
+        t._request_translation = boom
+        results = t.translate_texts(['你好世界'])
+        assert results == ['你好世界']
+        assert t._cancel_requested is True
+
+    def test_retry_loop_stops_when_cancelled(self):
+        t = make_translator()
+        t.cancel()
+        texts = [f'中文段落测试内容第{i}句话继续' for i in range(4)]
+        results = t.translate_texts_with_retry(texts, max_retry_passes=8)
+        assert results == texts
+        assert t._cancel_requested is True
+
+
 class TestBackends:
     def test_invalid_backend_falls_back_to_google(self):
         t = make_translator(backend='nonsense')

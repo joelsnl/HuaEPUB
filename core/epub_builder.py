@@ -28,6 +28,24 @@ from core.utils import format_eta
 _http_session = create_http_session()
 
 # Volume prefix detection for TOC grouping (Chinese and translated forms)
+def write_epub_atomic(output_path: str, book) -> None:
+    """Write an EPUB to a sibling .tmp file, then replace the destination."""
+    dest = Path(output_path)
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        epub.write_epub(str(tmp), book, {})
+        tmp.replace(dest)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 VOLUME_PREFIX_RE = re.compile(
     r'^\s*('
     r'第\s*[0-9零一二三四五六七八九十百千两]+\s*[卷部集]'
@@ -178,7 +196,7 @@ class EPUBBuilder:
         
         print(f"Writing EPUB to: {output_path}")
         try:
-            epub.write_epub(output_path, book, {})
+            write_epub_atomic(output_path, book)
             file_size = os.path.getsize(output_path)
             print(f"EPUB written successfully: {file_size} bytes ({file_size/1024:.1f} KB)")
         except Exception as e:
@@ -328,6 +346,7 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         
         # Track chapters with remaining Chinese after translation
         self.chapters_with_chinese: List[Tuple[str, int]] = []
+        self.polish_cancelled = False
     
     def build_with_translation(
         self,
@@ -346,6 +365,7 @@ class TranslatedEPUBBuilder(EPUBBuilder):
             return self.build(novel_info, chapters, output_path, progress_callback)
         
         self.chapters_with_chinese = []
+        self.polish_cancelled = False
         total_steps = len(chapters) * 2  # Clean + Translate phases
         current_step = 0
         
@@ -404,40 +424,62 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         if all_texts:
             texts_to_translate = [t[2] for t in all_texts]
             
-            # ETA state: clock starts when a pass actually begins translating
-            # (not during retry cooldown), and resets each retry pass.
-            pass_start: Optional[float] = time.monotonic()
+            # ETA: clock starts on the first *network* translation this pass,
+            # not on cache-hit bursts (library updates reuse most segments).
+            net_clock: Optional[float] = None
+            requests_at_clock = 0
             retry_pass_num = 0
-            
+
+            def _network_requests() -> int:
+                stats = getattr(self.translator, "stats", None) or {}
+                try:
+                    return int(stats.get("requests", 0) or 0)
+                except Exception:
+                    return 0
+
             def translate_progress(completed, total):
-                nonlocal current_step, pass_start
+                nonlocal current_step, net_clock, requests_at_clock
                 if not progress_callback or total <= 0:
                     return
-                if pass_start is None:
-                    pass_start = time.monotonic()
-                
+
                 eta = ""
-                # Concurrent workers finish in bursts — wait for enough samples.
-                min_samples = min(20, max(3, total // 10))
-                if completed >= min_samples and completed < total:
-                    elapsed = time.monotonic() - pass_start
-                    if elapsed > 0:
-                        rate = completed / elapsed
-                        eta = f"  (ETA {format_eta((total - completed) / rate)})"
-                
+                requests = _network_requests()
+                if requests > 0:
+                    if net_clock is None:
+                        net_clock = time.monotonic()
+                        requests_at_clock = max(0, requests - 1)
+                    elapsed = time.monotonic() - net_clock
+                    net_done = max(0, requests - requests_at_clock)
+                    min_samples = min(10, max(2, total // 20))
+                    remaining = total - completed
+                    if net_done >= min_samples and remaining > 0 and elapsed > 0:
+                        eta = f"  (ETA {format_eta(remaining * (elapsed / net_done))})"
+
+                hits = 0
+                stats = getattr(self.translator, "stats", None) or {}
+                try:
+                    hits = int(stats.get("cache_hits", 0) or 0)
+                except Exception:
+                    pass
+                cache_note = ""
+                if hits and completed:
+                    cache_note = f" · {min(hits, completed)} cached"
+
                 pct = (completed / total) * len(chapters)
                 if retry_pass_num > 0:
-                    status = f"Retry pass {retry_pass_num}: {completed}/{total}{eta}"
+                    status = (
+                        f"Retry pass {retry_pass_num}: {completed}/{total}"
+                        f"{cache_note}{eta}"
+                    )
                 else:
-                    status = f"Translating: {completed}/{total}{eta}"
+                    status = f"Translating: {completed}/{total}{cache_note}{eta}"
                 progress_callback(int(len(chapters) + pct), total_steps, status)
-            
+
             def on_retry_pass(pass_number, remaining, total_segments, cooldown):
-                nonlocal pass_start, retry_pass_num
+                nonlocal net_clock, retry_pass_num, requests_at_clock
                 retry_pass_num = pass_number
-                # Don't count the cooldown toward ETA — clock starts on first
-                # progress tick after work resumes.
-                pass_start = None
+                net_clock = None
+                requests_at_clock = _network_requests()
                 if not progress_callback:
                     return
                 if cooldown > 0:
@@ -466,6 +508,11 @@ class TranslatedEPUBBuilder(EPUBBuilder):
             else:
                 translated = self.translator.translate_texts(texts_to_translate, translate_progress)
 
+            # Cancel during Chinese→English: do not write a half-translated EPUB.
+            if getattr(self.translator, "_cancel_requested", False):
+                from core.download_runner import DownloadCancelled
+                raise DownloadCancelled()
+
             if self.polish and hasattr(self.translator, 'polish_texts'):
                 polish_start = time.monotonic()
 
@@ -490,6 +537,12 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                 translated = self.translator.polish_texts(
                     translated, polish_progress
                 )
+                if getattr(self.translator, "_cancel_requested", False):
+                    self.polish_cancelled = True
+                    print(
+                        "Polish cancelled — packaging EPUB with machine translation "
+                        "(already-polished spans kept)."
+                    )
             
             # Apply translations back. Content translations are grouped per
             # chapter and applied at the text-node level (not raw string

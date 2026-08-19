@@ -13,6 +13,7 @@ from core.download_runner import (
     downloads_folder,
     epub_path,
     epub_translate_kwargs,
+    format_completion_notes,
     record_successful_download,
     run_single_download,
     translator_backend_kwargs,
@@ -24,7 +25,7 @@ from core.parser import Chapter, NovelInfo, get_parser_for_url
 
 class SingleDownloadWorker(QObject):
     progress = Signal(float, str)
-    finished_ok = Signal(str, list)  # output_path, failed_titles
+    finished_ok = Signal(str, list, list, bool)  # path, failed, warnings, polish_cancelled
     finished_cancel = Signal()
     finished_error = Signal(str)
 
@@ -48,7 +49,7 @@ class SingleDownloadWorker(QObject):
             def set_progress(f):
                 self.progress.emit(f, "")
 
-            failed = run_single_download(
+            failed, build_result = run_single_download(
                 control=ctrl,
                 cache=self.session.cache,
                 library_store=self.session.library_store,
@@ -69,7 +70,12 @@ class SingleDownloadWorker(QObject):
             ctrl.active_job = None
             title = self.translated_title or (self.info.title if self.info else "Novel")
             notify("Download complete", f"{title}\nSaved to {Path(self.output_path).name}")
-            self.finished_ok.emit(self.output_path, failed)
+            self.finished_ok.emit(
+                self.output_path,
+                failed,
+                build_result.translation_warnings,
+                build_result.polish_cancelled,
+            )
         except DownloadCancelled:
             self.finished_cancel.emit()
         except Exception as e:
@@ -142,7 +148,7 @@ class MultiDownloadWorker(QObject):
                     def set_prog_b(f, _ni=ni, _tn=total):
                         self.progress.emit((_ni + 0.5 + f * 0.5) / _tn, "")
 
-                    build_epub(
+                    build_result = build_epub(
                         control=ctrl,
                         cache=self.session.cache,
                         info=info,
@@ -164,12 +170,18 @@ class MultiDownloadWorker(QObject):
                             if n.get("source_url") == info.source_url:
                                 n["done"] = True
                         ctrl.persist_job(force=True)
-                    results.append((title, out, True, None, len(failed)))
+                    notes = format_completion_notes(
+                        failed, build_result.translation_warnings,
+                        build_result.polish_cancelled,
+                    )
+                    results.append((title, out, True, notes, len(failed)))
                     self.novel_status.emit(
                         ni,
                         "Done" if not failed else f"Done ({len(failed)} ch. failed)",
                         "green",
                     )
+                    if build_result.polish_cancelled:
+                        break
                 except DownloadCancelled:
                     raise
                 except Exception as e:
@@ -192,6 +204,8 @@ class MultiDownloadWorker(QObject):
                     line = Path(path).name
                     if failed_ch:
                         line += f" ({failed_ch} failed)"
+                    if err:
+                        line += f"\n    {err}"
                     summary += f"  • {line}\n"
                 else:
                     summary += f"  • {title[:40]}: {err}\n"
@@ -298,7 +312,7 @@ class LibraryUpdateWorker(QObject):
             def set_prog_b(f):
                 self.progress.emit(0.5 + f * 0.5, "")
 
-            build_epub(
+            build_result = build_epub(
                 control=ctrl,
                 cache=self.session.cache,
                 info=info,
@@ -317,8 +331,11 @@ class LibraryUpdateWorker(QObject):
             clear_job(self.session.data_dir)
             ctrl.active_job = None
             msg = f"Updated {display}\n+{len(new_only)} new · {len(chapters)} total\n{out}"
-            if failed:
-                msg += f"\n\n{len(failed)} chapter(s) failed."
+            notes = format_completion_notes(
+                failed, build_result.translation_warnings, build_result.polish_cancelled
+            )
+            if notes:
+                msg += "\n\n" + notes
             notify("Library update complete", f"{display}: +{len(new_only)} chapters")
             self.finished_ok.emit(msg)
         except DownloadCancelled:
@@ -510,7 +527,7 @@ class LibraryUpdateAllWorker(QObject):
                     def set_prog_b(f, _i=idx, _t=total):
                         self.progress.emit((_i + 0.5 + f * 0.5) / _t, "")
 
-                    build_epub(
+                    build_result = build_epub(
                         control=ctrl,
                         cache=self.session.cache,
                         info=info,
@@ -532,9 +549,15 @@ class LibraryUpdateAllWorker(QObject):
                                 e["done"] = True
                         ctrl.persist_job(force=True)
                     detail = f"+{len(new_only)} → {Path(out).name}"
-                    if failed:
-                        detail += f" ({len(failed)} failed)"
+                    notes = format_completion_notes(
+                        failed, build_result.translation_warnings,
+                        build_result.polish_cancelled,
+                    )
+                    if notes:
+                        detail += f" ({notes.splitlines()[0]})"
                     results.append((display, True, detail))
+                    if build_result.polish_cancelled:
+                        break
                 except DownloadCancelled:
                     raise
                 except Exception as e:

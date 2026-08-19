@@ -36,6 +36,10 @@ from core.security import (
     write_update_helper_config,
 )
 
+SOURCE_UPDATE_ITEMS = [
+    'app.py', 'core', 'gui', 'parsers', 'requirements.txt', 'README.md', 'build.py',
+]
+
 # Current version - UPDATE THIS WITH EACH RELEASE
 __version__ = "2.9.0"
 
@@ -1040,7 +1044,7 @@ def _update_source_app(
     if progress_callback:
         progress_callback(80, 100, "Installing update...")
 
-    items_to_update = ['app.py', 'core', 'parsers', 'requirements.txt', 'README.md']
+    items_to_update = list(SOURCE_UPDATE_ITEMS)
 
     backup_dir = app_dir / '.update_backup'
     if backup_dir.exists():

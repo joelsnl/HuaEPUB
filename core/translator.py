@@ -578,8 +578,12 @@ class GoogleTranslator:
         """
         if not texts:
             return []
-        
-        self._cancel_requested = False
+
+        # Keep a latched cancel so DownloadControl → cancel() is not lost
+        # at the start of a pass (previously this reset mid-run cancel).
+        if self._cancel_requested:
+            return list(texts)
+
         self.total = len(texts)
         self.completed = 0
         self.failed_texts = []
