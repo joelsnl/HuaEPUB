@@ -70,7 +70,8 @@ class EPUBBuilder:
         novel_info: NovelInfo,
         chapters: List[Chapter],
         output_path: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        skip_html_clean: bool = False,
     ) -> str:
         """
         Build an EPUB file from chapters.
@@ -80,6 +81,8 @@ class EPUBBuilder:
             chapters: List of chapters with content loaded
             output_path: Where to save the EPUB
             progress_callback: Optional callback(current, total, status)
+            skip_html_clean: If True, do not run ContentCleaner again
+                (translated builds already cleaned before applying translations).
             
         Returns:
             Path to the created EPUB file
@@ -144,7 +147,7 @@ class EPUBBuilder:
             
             # Clean content
             content = chapter.content
-            if self.cleaner:
+            if self.cleaner and not skip_html_clean:
                 content = self.cleaner.clean_html(content)
             
             # Validate content isn't empty after cleaning
@@ -587,7 +590,10 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         print(f"Building EPUB with translated content...")
         print(f"  Final title: {novel_info.title}")
         print(f"  Final author: {novel_info.author}")
-        return self.build(novel_info, chapters, output_path, progress_callback)
+        return self.build(
+            novel_info, chapters, output_path, progress_callback,
+            skip_html_clean=True,
+        )
     
     def _verify_translations(self, chapters: List[Chapter]):
         """

@@ -518,7 +518,9 @@ class GoogleTranslator:
                     with self.cache_lock:
                         self.cache[cache_key] = translated
                     if self.persistent_cache is not None:
-                        self.persistent_cache.put_translation(cache_key, translated, self._cache_backend())
+                        self.persistent_cache.put_translation(
+                            cache_key, translated, self._cache_backend(), commit=False
+                        )
                     
                     with self.stats_lock:
                         self.stats['requests'] += 1
@@ -560,7 +562,15 @@ class GoogleTranslator:
             self.completed += 1
             if self.progress_callback and self.total > 0:
                 self.progress_callback(self.completed, self.total)
-    
+
+    def _flush_persistent_cache(self):
+        cache = self.persistent_cache
+        if cache is not None and hasattr(cache, "flush"):
+            try:
+                cache.flush()
+            except Exception:
+                pass
+
     def translate_texts(
         self,
         texts: List[str],
@@ -608,6 +618,7 @@ class GoogleTranslator:
                     index = futures[future]
                     results[index] = texts[index]
         
+        self._flush_persistent_cache()
         return results
     
     def translate_texts_with_retry(
@@ -797,6 +808,7 @@ class GoogleTranslator:
             self.max_retries = old_max_retries
             
             print(f"  ✓ Pass {retry_pass} done: {improved}/{len(failed_indices)} newly translated")
+            self._flush_persistent_cache()
         
         # Final summary
         final_failed = sum(
@@ -904,10 +916,13 @@ class GoogleTranslator:
                 with self.cache_lock:
                     self.cache[f'{cache_backend}\0{src}'] = out
                 if self.persistent_cache is not None:
-                    self.persistent_cache.put_translation(src, out, cache_backend)
+                    self.persistent_cache.put_translation(
+                        src, out, cache_backend, commit=False
+                    )
             with self.stats_lock:
                 self.stats['requests'] += 1
         print(f"  Local polish: {edited} edited, {len(pending) - edited} kept original")
+        self._flush_persistent_cache()
         return results
     
     @staticmethod

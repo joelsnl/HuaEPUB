@@ -73,6 +73,9 @@ DEFAULTS: Dict[str, Any] = {
     'library_filter': 'all',
     # Drive options panel expanded under Library
     'drive_panel_expanded': False,
+    # Local cache.db cap in MiB. 0 = unlimited. Oldest chapter HTML is
+    # deleted first when the file is over this size (translations kept).
+    'cache_max_mb': 2048,
 }
 
 _lock = threading.Lock()
@@ -167,8 +170,8 @@ def get_settings_path() -> Path:
     return get_data_dir() / SETTINGS_FILE
 
 
-def load_settings() -> Dict[str, Any]:
-    """Load settings merged over defaults. Never raises."""
+def _load_settings_unlocked() -> Dict[str, Any]:
+    """Load settings merged over defaults. Caller must hold _lock."""
     settings = dict(DEFAULTS)
     path = get_settings_path()
     try:
@@ -196,14 +199,41 @@ def load_settings() -> Dict[str, Any]:
     return settings
 
 
-def save_settings(settings: Dict[str, Any]):
-    """Persist settings. Never raises."""
+def _write_settings_unlocked(settings: Dict[str, Any]) -> None:
+    """Write settings.json via tmp+replace. Caller must hold _lock."""
+    data_dir = get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / SETTINGS_FILE
+    tmp = path.with_suffix(".json.tmp")
+    payload = json.dumps(settings, indent=2)
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(payload)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    tmp.replace(path)
+    try:
+        tmp.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def load_settings() -> Dict[str, Any]:
+    """Load settings merged over defaults. Never raises."""
     try:
         with _lock:
-            data_dir = get_data_dir()
-            data_dir.mkdir(parents=True, exist_ok=True)
-            with open(data_dir / SETTINGS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(settings, f, indent=2)
+            return _load_settings_unlocked()
+    except Exception:
+        return dict(DEFAULTS)
+
+
+def save_settings(settings: Dict[str, Any]):
+    """Persist settings atomically. Never raises."""
+    try:
+        with _lock:
+            _write_settings_unlocked(dict(settings))
     except Exception:
         pass
 
@@ -213,13 +243,22 @@ def get_setting(key: str) -> Any:
 
 
 def set_setting(key: str, value: Any):
-    settings = load_settings()
-    settings[key] = value
-    save_settings(settings)
+    """Read-modify-write under one lock so concurrent keys are not dropped."""
+    try:
+        with _lock:
+            settings = _load_settings_unlocked()
+            settings[key] = value
+            _write_settings_unlocked(settings)
+    except Exception:
+        pass
 
 
 def update_settings(**kwargs):
-    """Set several settings at once."""
-    settings = load_settings()
-    settings.update(kwargs)
-    save_settings(settings)
+    """Set several settings at once under one lock."""
+    try:
+        with _lock:
+            settings = _load_settings_unlocked()
+            settings.update(kwargs)
+            _write_settings_unlocked(settings)
+    except Exception:
+        pass

@@ -105,6 +105,40 @@ class TestChapterListCache:
         assert cache.get_chapter_list("https://book/1") is None
 
 
+class TestCacheEviction:
+    def test_evicts_oldest_chapters_when_over_cap(self, tmp_path):
+        path = tmp_path / "cache.db"
+        cache = NovelCache(path, max_bytes=0)
+        blob = "x" * 50_000
+        for i in range(8):
+            cache.put_chapter("b", f"https://x/{i}", f"t{i}", blob)
+        assert cache.get_chapter("https://x/0") == blob
+        # Keep about three 50 KB chapters plus SQLite overhead.
+        cache._max_bytes_override = 250_000
+        removed = cache.maybe_evict()
+        assert removed >= 1
+        assert cache.get_chapter("https://x/0") is None
+        assert cache.get_chapter("https://x/7") == blob
+        cache.close()
+
+    def test_batch_put_translation_visible_after_flush(self, cache):
+        cache.put_translation("你好", "Hello", "google", commit=False)
+        assert cache.get_translation("你好", "google") == "Hello"
+        cache.flush()
+        cache2 = NovelCache(cache._db_path)
+        try:
+            assert cache2.get_translation("你好", "google") == "Hello"
+        finally:
+            cache2.close()
+
+    def test_clear_chapter_data_keeps_translations(self, cache):
+        cache.put_chapter("b", "https://x/1", "t", "c")
+        cache.put_translation("你好", "Hello", "google")
+        cache.clear_chapter_data()
+        assert cache.get_chapter("https://x/1") is None
+        assert cache.get_translation("你好", "google") == "Hello"
+
+
 class TestBrokenCache:
     def test_unwritable_path_degrades_gracefully(self, tmp_path):
         # A directory as the db path makes sqlite fail to open

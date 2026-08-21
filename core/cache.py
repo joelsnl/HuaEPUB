@@ -25,9 +25,14 @@ from typing import Any, Dict, List, Optional
 class NovelCache:
     """Persistent local cache for chapters, translations, covers, and TOCs."""
 
-    def __init__(self, db_path):
+    _COMMIT_BATCH = 200
+
+    def __init__(self, db_path, max_bytes: Optional[int] = None):
         self._lock = threading.Lock()
         self._conn = None
+        self._db_path = Path(db_path)
+        self._max_bytes_override = max_bytes
+        self._pending = 0
         try:
             self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
@@ -102,6 +107,8 @@ class NovelCache:
                     (url, book_key or '', title or '', content, time.time())
                 )
                 self._conn.commit()
+                self._pending = 0
+            self.maybe_evict()
         except Exception:
             pass
 
@@ -208,8 +215,8 @@ class NovelCache:
         except Exception:
             return None
 
-    def put_translation(self, source: str, translated: str, backend: str):
-        """Store a successful translation."""
+    def put_translation(self, source: str, translated: str, backend: str, commit: bool = True):
+        """Store a successful translation. Pass commit=False to batch, then flush()."""
         if not self._conn or not source or not translated:
             return
         try:
@@ -220,7 +227,25 @@ class NovelCache:
                     "VALUES (?, ?, ?, ?, ?)",
                     (key, backend, source, translated, time.time())
                 )
-                self._conn.commit()
+                self._pending += 1
+                if commit or self._pending >= self._COMMIT_BATCH:
+                    self._conn.commit()
+                    self._pending = 0
+            if commit:
+                self.maybe_evict()
+        except Exception:
+            pass
+
+    def flush(self):
+        """Commit batched translation writes."""
+        if not self._conn:
+            return
+        try:
+            with self._lock:
+                if self._pending:
+                    self._conn.commit()
+                    self._pending = 0
+            self.maybe_evict()
         except Exception:
             pass
 
@@ -288,6 +313,8 @@ class NovelCache:
                     ),
                 )
                 self._conn.commit()
+                self._pending = 0
+            self.maybe_evict()
         except Exception:
             pass
 
@@ -348,13 +375,159 @@ class NovelCache:
                     (source_url.strip(), json.dumps(payload, ensure_ascii=False), time.time()),
                 )
                 self._conn.commit()
+                self._pending = 0
+            self.maybe_evict()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Size cap / LRU eviction
+    # ------------------------------------------------------------------
+
+    def file_size_bytes(self) -> int:
+        """On-disk size of cache.db plus WAL/SHM sidecars."""
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            path = Path(str(self._db_path) + suffix) if suffix else self._db_path
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                pass
+        return total
+
+    def _cap_bytes(self) -> int:
+        if self._max_bytes_override is not None:
+            return max(0, int(self._max_bytes_override))
+        try:
+            from core.settings import get_setting
+            mb = int(get_setting("cache_max_mb") or 0)
+        except Exception:
+            mb = 2048
+        if mb <= 0:
+            return 0
+        return mb * 1024 * 1024
+
+    def _payload_bytes_unlocked(self, table: str) -> str:
+        if table == "chapters":
+            return "COALESCE(LENGTH(content), 0)"
+        if table == "covers":
+            return "COALESCE(LENGTH(data), 0)"
+        if table == "chapter_lists":
+            return "COALESCE(LENGTH(payload), 0)"
+        if table == "translations":
+            return "COALESCE(LENGTH(source), 0) + COALESCE(LENGTH(translated), 0)"
+        return "0"
+
+    def _payload_total_unlocked(self) -> int:
+        total = 0
+        for table in ("chapters", "covers", "chapter_lists", "translations"):
+            expr = self._payload_bytes_unlocked(table)
+            row = self._conn.execute(
+                f"SELECT COALESCE(SUM({expr}), 0) FROM {table}"
+            ).fetchone()
+            total += int(row[0] or 0)
+        return total
+
+    def maybe_evict(self) -> int:
+        """
+        If cache.db is over the size cap, delete oldest rows until it fits.
+
+        Order: chapter HTML, then covers, then TOC snapshots, then translations
+        as a last resort. Returns how many rows were removed.
+
+        The delete loop uses payload sizes because WAL files do not shrink
+        until VACUUM.
+        """
+        if not self._conn:
+            return 0
+        cap = self._cap_bytes()
+        if cap <= 0 or self.file_size_bytes() <= cap:
+            return 0
+        target_payload = max(int(cap * 0.85), cap - 8 * 1024 * 1024)
+        removed = 0
+        stages = (
+            ("chapters", "url", "fetched_at"),
+            ("covers", "key", "fetched_at"),
+            ("chapter_lists", "source_url", "fetched_at"),
+            ("translations", "key", "created_at"),
+        )
+        try:
+            with self._lock:
+                if self._pending:
+                    self._conn.commit()
+                    self._pending = 0
+                payload = self._payload_total_unlocked()
+                for table, pk, col in stages:
+                    size_sql = self._payload_bytes_unlocked(table)
+                    while payload > target_payload:
+                        row = self._conn.execute(
+                            f"SELECT {pk}, {size_sql} FROM {table} "
+                            f"ORDER BY COALESCE({col}, 0) ASC LIMIT 1"
+                        ).fetchone()
+                        if not row:
+                            break
+                        self._conn.execute(
+                            f"DELETE FROM {table} WHERE {pk} = ?", (row[0],)
+                        )
+                        payload -= int(row[1] or 0)
+                        removed += 1
+                    if payload <= target_payload:
+                        break
+                if removed:
+                    self._conn.commit()
+                    self._conn.execute("VACUUM")
+                    self._conn.commit()
+            if removed:
+                now_mb = self.file_size_bytes() / (1024 * 1024)
+                cap_mb = cap / (1024 * 1024)
+                print(
+                    f"Cache was over {cap_mb:.0f} MB; removed {removed} oldest "
+                    f"entries. Now {now_mb:.1f} MB."
+                )
+        except Exception as e:
+            print(f"Warning: cache eviction failed: {e}")
+        return removed
+
+    def clear_chapter_data(self):
+        """Drop chapter HTML, covers, and TOC snapshots. Keep translations."""
+        if not self._conn:
+            return
+        try:
+            with self._lock:
+                self._conn.execute("DELETE FROM chapters")
+                self._conn.execute("DELETE FROM covers")
+                self._conn.execute("DELETE FROM chapter_lists")
+                self._conn.commit()
+                self._pending = 0
+                self._conn.execute("VACUUM")
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def clear_all(self):
+        """Drop every cache table, including translations."""
+        if not self._conn:
+            return
+        try:
+            with self._lock:
+                for table in ("chapters", "covers", "chapter_lists", "translations"):
+                    self._conn.execute(f"DELETE FROM {table}")
+                self._conn.commit()
+                self._pending = 0
+                self._conn.execute("VACUUM")
+                self._conn.commit()
         except Exception:
             pass
 
     def close(self):
         if self._conn:
             try:
-                self._conn.close()
+                with self._lock:
+                    if self._pending:
+                        self._conn.commit()
+                        self._pending = 0
+                    self._conn.close()
             except Exception:
                 pass
             self._conn = None

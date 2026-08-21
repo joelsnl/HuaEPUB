@@ -73,8 +73,11 @@ class TestPersistentCache:
         def get_translation(self, source, backend):
             return self.store.get((backend, source.strip()))
 
-        def put_translation(self, source, translated, backend):
+        def put_translation(self, source, translated, backend, commit=True):
             self.store[(backend, source.strip())] = translated
+
+        def flush(self):
+            pass
 
         def delete_translation(self, source, backend):
             self.deleted.append(source.strip())

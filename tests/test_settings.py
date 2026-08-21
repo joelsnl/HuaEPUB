@@ -104,3 +104,57 @@ class TestSettings:
         settings._migrate_legacy_data(data)
         assert json.loads((data / 'settings.json').read_text())['workers'] == 77
         assert (data / 'library.json').exists()
+
+
+class TestAtomicSettings:
+    def test_writes_temp_then_replace(self, temp_data_dir, monkeypatch):
+        replaced = []
+        original = settings.Path.replace
+
+        def tracking_replace(self, target):
+            replaced.append((self.name, settings.Path(target).name))
+            return original(self, target)
+
+        monkeypatch.setattr(settings.Path, "replace", tracking_replace)
+        settings.set_setting("workers", 42)
+        assert any(src.endswith(".tmp") for src, _dst in replaced)
+        assert (temp_data_dir / settings.SETTINGS_FILE).is_file()
+        assert not (temp_data_dir / "settings.json.tmp").exists()
+        assert settings.get_setting("workers") == 42
+
+    def test_failed_replace_leaves_previous_file(self, temp_data_dir, monkeypatch):
+        settings.set_setting("workers", 11)
+        original = settings.Path.replace
+
+        def boom(self, target):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(settings.Path, "replace", boom)
+        settings.set_setting("workers", 99)
+        monkeypatch.setattr(settings.Path, "replace", original)
+        assert settings.get_setting("workers") == 11
+
+    def test_concurrent_set_setting_does_not_drop_keys(self, temp_data_dir):
+        import threading
+
+        settings.set_setting("workers", 1)
+        settings.set_setting("translate", True)
+
+        def set_workers():
+            for _ in range(40):
+                settings.set_setting("workers", 50)
+
+        def set_translate():
+            for _ in range(40):
+                settings.set_setting("translate", False)
+
+        t1 = threading.Thread(target=set_workers)
+        t2 = threading.Thread(target=set_translate)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        loaded = settings.load_settings()
+        assert loaded["workers"] == 50
+        assert loaded["translate"] is False
+        assert loaded["cache_max_mb"] == 2048

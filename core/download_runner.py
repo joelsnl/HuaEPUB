@@ -35,12 +35,14 @@ class EpubBuildResult:
     output_path: str
     translation_warnings: List[Tuple[str, int]] = field(default_factory=list)
     polish_cancelled: bool = False
+    heuristic_chapters: List[str] = field(default_factory=list)
 
 
 def format_completion_notes(
     failed_chapters: Optional[List[str]] = None,
     translation_warnings: Optional[List[Tuple[str, int]]] = None,
     polish_cancelled: bool = False,
+    heuristic_chapters: Optional[List[str]] = None,
 ) -> str:
     """Extra lines for the completion dialog. Empty if the run was clean."""
     parts: List[str] = []
@@ -51,6 +53,17 @@ def format_completion_notes(
         )
     if failed_chapters:
         parts.append(f"{len(failed_chapters)} chapter(s) had placeholders.")
+    if heuristic_chapters:
+        parts.append(
+            f"{len(heuristic_chapters)} chapter(s) used a generic content guess "
+            "(the site's content selector missed). Check those chapters if the text looks wrong."
+        )
+        for title in heuristic_chapters[:6]:
+            label = (title[:50] + "…") if len(title) > 50 else title
+            parts.append(f"  • {label}")
+        extra = len(heuristic_chapters) - 6
+        if extra > 0:
+            parts.append(f"  • … and {extra} more")
     if translation_warnings:
         parts.append(
             f"{len(translation_warnings)} chapter(s) still have significant Chinese."
@@ -417,6 +430,9 @@ def build_epub(
             output_path=output_path,
             translation_warnings=builder.get_translation_warnings(),
             polish_cancelled=bool(builder.polish_cancelled),
+            heuristic_chapters=[
+                ch.title for ch in chapters if getattr(ch, "used_heuristic", False)
+            ],
         )
 
     builder = EPUBBuilder(cleaner=cleaner, image_cache=cache)
@@ -428,7 +444,12 @@ def build_epub(
         set_status(status)
 
     builder.build(info, chapters, output_path, progress_cb)
-    return EpubBuildResult(output_path=output_path)
+    return EpubBuildResult(
+        output_path=output_path,
+        heuristic_chapters=[
+            ch.title for ch in chapters if getattr(ch, "used_heuristic", False)
+        ],
+    )
 
 
 def run_single_download(

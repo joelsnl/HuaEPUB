@@ -72,10 +72,13 @@ def test_format_completion_notes_polish_and_warnings():
         failed_chapters=["Ch 1"],
         translation_warnings=[("Chapter 2", 80)],
         polish_cancelled=True,
+        heuristic_chapters=["Chapter 9"],
     )
     assert "Polish was stopped" in notes
     assert "1 chapter(s) had placeholders" in notes
     assert "significant Chinese" in notes
+    assert "generic content guess" in notes
+    assert "Chapter 9" in notes
     assert format_completion_notes() == ""
 
 

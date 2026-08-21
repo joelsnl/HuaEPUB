@@ -360,7 +360,12 @@ class SiteConfigParser(GenericParser):
             if content_el is not None:
                 break
         if content_el is None:
-            return super().get_chapter_content(chapter)
+            chapter.used_heuristic = True
+            print(
+                f"Warning: {self.SITE_NAME} content selector missed at {chapter.url}; "
+                "using generic density heuristic. The chapter text may be wrong."
+            )
+            return self._content_html_from_soup(soup, chapter)
 
         remove = spec.get("remove")
         if remove:

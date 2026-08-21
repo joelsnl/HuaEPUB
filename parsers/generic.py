@@ -191,7 +191,9 @@ class GenericParser(BaseParser):
 
     def get_chapter_content(self, chapter: Chapter) -> str:
         soup = self.fetch_page(chapter.url)
+        return self._content_html_from_soup(soup, chapter)
 
+    def _content_html_from_soup(self, soup: BeautifulSoup, chapter: Chapter) -> str:
         for tag in NOISE_TAGS:
             for el in soup.find_all(tag):
                 el.decompose()

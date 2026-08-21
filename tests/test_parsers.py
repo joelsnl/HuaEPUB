@@ -213,3 +213,17 @@ class TestSelectorParser:
             BeautifulSoup(html, 'lxml'), 'https://demo.test/book', 'a'
         )
         assert chapters == []
+
+    def test_content_selector_miss_uses_heuristic(self, monkeypatch):
+        from core.parser import Chapter
+
+        parser = self._parser()
+        body = "这是正文段落。" * 40
+        html = f"<html><body><article><p>{body}</p></article></body></html>"
+        monkeypatch.setattr(
+            parser, "fetch_page", lambda url: BeautifulSoup(html, "lxml")
+        )
+        chapter = Chapter(title="Ch", url="https://demo.test/c/1")
+        out = parser.get_chapter_content(chapter)
+        assert chapter.used_heuristic is True
+        assert "这是正文段落" in out

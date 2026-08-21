@@ -140,3 +140,51 @@ class TestAtomicWrite:
             EPUBBuilder().build(info, chapters, str(dest))
         assert dest.read_bytes() == b"good-old-epub"
         assert not (tmp_path / "novel.epub.tmp").exists()
+
+
+class TestSkipSecondClean:
+    def test_skip_html_clean_does_not_call_cleaner(self, tmp_path):
+        class CountingCleaner:
+            def __init__(self):
+                self.n = 0
+
+            def clean_html(self, html):
+                self.n += 1
+                return html
+
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content="<p>Hello there.</p>"),
+        ]
+        dest = tmp_path / "skip.epub"
+        cleaner = CountingCleaner()
+        EPUBBuilder(cleaner=cleaner).build(info, chapters, str(dest), skip_html_clean=True)
+        assert cleaner.n == 0
+        dest2 = tmp_path / "clean.epub"
+        cleaner2 = CountingCleaner()
+        EPUBBuilder(cleaner=cleaner2).build(info, chapters, str(dest2), skip_html_clean=False)
+        assert cleaner2.n >= 1
+
+    def test_translated_build_passes_skip_flag(self, monkeypatch, tmp_path):
+        seen = {}
+
+        def fake_build(self, *args, **kwargs):
+            seen["skip"] = kwargs.get("skip_html_clean")
+            return str(tmp_path / "out.epub")
+
+        monkeypatch.setattr(EPUBBuilder, "build", fake_build)
+
+        class FakeTranslator:
+            _cancel_requested = False
+            stats = {"requests": 0, "cache_hits": 0}
+
+            def translate_texts_with_retry(self, texts, *a, **k):
+                return list(texts)
+
+        info = NovelInfo(title="Hello", author="Author", source_url="https://example.com/b")
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content="<p>Already English.</p>"),
+        ]
+        builder = TranslatedEPUBBuilder(translator=FakeTranslator(), cleaner=None)
+        builder.build_with_translation(info, chapters, str(tmp_path / "out.epub"))
+        assert seen.get("skip") is True

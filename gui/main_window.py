@@ -11,8 +11,9 @@ from pathlib import Path
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QInputDialog, QLabel, QListWidget,
-    QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+    QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox, QPushButton,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from core.branding import (
@@ -27,7 +28,7 @@ from core.download_runner import downloads_folder, epub_path, format_completion_
 from core.logger import setup_logging
 from core.notify import notify
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
-from core.settings import get_default_books_dir, save_settings
+from core.settings import get_default_books_dir, get_setting, save_settings, set_setting
 from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
@@ -147,6 +148,7 @@ class MainWindow(QMainWindow):
         act.toggled.connect(set_auto_check_updates)
         help_m.addAction(act)
         help_m.addAction("How translation works…", self._translation_help)
+        help_m.addAction("Cache…", self._cache_dialog)
         help_m.addAction("About", self._about)
         help_m.addAction("Drive OAuth setup…", self._drive_setup_help)
 
@@ -542,11 +544,13 @@ class MainWindow(QMainWindow):
             self._set_downloading(False)
             return
 
-    @Slot(str, list, list, bool)
-    def _single_done(self, path: str, failed: list, warnings: list = None, polish_cancelled: bool = False):
+    @Slot(str, list, list, bool, list)
+    def _single_done(self, path: str, failed: list, warnings: list = None, polish_cancelled: bool = False, heuristic: list = None):
         self._set_downloading(False)
         self.progress.set_progress(1.0, f"Done! Saved to: {path}")
-        notes = format_completion_notes(failed, warnings or [], polish_cancelled)
+        notes = format_completion_notes(
+            failed, warnings or [], polish_cancelled, heuristic or [],
+        )
         msg = f"EPUB saved to:\n{path}"
         if notes:
             msg += "\n\n" + notes
@@ -1161,6 +1165,109 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(log)))
         else:
             QMessageBox.information(self, "Log", f"No log yet at:\n{log}")
+
+    def _cache_size_text(self) -> str:
+        n = self.session.cache.file_size_bytes()
+        if n < 1024 * 1024:
+            shown = f"{n / 1024:.0f} KB"
+        elif n < 1024 * 1024 * 1024:
+            shown = f"{n / (1024 * 1024):.1f} MB"
+        else:
+            shown = f"{n / (1024 * 1024 * 1024):.2f} GB"
+        return f"Current size: {shown}"
+
+    def _cache_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Cache")
+        dlg.setMinimumWidth(460)
+        layout = QVBoxLayout(dlg)
+        size_lbl = QLabel(self._cache_size_text())
+        layout.addWidget(size_lbl)
+        explain = QLabel(
+            "Chapter HTML, covers, and tables of contents live in ~/.huaepub/cache.db. "
+            "This is not Drive-synced. When the file grows past the limit, the oldest "
+            "cached chapters are deleted first (least recently stored). Translations "
+            "are kept unless the cache is still over the limit.\n\n"
+            "Nothing is cleared on a timer — only when over the cap, or when you "
+            "clear it here."
+        )
+        explain.setWordWrap(True)
+        layout.addWidget(explain)
+
+        cap_row = QHBoxLayout()
+        cap_row.addWidget(QLabel("Maximum size:"))
+        combo = QComboBox()
+        choices = [
+            (512, "512 MB"),
+            (1024, "1 GB"),
+            (2048, "2 GB"),
+            (4096, "4 GB"),
+            (0, "Unlimited"),
+        ]
+        for mb, label in choices:
+            combo.addItem(label, mb)
+        current = int(self.session.settings.get("cache_max_mb", 2048) or 0)
+        idx = next((i for i, (mb, _) in enumerate(choices) if mb == current), 2)
+        combo.setCurrentIndex(idx)
+
+        def on_cap_changed(_index: int):
+            mb = int(combo.currentData())
+            self.session.settings["cache_max_mb"] = mb
+            set_setting("cache_max_mb", mb)
+            removed = self.session.cache.maybe_evict()
+            size_lbl.setText(self._cache_size_text())
+            if removed:
+                self.progress.set_status(
+                    f"Cache trimmed ({removed} oldest entries removed)"
+                )
+
+        combo.currentIndexChanged.connect(on_cap_changed)
+        cap_row.addWidget(combo)
+        cap_row.addStretch(1)
+        layout.addLayout(cap_row)
+
+        btn_row = QHBoxLayout()
+        clear_ch = QPushButton("Clear chapter cache")
+        clear_ch.setToolTip("Delete chapter HTML, covers, and TOCs. Keep translations.")
+        clear_all = QPushButton("Clear all cache")
+        clear_all.setToolTip("Delete chapters, covers, TOCs, and translations.")
+
+        def refresh_size():
+            size_lbl.setText(self._cache_size_text())
+
+        def on_clear_chapters():
+            if QMessageBox.question(
+                dlg, "Clear chapter cache",
+                "Delete cached chapter HTML, covers, and tables of contents?\n\n"
+                "Translations stay. The next download will re-fetch chapter text.",
+            ) != QMessageBox.Yes:
+                return
+            self.session.cache.clear_chapter_data()
+            refresh_size()
+            self.progress.set_status("Chapter cache cleared")
+
+        def on_clear_all():
+            if QMessageBox.question(
+                dlg, "Clear all cache",
+                "Delete the entire cache, including translations?\n\n"
+                "The next download and translate will redo all network work.",
+            ) != QMessageBox.Yes:
+                return
+            self.session.cache.clear_all()
+            refresh_size()
+            self.progress.set_status("All cache cleared")
+
+        clear_ch.clicked.connect(on_clear_chapters)
+        clear_all.clicked.connect(on_clear_all)
+        btn_row.addWidget(clear_ch)
+        btn_row.addWidget(clear_all)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        dlg.exec()
 
     def _translation_help(self):
         box = QMessageBox(self)

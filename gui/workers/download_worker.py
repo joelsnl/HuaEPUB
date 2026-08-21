@@ -25,7 +25,7 @@ from core.parser import Chapter, NovelInfo, get_parser_for_url
 
 class SingleDownloadWorker(QObject):
     progress = Signal(float, str)
-    finished_ok = Signal(str, list, list, bool)  # path, failed, warnings, polish_cancelled
+    finished_ok = Signal(str, list, list, bool, list)  # path, failed, warnings, polish_cancelled, heuristic
     finished_cancel = Signal()
     finished_error = Signal(str)
 
@@ -75,6 +75,7 @@ class SingleDownloadWorker(QObject):
                 failed,
                 build_result.translation_warnings,
                 build_result.polish_cancelled,
+                build_result.heuristic_chapters,
             )
         except DownloadCancelled:
             self.finished_cancel.emit()
@@ -173,6 +174,7 @@ class MultiDownloadWorker(QObject):
                     notes = format_completion_notes(
                         failed, build_result.translation_warnings,
                         build_result.polish_cancelled,
+                        build_result.heuristic_chapters,
                     )
                     results.append((title, out, True, notes, len(failed)))
                     self.novel_status.emit(
@@ -332,7 +334,8 @@ class LibraryUpdateWorker(QObject):
             ctrl.active_job = None
             msg = f"Updated {display}\n+{len(new_only)} new · {len(chapters)} total\n{out}"
             notes = format_completion_notes(
-                failed, build_result.translation_warnings, build_result.polish_cancelled
+                failed, build_result.translation_warnings, build_result.polish_cancelled,
+                build_result.heuristic_chapters,
             )
             if notes:
                 msg += "\n\n" + notes
@@ -552,6 +555,7 @@ class LibraryUpdateAllWorker(QObject):
                     notes = format_completion_notes(
                         failed, build_result.translation_warnings,
                         build_result.polish_cancelled,
+                        build_result.heuristic_chapters,
                     )
                     if notes:
                         detail += f" ({notes.splitlines()[0]})"

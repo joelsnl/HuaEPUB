@@ -57,6 +57,8 @@ class Chapter:
     url: str
     content: str = ""
     index: int = 0
+    # True when sites.json content selectors missed and GenericParser guessed.
+    used_heuristic: bool = False
     
     def __str__(self):
         return f"Chapter {self.index}: {self.title}"
