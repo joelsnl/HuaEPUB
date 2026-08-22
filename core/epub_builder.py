@@ -3,15 +3,22 @@
 EPUB Builder - Create EPUB files from chapters
 Uses ebooklib for EPUB creation.
 
-New features ported from fixTranslate.py:
-- Translation verification: counts remaining Chinese chars after translation,
-  warns about chapters with significant untranslated content
-- Uses multi-pass retry translation (translate_texts_with_retry)
-- Reports files_with_remaining_chinese in stats
+Writes via a sibling .tmp then replace (write_epub_atomic) so a crash
+cannot leave a half-written EPUB.
+
+Translated builds skip a second ContentCleaner pass (chapters were already
+cleaned before translation). Translations are applied at the text-node
+level, never with raw string replacement.
+
+Cancel during Chinese→English raises DownloadCancelled (no EPUB).
+Cancel during polish still writes the EPUB (polish_cancelled).
+
+Also from fixTranslate.py:
+- Translation verification: counts remaining Chinese chars after translation
+- Multi-pass retry translation (translate_texts_with_retry)
 """
 
 import os
-import io
 import re
 import time
 import hashlib

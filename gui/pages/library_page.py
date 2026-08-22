@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 
 class _LibraryTile(QFrame):
-    """Cover + title + status line (matches old Tk grid readability)."""
+    """Cover + title + status line for the Library grid."""
 
     def __init__(self, title: str, status: str, kind: str, pixmap: Optional[QPixmap], parent=None):
         super().__init__(parent)

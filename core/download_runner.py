@@ -3,6 +3,12 @@
 UI-agnostic download orchestration: pause/cancel, chapter cache, EPUB build.
 
 Qt (or any other UI) wraps this with threads/signals. No Qt imports here.
+
+Cancel during chapter fetch or Chinese→English translation raises
+DownloadCancelled and writes no EPUB. Cancel during polish still writes
+the EPUB (EpubBuildResult.polish_cancelled). ETA uses uncached/network
+samples only. Completion notes cover leftover Chinese, heuristic chapters,
+and a cancelled polish pass.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from core.security import safe_epub_basename
 
 
 class DownloadCancelled(Exception):
-    """Raised when the user cancels a download."""
+    """User cancelled during fetch or translation — do not write an EPUB."""
 
 
 @dataclass

@@ -4,8 +4,8 @@ File logging for the app.
 
 The codebase reports progress and errors with print(); in the packaged
 (windowed) executable there is no console, so failures were invisible.
-This module tees stdout/stderr to a log file so runs can be diagnosed
-after the fact.
+This module tees stdout/stderr to ~/.huaepub/logs/huaepub.log (1 MB
+startup rotate, keep .log.1). File → Open log file in the GUI.
 """
 
 import sys

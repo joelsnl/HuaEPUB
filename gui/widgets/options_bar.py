@@ -39,7 +39,8 @@ class OptionsBar(QWidget):
         self.cache_cb = QCheckBox("Use chapter cache (resume)")
         self.cache_cb.setChecked(bool(s.get("use_chapter_cache", True)))
         self.cache_cb.setToolTip(
-            "Reuse chapters already saved on this PC. Keep on unless you want a full re-download."
+            "Reuse chapters already saved on this PC. Keep on unless you want a "
+            "full re-download. Size cap and clear controls are in Help → Cache…"
         )
         self.clipboard_cb = QCheckBox("Watch clipboard for URLs")
         self.clipboard_cb.setChecked(bool(s.get("clipboard_watcher", False)))
@@ -476,7 +477,7 @@ class OptionsBar(QWidget):
                 "After Google or LibreTranslate finishes, copy-edit awkward English "
                 "on this PC. First run downloads llama.cpp + a Qwen GGUF that fits "
                 "this GPU — Ollama is not required. Same EPUB (no extra copy). "
-                "Progress is in Help → Open log."
+                "Progress is in File → Open log file."
             )
             if polish_on:
                 self.workers.setToolTip(

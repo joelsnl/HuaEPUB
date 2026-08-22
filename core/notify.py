@@ -1,5 +1,5 @@
 # Author: joelsnl and Anthropic Claude
-"""Desktop notifications when a download batch finishes."""
+"""Desktop notifications when a download or app update finishes."""
 
 from __future__ import annotations
 

@@ -1,8 +1,9 @@
 # Author: joelsnl and Anthropic Claude
+"""Qt workers that wrap download_runner on a background QThread."""
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -20,7 +21,7 @@ from core.download_runner import (
 )
 from core.library import new_chapters_since
 from core.notify import notify
-from core.parser import Chapter, NovelInfo, get_parser_for_url
+from core.parser import get_parser_for_url
 
 
 class SingleDownloadWorker(QObject):

@@ -146,6 +146,7 @@ class TestReplacementHelper:
         assert "$ErrorActionPreference = \"Continue\"" in text
         assert "for ($i = 1; $i -le 90; $i++)" in text
         assert "Start-Process -FilePath $oldExe" in text
+        assert "Unblock-File" in text
         assert "$pidWait" in text
         assert "PYINSTALLER_RESET_ENVIRONMENT" in text
         assert "_PYI_" in text
@@ -176,8 +177,11 @@ class TestReplacementHelper:
             assert "com.apple.quarantine" in text
             assert "trap '' HUP" in text
             assert "os.spawnve" not in text
-            assert "start_new_session=True" in text
-            assert "/usr/bin/open" in text
+            assert "spawn_detached" in text
+            assert "os.execvpe" in text
+            # Bare Mach-O must not go through Launch Services (opens Terminal.app)
+            assert "open -n" not in text
+            assert "nohup" in text
             assert "python3 helper failed" in text
             assert "PYINSTALLER_RESET_ENVIRONMENT" in text
             assert '_PYI_' in text
@@ -226,8 +230,42 @@ class TestReplacementHelper:
             assert not any(k.startswith("_PYI_") for k in env)
 
 
-    def test_windows_launch_uses_powershell_not_detached(self, tmp_path, monkeypatch):
+    def test_windows_launch_uses_shellexecute(self, tmp_path, monkeypatch):
         monkeypatch.setattr(updater.sys, "platform", "win32")
+        seen = []
+
+        def fake_shell(file, params, cwd):
+            seen.append((file, params, cwd))
+            return 42
+
+        monkeypatch.setattr(updater, "_win_shell_execute", fake_shell)
+        monkeypatch.setattr(
+            updater, "_windows_powershell",
+            lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
+
+        def boom(*a, **k):
+            raise AssertionError("Popen must not run when ShellExecute succeeds")
+
+        monkeypatch.setattr(updater.subprocess, "Popen", boom)
+        script = tmp_path / "_update_helper.ps1"
+        script.write_text("# ps1\n", encoding="utf-8")
+        updater._win_start_ps1(script, cwd=str(tmp_path))
+        assert seen
+        file, params, cwd = seen[0]
+        assert "powershell" in file.lower()
+        assert "-File" in params
+        assert str(script.resolve()) in params
+        assert cwd == str(tmp_path)
+
+    def test_windows_launch_falls_back_to_cmd_start(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "win32")
+        monkeypatch.setattr(updater, "_win_shell_execute", lambda *a, **k: 2)
+        monkeypatch.setattr(
+            updater, "_windows_powershell",
+            lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
+        monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
         calls = []
 
         def fake_popen(*args, **kwargs):
@@ -237,24 +275,20 @@ class TestReplacementHelper:
             return P()
 
         monkeypatch.setattr(updater.subprocess, "Popen", fake_popen)
-        monkeypatch.setattr(
-            updater, "_windows_powershell", lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        )
         script = tmp_path / "_update_helper.ps1"
         script.write_text("# ps1\n", encoding="utf-8")
         updater._win_start_ps1(script, cwd=str(tmp_path))
         assert calls
         argv = calls[0][0][0] if calls[0][0] else calls[0][1].get("args")
-        assert isinstance(argv, (list, tuple))
-        joined = " ".join(str(x) for x in argv)
-        assert "powershell" in joined.lower()
-        assert "-File" in argv
-        assert str(script.resolve()) in argv
+        assert argv[0].lower().endswith("cmd.exe")
+        assert argv[1] == "/c"
+        assert 'start ""' in argv[2]
+        assert "-File" in argv[2]
+        assert str(script.resolve()) in argv[2]
         flags = calls[0][1].get("creationflags", 0)
         detached = getattr(updater.subprocess, "DETACHED_PROCESS", 0x00000008)
-        assert flags & detached == 0
+        assert flags & detached
         assert calls[0][1].get("shell") in (False, None)
-        assert flags & updater._CREATE_BREAKAWAY_FROM_JOB
         env = calls[0][1].get("env")
         assert env is not None
         assert not any(k.startswith("_PYI_") for k in env)
@@ -296,6 +330,8 @@ class TestPostSwapRelaunchHelper:
         assert "Start-Sleep" in text
         assert "timeout /t" not in text.lower()
         assert "Start-Process" in text
+        assert "ErrorAction Stop" in text
+        assert "Unblock-File" in text
         assert "SSL_CERT_FILE" in text
         assert "PYINSTALLER_RESET_ENVIRONMENT" in text
         assert "_PYI_" in text
@@ -332,6 +368,7 @@ class TestSourceUpdateItems:
         assert "gui" in SOURCE_UPDATE_ITEMS
         assert "core" in SOURCE_UPDATE_ITEMS
         assert "app.py" in SOURCE_UPDATE_ITEMS
+        assert "build.py" in SOURCE_UPDATE_ITEMS
 
 
 class TestRelaunchEnv:

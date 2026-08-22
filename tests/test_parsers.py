@@ -1,6 +1,5 @@
 """Offline parser tests using HTML fixtures (no network)."""
 
-import pytest
 from bs4 import BeautifulSoup
 
 import parsers  # noqa: F401 — register SiteConfigParser + GenericParser

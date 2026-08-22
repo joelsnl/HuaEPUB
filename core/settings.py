@@ -7,6 +7,10 @@ User data (settings, cache, library, logs) lives in ~/.huaepub/
 The install/executable directory is separate (see get_app_dir) and is only
 used for the auto-updater and as a migration source for older installs.
 
+settings.json is written atomically (sibling .json.tmp, then replace)
+under one lock for the full read-modify-write so concurrent set_setting
+calls cannot drop keys.
+
 Replaces the old updater_settings.json (whose auto_check_updates value is
 migrated on first load if found).
 """

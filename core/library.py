@@ -8,7 +8,8 @@ Persistent download history and reading library.
   come from the chapter cache).
 
 Stored as library.json in ~/.huaepub/. Never raises to callers.
-Optional Google Drive sync merges remote copies via merge_library().
+Optional Google Drive sync merges remote copies via merge_library()
+(library.json + EPUBs only — never cache.db or resume files).
 """
 
 from __future__ import annotations

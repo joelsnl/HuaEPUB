@@ -3,9 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# PyInstaller build artifacts
+# PyInstaller build artifacts (build.py regenerates HuaEPUB.spec each run)
 build/
 dist/
+*.spec
+.ruff_cache/
 
 # macOS
 .DS_Store

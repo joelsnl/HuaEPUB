@@ -1,14 +1,15 @@
 # Author: joelsnl and Anthropic Claude
 """
-Google Translate (Free) - Concurrent translation with persistent retry
+Translation backends: Google (free), LibreTranslate, and local Ollama.
 
-Persistent retry system:
-- Keeps retrying ALL failed translations until everything is done (or cancelled)
-- Smart escalating delays between passes: workers scale down, intervals widen,
-  cooldowns lengthen, per-request retries increase
+Persistent retry (Google / LibreTranslate):
+- Bounded multi-pass retry — hard cap on passes (default 8); never loops forever
+- Partial improvements are kept so the EPUB can always be built
+- Smart escalating delays: workers scale down, intervals widen, cooldowns lengthen
 - Stall detection: if no progress for 3+ passes, switches to maximum backoff
-- Cache is cleared for failed entries before each retry so fresh requests are made
-- Cancellable at any point via cancel() method
+- Failed cache entries are dropped before each retry so fresh requests are made
+- Persistent cache writes are batched (commit every 200 / end of pass)
+- Cancellable via cancel() — abort during translation writes no EPUB
 
 HTTP: each worker thread keeps a Session (curl_cffi when available) so TCP/TLS
 connections are reused. On Windows and macOS, translate sessions prefer IPv4 —
@@ -631,8 +632,8 @@ class GoogleTranslator:
         max_retry_passes: int = 8,
     ) -> List[str]:
         """
-        Translate texts and keep retrying ALL failures until everything is done.
-        
+        Translate texts and retry remaining failures, then stop.
+
         Uses a smart delay system that escalates between retry passes:
         - Workers scale down:   100 → 50 → 30 → 20 → 10 → 5 (floor)
         - Request interval up:  0 → 0.3 → 0.5 → 1.0 → 1.5 → 2.0 (cap)

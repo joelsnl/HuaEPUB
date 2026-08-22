@@ -3,8 +3,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from core.cache import NovelCache
 from core.download_runner import DownloadControl

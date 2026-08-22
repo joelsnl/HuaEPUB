@@ -20,7 +20,7 @@ Features:
 """
 
 import re
-from typing import List, Optional, Set, Dict
+from typing import List, Optional
 from lxml import etree
 from lxml import html as lxml_html
 

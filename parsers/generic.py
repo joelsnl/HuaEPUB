@@ -13,7 +13,7 @@ no sites.json config claims.
 """
 
 import re
-from typing import List, Optional
+from typing import List
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 

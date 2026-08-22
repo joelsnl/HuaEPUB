@@ -2,10 +2,21 @@
 """
 Auto-updater for HuaEPUB
 Checks GitHub releases for updates and can download/install them.
-Supports both source installations and compiled executables.
+Supports both source installations and compiled (PyInstaller onefile) executables.
 
 Security: updates require a matching SHA256SUMS entry from the same GitHub
 release; zip members are path-checked; install paths are not shell-interpolated.
+Never fall back to unsigned main.zip.
+
+Relaunch (all OSes): the GUI must quit so a helper can swap files and start
+the new binary. Helpers strip _PYI_* / stale _MEI env and set
+PYINSTALLER_RESET_ENVIRONMENT=1 — otherwise PyInstaller 6.9+ treats the new
+onefile process as a worker of the dying extract and the window never returns.
+Windows helper: ShellExecute a hidden powershell.exe -File so it is not a
+child of the onefile bootloader (Popen children die when the GUI exits).
+POSIX: /bin/sh or /bin/bash — never sys.executable when frozen. Relaunch a
+bare Mach-O / ELF with double-fork + exec — never /usr/bin/open (that opens
+Terminal.app for Unix executables).
 """
 
 import os
@@ -42,7 +53,7 @@ SOURCE_UPDATE_ITEMS = [
 ]
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.10.0"
+__version__ = "2.10.1"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"
@@ -68,6 +79,68 @@ _RELAUNCH_DROP_ENV = frozenset({
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 _CREATE_NO_WINDOW = 0x08000000
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_DETACHED_PROCESS = 0x00000008
+_SW_HIDE = 0
+
+# Inlined into POSIX helpers (system python3 cannot import this module).
+# Double-fork + exec so the GUI is not a child of a shell/python session.
+_SPAWN_DETACHED_PY = r'''
+def spawn_detached(argv, cwd, env):
+    argv = [str(a) for a in argv]
+    cwd = str(cwd) if cwd else None
+    try:
+        pid = os.fork()
+    except (AttributeError, OSError):
+        kw = dict(
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        if sys.platform == "win32":
+            kw["creationflags"] = (
+                getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        else:
+            kw["start_new_session"] = True
+        subprocess.Popen(argv, **kw)
+        return
+    if pid > 0:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    try:
+        pid2 = os.fork()
+    except OSError:
+        os._exit(1)
+    if pid2 > 0:
+        os._exit(0)
+    if cwd:
+        try:
+            os.chdir(cwd)
+        except OSError:
+            pass
+    try:
+        devnull = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull, 0)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        if devnull > 2:
+            os.close(devnull)
+    except OSError:
+        pass
+    try:
+        os.execvpe(argv[0], argv, env)
+    except OSError:
+        os._exit(127)
+'''
 
 
 def get_pending_relaunch() -> Optional[Path]:
@@ -328,7 +401,12 @@ try {
         Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
     }
     $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
-    Start-Process -FilePath $oldExe -WorkingDirectory (Split-Path -Parent $oldExe)
+    if (Test-Path -LiteralPath $oldExe) {
+        try { Unblock-File -LiteralPath $oldExe } catch {}
+    }
+    $work = Split-Path -Parent $oldExe
+    Write-UpdateLog "Launching $oldExe"
+    Start-Process -FilePath $oldExe -WorkingDirectory $work -ErrorAction Stop
     Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 } catch {
     Write-UpdateLog "FATAL: $($_.Exception.Message)"
@@ -364,7 +442,7 @@ try:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 except Exception:
     pass
-
+''' + _SPAWN_DETACHED_PY + r'''
 cfg_path, log_path, self_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 
 def log(msg: str) -> None:
@@ -459,28 +537,10 @@ try:
     else:
         clean.pop("LD_LIBRARY_PATH", None)
     clean["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    popen_kw = dict(
-        cwd=str(old_exe.parent),
-        env=clean,
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
-    launched = False
-    if sys.platform == "darwin" and os.path.isfile("/usr/bin/open"):
-        try:
-            subprocess.Popen(
-                ["/usr/bin/open", "-n", "--", str(old_exe)], **popen_kw
-            )
-            launched = True
-            log("Launched via /usr/bin/open")
-        except Exception as e:
-            log(f"open failed: {e}")
-    if not launched:
-        subprocess.Popen([str(old_exe)], **popen_kw)
-        log("Launched via Popen")
+    # Never /usr/bin/open on a bare Mach-O: Launch Services starts Terminal.app
+    # and the GUI dies when that session is closed.
+    spawn_detached([str(old_exe)], str(old_exe.parent), clean)
+    log("Launched detached")
     try:
         self_path.unlink()
     except OSError:
@@ -596,12 +656,13 @@ else
   unset LD_LIBRARY_PATH
 fi
 export PYINSTALLER_RESET_ENVIRONMENT=1
-if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+# Bare executable — never `open` (macOS would start Terminal.app).
+if command -v nohup >/dev/null 2>&1; then
   env \
     -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
     -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u _MEIPASS2 \
     PYINSTALLER_RESET_ENVIRONMENT=1 \
-    open -n -- "$OLD_EXE" >/dev/null 2>&1 &
+    nohup "$OLD_EXE" >/dev/null 2>&1 &
 else
   env \
     -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE \
@@ -1010,15 +1071,26 @@ def _win_creation_flags(*, breakaway: bool) -> int:
     return flags
 
 
+def _win_shell_execute(file: str, params: str, cwd: str) -> int:
+    """
+    ShellExecuteW. Return value > 32 means success.
+
+    The new process is not a child of this one, so it survives PyInstaller
+    onefile teardown (the bootloader kills Popen children when the GUI exits).
+    """
+    import ctypes
+    return int(ctypes.windll.shell32.ShellExecuteW(
+        None, "open", file, params, cwd, _SW_HIDE
+    ))
+
+
 def _win_start_ps1(script_path: Path, *, cwd: Optional[str] = None):
     """
     Launch a PowerShell script so it outlives this GUI.
 
-    Do not use DETACHED_PROCESS — powershell -File often exits without running.
-    Do not use shell=True with `start ""` — Python wraps that in extra quotes
-    and `start` treats the next token as a window title.
-    CREATE_BREAKAWAY_FROM_JOB keeps the helper alive if a job would kill it
-    when the frozen onefile parent exits.
+    Prefer ShellExecute (not our child). Fall back to `cmd /c start ""`
+    with DETACHED_PROCESS. Last resort is a direct Popen, which a onefile
+    parent may still kill on exit.
     """
     if sys.platform == "win32":
         try:
@@ -1028,8 +1100,49 @@ def _win_start_ps1(script_path: Path, *, cwd: Optional[str] = None):
             pass
     script = str(Path(script_path).resolve())
     cwd = cwd or str(Path(script_path).parent)
+    ps = _windows_powershell()
+    params = (
+        "-NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f'-WindowStyle Hidden -File "{script}"'
+    )
+    helper_env = _env_for_external_helper()
+    try:
+        ret = _win_shell_execute(ps, params, cwd)
+        if ret > 32:
+            print(f"Update helper started via ShellExecute ({ret})")
+            return None
+        print(f"ShellExecute helper returned {ret}; trying cmd start")
+    except Exception as e:
+        print(f"ShellExecute helper failed ({e}); trying cmd start")
+
+    comspec = os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
+    # One /c string: `start` treats the first quoted token as a window title.
+    start_line = (
+        f'start "" /min "{ps}" -NoProfile -NonInteractive '
+        f'-ExecutionPolicy Bypass -WindowStyle Hidden -File "{script}"'
+    )
+    detached_flags = (
+        getattr(subprocess, "DETACHED_PROCESS", _DETACHED_PROCESS)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", _CREATE_NEW_PROCESS_GROUP)
+        | getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)
+    )
+    try:
+        return subprocess.Popen(
+            [comspec, "/c", start_line],
+            shell=False,
+            creationflags=detached_flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            cwd=cwd,
+            close_fds=True,
+            env=helper_env,
+        )
+    except OSError as e:
+        print(f"cmd start helper failed ({e}); last-resort Popen")
+
     args = [
-        _windows_powershell(),
+        ps,
         "-NoProfile",
         "-NonInteractive",
         "-ExecutionPolicy", "Bypass",
@@ -1037,7 +1150,6 @@ def _win_start_ps1(script_path: Path, *, cwd: Optional[str] = None):
         "-File", script,
     ]
     last_err: Optional[BaseException] = None
-    helper_env = _env_for_external_helper()
     for breakaway in (True, False):
         try:
             return subprocess.Popen(
@@ -1051,8 +1163,8 @@ def _win_start_ps1(script_path: Path, *, cwd: Optional[str] = None):
                 close_fds=True,
                 env=helper_env,
             )
-        except OSError as e:
-            last_err = e
+        except OSError as err:
+            last_err = err
     raise OSError(f"Could not start update helper: {last_err}")
 
 
@@ -1078,54 +1190,59 @@ def _create_post_swap_relaunch_helper(
     }
     write_secret_file(config_path, json.dumps(payload))
     script_path = app_dir / '_update_relaunch.ps1'
-    script_content = r'''$ErrorActionPreference = "SilentlyContinue"
+    script_content = r'''$ErrorActionPreference = "Continue"
 $logPath = Join-Path $PSScriptRoot "_update_helper.log"
 function Write-UpdateLog([string]$msg) {
     $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
     Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
 }
-$cfgPath = Join-Path $PSScriptRoot "_update_relaunch.json"
-$cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
-$pidWait = [int]$cfg.pid
-$exe = [string]$cfg.exe
-$backup = [string]$cfg.backup
-$workdir = [string]$cfg.cwd
-$launchArgs = @()
-if ($null -ne $cfg.args) { $launchArgs = @($cfg.args) }
-Write-UpdateLog "Relaunch helper waiting for PID $pidWait"
-Start-Sleep -Seconds 1
-while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
-    Start-Sleep -Milliseconds 500
-}
-Start-Sleep -Seconds 2
-if ($backup -and (Test-Path -LiteralPath $backup)) {
-    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-}
-foreach ($key in @(
-    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2"
-)) {
-    Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
-}
-Get-ChildItem Env: -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -like "_PYI_*"
-} | ForEach-Object {
-    Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
-}
-$env:PYINSTALLER_RESET_ENVIRONMENT = "1"
-if (-not $workdir) { $workdir = Split-Path -Parent $exe }
-Write-UpdateLog "Launching $exe"
-if (Test-Path -LiteralPath $exe) {
-    if ($launchArgs.Count -gt 0) {
-        Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $workdir
-    } else {
-        Start-Process -FilePath $exe -WorkingDirectory $workdir
+try {
+    $cfgPath = Join-Path $PSScriptRoot "_update_relaunch.json"
+    $cfg = Get-Content -Raw -Encoding UTF8 $cfgPath | ConvertFrom-Json
+    $pidWait = [int]$cfg.pid
+    $exe = [string]$cfg.exe
+    $backup = [string]$cfg.backup
+    $workdir = [string]$cfg.cwd
+    $launchArgs = @()
+    if ($null -ne $cfg.args) { $launchArgs = @($cfg.args) }
+    Write-UpdateLog "Relaunch helper waiting for PID $pidWait"
+    Start-Sleep -Seconds 1
+    while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {
+        Start-Sleep -Milliseconds 500
     }
-} else {
-    Write-UpdateLog "FATAL: exe missing: $exe"
+    Start-Sleep -Seconds 2
+    if ($backup -and (Test-Path -LiteralPath $backup)) {
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($key in @(
+        "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "_MEIPASS2"
+    )) {
+        Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem Env: -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "_PYI_*"
+    } | ForEach-Object {
+        Remove-Item -LiteralPath "Env:$($_.Name)" -ErrorAction SilentlyContinue
+    }
+    $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+    if (-not $workdir) { $workdir = Split-Path -Parent $exe }
+    Write-UpdateLog "Launching $exe"
+    if (-not (Test-Path -LiteralPath $exe)) {
+        throw "exe missing: $exe"
+    }
+    try { Unblock-File -LiteralPath $exe } catch {}
+    if ($launchArgs.Count -gt 0) {
+        Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $workdir -ErrorAction Stop
+    } else {
+        Start-Process -FilePath $exe -WorkingDirectory $workdir -ErrorAction Stop
+    }
+    Write-UpdateLog "Start-Process OK"
+    Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-UpdateLog "FATAL: $($_.Exception.Message)"
 }
-Remove-Item -LiteralPath $cfgPath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 '''
     script_path.write_text(script_content, encoding='utf-8')
     return script_path
@@ -1277,6 +1394,7 @@ def _update_source_app(
         _schedule_relaunch_after_exit()
     except Exception as e:
         print(f"Failed to schedule relaunch: {e}")
+        # Fallback only — the files are already replaced; the helper did not start.
         return (True, "Update installed successfully!\nPlease restart the application.")
     return (True,
         "Update installed!\n\n"
@@ -1292,6 +1410,7 @@ try:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 except Exception:
     pass
+''' + _SPAWN_DETACHED_PY + r'''
 
 cfg = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 pid = int(cfg["pid"])
@@ -1344,22 +1463,7 @@ if orig_ld is not None:
 else:
     env.pop("LD_LIBRARY_PATH", None)
 env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-kw = dict(
-    cwd=cwd,
-    env=env,
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    close_fds=True,
-)
-if sys.platform == "win32":
-    kw["creationflags"] = (
-        getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-else:
-    kw["start_new_session"] = True
-subprocess.Popen(argv, **kw)
+spawn_detached(argv, cwd, env)
 try:
     Path(sys.argv[1]).unlink()
 except OSError:

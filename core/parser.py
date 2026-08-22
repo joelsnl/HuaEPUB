@@ -1,14 +1,17 @@
 # Author: joelsnl and Anthropic Claude
 """
-Base Parser class and Chapter data structure
-All site-specific parsers inherit from BaseParser
+Base parser, Chapter / NovelInfo dataclasses, and the parser registry.
+
+Site layouts live in parsers/sites.json (SiteConfigParser). Unknown hosts
+use parsers/generic.py. Do not add per-site Python modules.
+Chapter.used_heuristic is set when content selectors miss and the density
+heuristic is used instead.
 """
 
-import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from bs4 import BeautifulSoup
 
 # Try curl_cffi first (best TLS fingerprinting, lightweight)
@@ -23,7 +26,6 @@ except ImportError:
 
 # Fallback to requests
 if not HTTP_CLIENT:
-    import requests
     HTTP_CLIENT = "requests"
     print("Warning: curl_cffi not installed. Run: pip install curl_cffi")
 

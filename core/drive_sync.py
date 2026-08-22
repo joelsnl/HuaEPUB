@@ -3,11 +3,17 @@
 Optional Google Drive sync for library metadata and EPUB files.
 
 Offline-first: local ~/.huaepub/ is always usable. Drive is opt-in.
+drive.file scope only — visible My Drive folder (never hidden appDataFolder).
+Never sync cache.db, active_download.json, or ~/.huaepub/polish/.
+
 Auth uses browser OAuth (loopback) via google-auth-oauthlib.
 
 Client config: ~/.huaepub/google_oauth_client.json
   (Desktop OAuth client JSON downloaded from Google Cloud Console)
 Token cache: ~/.huaepub/google_token.json
+
+The GUI queues a silent auto-sync after successful Single / Multi /
+Library Update / Update All when Drive is enabled.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import re
 import threading
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -140,7 +146,9 @@ def oauth_setup_instructions() -> str:
         "   Application type: Desktop app\n"
         "4. Download the JSON and save it as:\n"
         f"   {path}\n\n"
-        "Then click Connect again. Sync stays optional and offline-first."
+        "Then click Connect again. Sync stays optional and offline-first.\n"
+        "Scope is drive.file only — HuaEPUB can manage folders this app created, "
+        "not a folder you made by hand with a different OAuth client."
     )
 
 

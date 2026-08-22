@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 # Author: joelsnl and Anthropic Claude
 """
-Build script for creating standalone executable using PyInstaller
+Build script for creating a standalone executable using PyInstaller.
+
+Regenerates HuaEPUB.spec each run (deletes any leftover spec first).
+Do not commit the generated spec — especially not a stale CustomTkinter one.
 """
-import os
+import importlib.util
 import sys
 import subprocess
 import shutil
 from pathlib import Path
 
 from core.branding import EXE_BASENAME
+
+# Keep in sync with requirements-dev.txt and .github/workflows/release.yml
+_PINNED_PYINSTALLER = "pyinstaller==6.22.2"
 
 
 def build():
@@ -22,12 +28,9 @@ def build():
     separator = ';' if sys.platform == 'win32' else ':'
     exe_name = f"{EXE_BASENAME}.exe" if sys.platform == 'win32' else EXE_BASENAME
     
-    # Check if PyInstaller is installed
-    try:
-        import PyInstaller
-    except ImportError:
-        print("Installing PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+    if importlib.util.find_spec("PyInstaller") is None:
+        print(f"Installing {_PINNED_PYINSTALLER}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", _PINNED_PYINSTALLER])
     
     # Clean previous builds
     for folder in ['build', 'dist']:

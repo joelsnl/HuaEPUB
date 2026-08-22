@@ -1,5 +1,5 @@
 # Author: joelsnl and Anthropic Claude
-"""Main Qt window: modes, workers, pause/resume, menus."""
+"""Main Qt window: modes, workers, pause/resume, menus, Drive auto-sync."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from core.download_runner import downloads_folder, epub_path, format_completion_
 from core.logger import setup_logging
 from core.notify import notify
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
-from core.settings import get_default_books_dir, get_setting, save_settings, set_setting
+from core.settings import get_default_books_dir, set_setting
 from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
@@ -865,7 +865,6 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Remove", msg) != QMessageBox.Yes:
             return
         from core.library import purge_novel_artifacts
-        from core.settings import get_default_books_dir
 
         extra_dirs = [get_default_books_dir()]
         custom = (self.session.output_dir or "").strip()
@@ -884,7 +883,6 @@ class MainWindow(QMainWindow):
     def _download_library_epub(self, entry):
         # Prefer Drive download if remote id known
         from core.security import is_allowed_epub_path
-        from core.settings import get_default_books_dir
 
         folder = downloads_folder(self.options.snapshot().get("output_dir", ""))
         roots = [get_default_books_dir(), folder]
@@ -988,6 +986,7 @@ class MainWindow(QMainWindow):
         self._start_drive_sync(silent=False)
 
     def _queue_drive_sync(self):
+        """Silent Drive push after a successful download/update (no tab switch)."""
         if self.library.drive_enabled.isChecked():
             self._pending_drive_sync = True
             self._drive_sync_silent = True
@@ -1184,12 +1183,13 @@ class MainWindow(QMainWindow):
         size_lbl = QLabel(self._cache_size_text())
         layout.addWidget(size_lbl)
         explain = QLabel(
-            "Chapter HTML, covers, and tables of contents live in ~/.huaepub/cache.db. "
-            "This is not Drive-synced. When the file grows past the limit, the oldest "
-            "cached chapters are deleted first (least recently stored). Translations "
-            "are kept unless the cache is still over the limit.\n\n"
+            "Chapter HTML, translations (including polished spans), covers, and "
+            "tables of contents live in ~/.huaepub/cache.db. This is not Drive-synced. "
+            "When the file grows past the limit, the oldest cached chapters are "
+            "deleted first (least recently stored). Translations are kept unless "
+            "the cache is still over the limit.\n\n"
             "Nothing is cleared on a timer — only when over the cap, or when you "
-            "clear it here."
+            "clear it here. llama.cpp models live separately in ~/.huaepub/polish/."
         )
         explain.setWordWrap(True)
         layout.addWidget(explain)
@@ -1284,7 +1284,7 @@ class MainWindow(QMainWindow):
             "The first run downloads llama.cpp and a Qwen2.5 GGUF that fits this GPU "
             "(3B / 7B / 14B) into ~/.huaepub/polish. Fluent sentences are copied; "
             "only dirty spans hit the GPU. The same EPUB is written. "
-            "Progress is in Help → Open log. If llama.cpp cannot start because Ollama "
+            "Progress is in File → Open log file. If llama.cpp cannot start because Ollama "
             "is using the GPU, quit Ollama from the tray and retry.</p>"
             "<p>Workers apply to Google/LibreTranslate only. Polish runs separately.</p>"
         )
@@ -1303,9 +1303,9 @@ class MainWindow(QMainWindow):
         box.setText(
             f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
             f"<p>{APP_DESCRIPTION}</p>"
-            "<p>Optional: after Google, polish awkward English locally with llama.cpp "
-            "(auto-installed Qwen GGUF). Ollama is not required. "
-            "Help → How translation works.</p>"
+            "<p>Optional: Google / LibreTranslate / Ollama translation, then local "
+            "llama.cpp polish (auto-installed Qwen GGUF). Ollama is not required for polish. "
+            "Help → How translation works. Cache size is Help → Cache…</p>"
             "<p>"
             f"<b>Developer:</b> {APP_AUTHOR} "
             f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"

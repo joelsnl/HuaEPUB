@@ -4,6 +4,9 @@ Single site parser driven by parsers/sites.json.
 
 Each JSON object is a hostname plus CSS selectors (and optional encoding,
 delay, AJAX chapter-list URL, etc.). Unknown hosts fall through to GenericParser.
+
+If content selectors miss, GenericParser's density heuristic is used and
+Chapter.used_heuristic is set (completion dialog warns).
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup

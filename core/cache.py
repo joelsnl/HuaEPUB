@@ -5,9 +5,16 @@ SQLite-backed persistent caches.
 Local-only database (cache.db in ~/.huaepub/) — never synced to Drive:
 
 - chapters: successfully downloaded chapter HTML, keyed by chapter URL.
-- translations: translated text segments, keyed by (backend, source text).
+- translations: translated / polished text segments, keyed by (backend, source).
 - covers: cover image bytes, keyed by cover URL (or book source_url fallback).
 - chapter_lists: TOC snapshots for faster library update checks.
+
+Size cap: settings cache_max_mb (default 2048; 0 = unlimited). Nothing is
+timer-cleared. When over the cap, oldest stored chapter HTML is deleted
+first, then covers, then TOCs, then translations. Help → Cache… is the UI.
+
+Translation writes may be batched (put_translation(..., commit=False) +
+flush()) so a long Google pass is not one SQLite commit per segment.
 
 All methods are thread-safe (single connection guarded by a lock) and
 never raise - a broken cache degrades to "no cache", not a crash.
