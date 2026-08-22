@@ -77,7 +77,7 @@ jobs:
           Compress-Archive -Path "dist/${{ matrix.exe }}","dist/${{ matrix.legacy_exe }}" -DestinationPath "${{ matrix.asset }}"
 
       - name: Zip executable (macOS / Linux)
-        if: runner.os != "Windows"
+        if: runner.os != 'Windows'
         run: |
           cp "dist/${{ matrix.exe }}" "dist/${{ matrix.legacy_exe }}"
           cd dist && zip "../${{ matrix.asset }}" "${{ matrix.exe }}" "${{ matrix.legacy_exe }}"
