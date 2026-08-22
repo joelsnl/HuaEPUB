@@ -8,10 +8,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtGui import QShortcut
-from PySide6.QtWidgets import QApplication, QMessageBox
-
-from gui.dialogs import bind_letter_shortcuts
+# PySide6 is installed, but importing QtGui still needs OS GL/EGL libs.
+# Headless Linux CI without those packages must skip, not fail collection.
+try:
+    from PySide6.QtGui import QShortcut
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from gui.dialogs import bind_letter_shortcuts
+except ImportError as exc:
+    pytest.skip(f"Qt GUI unavailable: {exc}", allow_module_level=True)
 
 
 @pytest.fixture(scope="module")

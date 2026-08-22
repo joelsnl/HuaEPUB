@@ -53,7 +53,7 @@ SOURCE_UPDATE_ITEMS = [
 ]
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.11.0"
+__version__ = "2.11.1"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"

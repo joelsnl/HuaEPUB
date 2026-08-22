@@ -34,7 +34,7 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/utils.py` - shared helpers (`safe_filename`, URL extraction, ETA formatting)
 - `core/security.py` - SSRF URL validation, `safe_http_request` (re-checks redirect hops), `safe_extract_zip` (zip-slip + size caps), `write_secret_file` / update-helper JSON
 - `parsers/` - `sites.json` (host + CSS selectors) read by a single `SiteConfigParser`; `generic.py` is the heuristic fallback for unknown hosts. Registration order matters: `parsers/__init__.py` must register the JSON parser first and `generic` LAST. A content-selector miss sets `Chapter.used_heuristic` and is shown in the completion dialog.
-- `tests/` - offline pytest suite with HTML fixtures (no network access needed). Includes `sites.json` schema checks and a cache→EPUB pipeline test.
+- `tests/` - offline pytest suite with HTML fixtures (no network access needed). Includes `sites.json` schema checks and a cache→EPUB pipeline test. `tests/test_dialogs.py` imports PySide6 and skips collection if OS GL/EGL libs are missing; Linux CI/release installs `libegl1` so those tests run.
 - `build.py` - PyInstaller packaging; **regenerates** `HuaEPUB.spec` each build. Do not commit a leftover spec (`*.spec` is gitignored). Pin is `pyinstaller==6.22.2` (keep in sync with `requirements-dev.txt` and release.yml).
 - `requirements-dev.txt` - pytest, ruff, pinned PyInstaller
 - `.github/workflows/release.yml` - pytest + ruff gate, then Win/macOS/Linux zips on `v*` tag push
