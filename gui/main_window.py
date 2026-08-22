@@ -8,8 +8,10 @@ import threading
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QDesktopServices, QPixmap
+from PySide6.QtCore import QRect, QThread, QTimer, QUrl, Qt, Signal, Slot
+from PySide6.QtGui import (
+    QAction, QDesktopServices, QGuiApplication, QKeySequence, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
     QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox, QPushButton,
@@ -24,11 +26,13 @@ from core.download_job import (
     chapters_from_job, chapters_to_job, clear_job, load_job,
     novel_info_from_job, novel_info_to_job, save_job,
 )
-from core.download_runner import downloads_folder, epub_path, format_completion_notes
+from core.download_runner import (
+    completion_dialog_title, downloads_folder, epub_path, format_completion_notes,
+)
 from core.logger import setup_logging
+from core.settings import get_default_books_dir, save_settings, set_setting
 from core.notify import notify
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
-from core.settings import get_default_books_dir, set_setting
 from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
@@ -36,6 +40,7 @@ from core.updater import (
 from core.utils import extract_urls, looks_like_url, sanitize_runtime_env
 from core.drive_sync import oauth_setup_instructions
 
+from gui.dialogs import ask_yes_no, exec_box, show_error, show_info, show_warning
 from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
 from gui.pages.single_page import SinglePage
@@ -115,6 +120,8 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._wire()
+        self._install_shortcuts()
+        self._restore_window_geometry()
 
         QTimer.singleShot(400, self._check_resume_job)
         if get_auto_check_updates():
@@ -202,15 +209,84 @@ class MainWindow(QMainWindow):
             drive_panel_expanded=True,
         )
 
+    def _install_shortcuts(self):
+        for seq in ("Ctrl+Return", "Ctrl+Enter"):
+            go = QShortcut(QKeySequence(seq), self)
+            go.setContext(Qt.ShortcutContext.WindowShortcut)
+            go.activated.connect(self._shortcut_ctrl_enter)
+        esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        esc.setContext(Qt.ShortcutContext.WindowShortcut)
+        esc.activated.connect(self._shortcut_escape)
+
+    @Slot()
+    def _shortcut_ctrl_enter(self):
+        if self._worker_busy or self.session.control.is_downloading:
+            return
+        tab = self.tabs.currentWidget()
+        if tab is self.single:
+            if self.single.chapters and self.progress.download_btn.isEnabled():
+                self._start_single_download()
+            else:
+                self.single._on_fetch()
+        elif tab is self.multi:
+            if self.multi.download_btn.isEnabled() and self.multi.fetched_novels():
+                self._start_multi_download()
+            else:
+                self._start_multi_fetch()
+
+    @Slot()
+    def _shortcut_escape(self):
+        if self.session.control.is_downloading or self.progress.cancel_btn.isEnabled():
+            self._cancel_download()
+
+    def _restore_window_geometry(self):
+        s = self.session.settings
+        try:
+            w = int(s.get("window_w") or 0)
+            h = int(s.get("window_h") or 0)
+            x = int(s.get("window_x") or 0)
+            y = int(s.get("window_y") or 0)
+        except (TypeError, ValueError):
+            return
+        if w < self.minimumWidth() or h < self.minimumHeight():
+            return
+        geo = QRect(x, y, w, h)
+        screens = QGuiApplication.screens()
+        if screens and not any(scr.availableGeometry().intersects(geo) for scr in screens):
+            ag = screens[0].availableGeometry()
+            self.resize(min(w, ag.width()), min(h, ag.height()))
+            return
+        self.setGeometry(geo)
+
+    def _save_window_geometry(self):
+        geo = self.normalGeometry()
+        self.session.settings["window_x"] = int(geo.x())
+        self.session.settings["window_y"] = int(geo.y())
+        self.session.settings["window_w"] = int(geo.width())
+        self.session.settings["window_h"] = int(geo.height())
+        save_settings(self.session.settings)
+
     def closeEvent(self, event):
         self._persist_settings()
+        self._save_window_geometry()
+        downloading = bool(self.session.control.is_downloading)
+        update_exit = bool(getattr(self, "_exiting_for_update", False))
+        if downloading and not update_exit:
+            try:
+                self.session.control.request_cancel()
+            except Exception:
+                pass
+            wait_ms = 15000
+        elif update_exit:
+            wait_ms = 200
+        else:
+            wait_ms = 5000
         try:
             cleanup_browser()
         except Exception:
             pass
         self.session.close()
         self._pending_drive_sync = False
-        wait_ms = 200 if getattr(self, "_exiting_for_update", False) else 5000
         self._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
         event.accept()
 
@@ -324,10 +400,10 @@ class MainWindow(QMainWindow):
         self.progress.set_status(f"Incomplete download ready: resume available")
 
     def _on_discard_job(self):
-        if QMessageBox.question(
+        if not ask_yes_no(
             self, "Discard",
             "Remove the saved resume point?\nCached chapter text stays on this PC.",
-        ) != QMessageBox.Yes:
+        ):
             return
         clear_job(self.session.data_dir)
         self.session.control.active_job = None
@@ -349,11 +425,11 @@ class MainWindow(QMainWindow):
             elif kind == "library_update_all":
                 self._resume_library_update_all(job)
             else:
-                QMessageBox.warning(self, "Resume", f"Unknown job type: {kind}")
+                show_warning(self, "Resume", f"Unknown job type: {kind}")
                 clear_job(self.session.data_dir)
         except Exception as e:
             traceback.print_exc()
-            QMessageBox.critical(self, "Resume failed", str(e))
+            show_error(self, "Resume failed", str(e))
 
     def _resume_single(self, job: dict):
         self.tabs.setCurrentWidget(self.single)
@@ -459,7 +535,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _fetch_error(self, msg: str):
         self.single.set_fetch_enabled(True)
-        QMessageBox.critical(self, "Fetch failed", msg)
+        show_error(self, "Fetch failed", msg)
         self._finish_worker_later()
 
     @Slot(object, list, object, str)
@@ -494,7 +570,7 @@ class MainWindow(QMainWindow):
             return
         selected = self.single.selected_chapters()
         if not selected:
-            QMessageBox.warning(self, "Warning", "Select at least one chapter")
+            show_warning(self, "Warning", "Select at least one chapter")
             return
         self._persist_settings()
         o = self.options.snapshot()
@@ -555,7 +631,7 @@ class MainWindow(QMainWindow):
         if notes:
             msg += "\n\n" + notes
         title = "Saved with warnings" if notes else "Success"
-        QMessageBox.information(self, title, msg)
+        show_info(self, title, msg)
         self.library.refresh()
         self._queue_drive_sync()
         self._finish_worker_later()
@@ -572,7 +648,7 @@ class MainWindow(QMainWindow):
         job = self.session.control.active_job
         if job:
             self.resume_banner.show_job(job, self.session.cache)
-        QMessageBox.critical(self, "Download failed", msg)
+        show_error(self, "Download failed", msg)
         self._finish_worker_later()
     # ------------------------------------------------------------------
     # Multi
@@ -581,7 +657,7 @@ class MainWindow(QMainWindow):
     def _start_multi_fetch(self):
         urls = self.multi.get_urls()
         if not urls:
-            QMessageBox.warning(self, "Multi", "Paste at least one URL")
+            show_warning(self, "Multi", "Paste at least one URL")
             return
         self.multi.begin_fetch(urls)
         self.progress.set_status(f"Fetching 0/{len(urls)}…")
@@ -690,7 +766,9 @@ class MainWindow(QMainWindow):
     def _multi_done(self, summary: str):
         self._set_downloading(False)
         self.progress.set_progress(1.0, "Multi-download complete")
-        QMessageBox.information(self, "Multi-Download Complete", summary)
+        show_info(
+            self, completion_dialog_title(summary, "Multi-download complete"), summary
+        )
         self.library.refresh()
         job = self.session.control.active_job
         if job and job.get("kind") == "multi":
@@ -707,7 +785,7 @@ class MainWindow(QMainWindow):
     def _start_library_check(self):
         entries = self.session.library_store.get_library()
         if not entries:
-            QMessageBox.information(self, "Library", "No tracked novels yet.")
+            show_info(self, "Library", "No tracked novels yet.")
             return
         self.library.set_check_busy(True)
         for e in entries:
@@ -766,7 +844,7 @@ class MainWindow(QMainWindow):
     def _lib_update_ok(self, msg: str):
         self._set_downloading(False)
         self.progress.set_progress(1.0, "Library updated")
-        QMessageBox.information(self, "Library Updated", msg)
+        show_info(self, completion_dialog_title(msg, "Library updated"), msg)
         self.library.refresh()
         self._queue_drive_sync()
         self._finish_worker_later()
@@ -774,7 +852,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _lib_up_to_date(self, display: str):
         self._set_downloading(False)
-        QMessageBox.information(self, "Up to date", f"No new chapters for:\n{display}")
+        show_info(self, "Up to date", f"No new chapters for:\n{display}")
         self._finish_worker_later()
 
     def _start_library_update_all(self):
@@ -785,12 +863,12 @@ class MainWindow(QMainWindow):
             if (self.library.check_status.get(e.source_url) or {}).get("state") == "update"
         ]
         if not entries:
-            QMessageBox.information(self, "Update All", "No novels with updates. Run Check updates first.")
+            show_info(self, "Update All", "No novels with updates. Run Check updates first.")
             return
-        if QMessageBox.question(
+        if not ask_yes_no(
             self, "Update All",
             f"Update {len(entries)} novel(s)?",
-        ) != QMessageBox.Yes:
+        ):
             return
         self._persist_settings()
         o = self.options.snapshot()
@@ -829,7 +907,7 @@ class MainWindow(QMainWindow):
     def _lib_update_all_done(self, summary: str):
         self._set_downloading(False)
         self.progress.set_progress(1.0, summary)
-        QMessageBox.information(self, "Update All", summary)
+        show_info(self, completion_dialog_title(summary, "Update All"), summary)
         self.library.refresh()
         job = self.session.control.active_job
         if job and job.get("kind") == "library_update_all":
@@ -862,7 +940,7 @@ class MainWindow(QMainWindow):
             "• chapter, cover, and table-of-contents cache for this novel"
             f"{extra}"
         )
-        if QMessageBox.question(self, "Remove", msg) != QMessageBox.Yes:
+        if not ask_yes_no(self, "Remove", msg):
             return
         from core.library import purge_novel_artifacts
 
@@ -900,18 +978,18 @@ class MainWindow(QMainWindow):
                 self.session.drive_sync.download_epub(
                     entry.drive_file_id, dest, allowed_root=folder
                 )
-                QMessageBox.information(self, "Download", f"Saved to:\n{dest}")
+                show_info(self, "Download", f"Saved to:\n{dest}")
             except Exception as e:
-                QMessageBox.warning(self, "Download EPUB", str(e))
+                show_warning(self, "Download EPUB", str(e))
         else:
-            QMessageBox.information(self, "Download EPUB", "No local or Drive EPUB found for this entry.")
+            show_info(self, "Download EPUB", "No local or Drive EPUB found for this entry.")
 
     def _reset_library(self):
-        if QMessageBox.question(
+        if not ask_yes_no(
             self, "Reset library",
             "Clear all tracked novels from your local library?\n\n"
             "They will not come back on Drive sync. Local EPUB files are kept.",
-        ) != QMessageBox.Yes:
+        ):
             return
         self.session.library_store.clear(clear_library=True, clear_history=False)
         self.library.check_status.clear()
@@ -925,7 +1003,7 @@ class MainWindow(QMainWindow):
 
     def _drive_connect(self):
         if not self.session.drive_sync.client_configured():
-            QMessageBox.information(self, "Drive setup", oauth_setup_instructions())
+            show_info(self, "Drive setup", oauth_setup_instructions())
             return
         self.progress.set_status("Connecting to Google Drive…")
         worker = DriveConnectWorker(self.session.drive_sync)
@@ -942,7 +1020,7 @@ class MainWindow(QMainWindow):
             self._queue_drive_sync()
             self._finish_worker_later()
         else:
-            QMessageBox.critical(self, "Drive", err or "Connect failed")
+            show_error(self, "Drive", err or "Connect failed")
             self._finish_worker_later()
 
     def _drive_disconnect(self):
@@ -1004,7 +1082,7 @@ class MainWindow(QMainWindow):
             self.library.drive_status.setText(f"Sync error: {err[:80]}")
             self.progress.set_status(f"Drive sync error: {err[:60]}")
             if not silent:
-                QMessageBox.warning(self, "Drive sync", err)
+                show_warning(self, "Drive sync", err)
         else:
             self.library.drive_status.setText(summary)
             # Drive pull only needs library.json — show All so Updates filter
@@ -1032,7 +1110,7 @@ class MainWindow(QMainWindow):
                         f"\n\n{n} novel(s) are in your library list now "
                         "(covers/EPUBs stay optional — no full download required)."
                     )
-                QMessageBox.information(self, "Drive sync", (summary or "Sync done") + extra)
+                show_info(self, "Drive sync", (summary or "Sync done") + extra)
         self._finish_worker_later()
 
     def _drive_change_folder(self):
@@ -1066,19 +1144,19 @@ class MainWindow(QMainWindow):
                 f"{info.get('web_link') or ''}"
             )
             if info.get("error"):
-                QMessageBox.warning(
+                show_warning(
                     self, "Drive folder",
                     detail + f"\n\nWarning: {info['error']}",
                 )
             else:
-                QMessageBox.information(self, "Drive folder", detail)
+                show_info(self, "Drive folder", detail)
             self.library.drive_status.setText(
                 f"{label} — {novels} novel(s), {epubs} EPUB(s) on Drive"
             )
             # Pull immediately so Library fills from this folder
             QTimer.singleShot(100, self._drive_sync_now)
         except Exception as e:
-            QMessageBox.critical(self, "Drive folder", str(e))
+            show_error(self, "Drive folder", str(e))
 
     def _drive_open_folder(self):
         link = ""
@@ -1089,10 +1167,10 @@ class MainWindow(QMainWindow):
         if link:
             QDesktopServices.openUrl(QUrl(link))
         else:
-            QMessageBox.information(self, "Open folder", "Connect to Drive first.")
+            show_info(self, "Open folder", "Connect to Drive first.")
 
     def _drive_setup_help(self):
-        QMessageBox.information(self, "Drive OAuth setup", oauth_setup_instructions())
+        show_info(self, "Drive OAuth setup", oauth_setup_instructions())
 
     # ------------------------------------------------------------------
     # Misc
@@ -1101,7 +1179,7 @@ class MainWindow(QMainWindow):
     def _show_recent(self):
         history = self.session.library_store.get_history()
         if not history:
-            QMessageBox.information(self, "Recent", "No download history yet.")
+            show_info(self, "Recent", "No download history yet.")
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("Recent downloads")
@@ -1163,7 +1241,7 @@ class MainWindow(QMainWindow):
         if log.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(log)))
         else:
-            QMessageBox.information(self, "Log", f"No log yet at:\n{log}")
+            show_info(self, "Log", f"No log yet at:\n{log}")
 
     def _cache_size_text(self) -> str:
         n = self.session.cache.file_size_bytes()
@@ -1236,22 +1314,22 @@ class MainWindow(QMainWindow):
             size_lbl.setText(self._cache_size_text())
 
         def on_clear_chapters():
-            if QMessageBox.question(
+            if not ask_yes_no(
                 dlg, "Clear chapter cache",
                 "Delete cached chapter HTML, covers, and tables of contents?\n\n"
                 "Translations stay. The next download will re-fetch chapter text.",
-            ) != QMessageBox.Yes:
+            ):
                 return
             self.session.cache.clear_chapter_data()
             refresh_size()
             self.progress.set_status("Chapter cache cleared")
 
         def on_clear_all():
-            if QMessageBox.question(
+            if not ask_yes_no(
                 dlg, "Clear all cache",
                 "Delete the entire cache, including translations?\n\n"
                 "The next download and translate will redo all network work.",
-            ) != QMessageBox.Yes:
+            ):
                 return
             self.session.cache.clear_all()
             refresh_size()
@@ -1292,7 +1370,7 @@ class MainWindow(QMainWindow):
         for lbl in box.findChildren(QLabel):
             lbl.setOpenExternalLinks(True)
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        box.exec()
+        exec_box(box)
 
     def _about(self):
         version = get_current_version()
@@ -1326,7 +1404,7 @@ class MainWindow(QMainWindow):
         for lbl in box.findChildren(QLabel):
             lbl.setOpenExternalLinks(True)
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        box.exec()
+        exec_box(box)
 
     def _auto_check_updates(self):
         check_for_updates_async(callback=self._update_check_cb)
@@ -1351,10 +1429,10 @@ class MainWindow(QMainWindow):
     def _on_update_check_ready(self, has_update: bool, latest: str, message: str):
         if has_update:
             self.progress.set_status(f"Update available: {latest}")
-            if QMessageBox.question(
+            if ask_yes_no(
                 self, "Update available",
                 f"{message}\n\nDownload and install?",
-            ) == QMessageBox.Yes:
+            ):
                 self.progress.set_status("Downloading update…")
                 download_update_async(
                     progress_callback=lambda _c, _t, s: self._sig_status.emit(
@@ -1371,7 +1449,7 @@ class MainWindow(QMainWindow):
     def _on_update_download_done(self, ok: bool, message: str):
         if ok:
             self.progress.set_status("Update ready — closing to apply…")
-            QMessageBox.information(
+            show_info(
                 self,
                 "Update ready",
                 message
@@ -1393,6 +1471,6 @@ class MainWindow(QMainWindow):
             threading.Thread(target=_exit_soon, daemon=True).start()
             return
         self.progress.set_status(message or "Update failed")
-        QMessageBox.warning(
+        show_warning(
             self, "Update failed", message or "Update failed."
         )

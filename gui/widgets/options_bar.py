@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.settings import get_default_books_dir
+from core.settings import get_data_dir, get_default_books_dir, get_setting, set_setting
+from gui.dialogs import ask_yes_no, bind_letter_shortcuts, show_warning
 
 
 class OptionsBar(QWidget):
@@ -201,16 +202,13 @@ class OptionsBar(QWidget):
             return
 
         prev = self._backend_label(self._last_non_ollama)
-        reply = QMessageBox.question(
+        if not ask_yes_no(
             self.window(),
             "Download a local model?",
             "Ollama is running but has no models yet.\n\n"
             f"Download {recommended} now? About 2 GB, one-time.\n\n"
             f"If you choose No, translator stays on {prev}.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        ):
             self._revert_from_ollama()
             return
         self._ollama_pull_purpose = "translator"
@@ -249,8 +247,38 @@ class OptionsBar(QWidget):
         self._sync_ollama_row()
 
     def _on_polish_changed(self, *_args):
+        if self.polish_cb.isChecked() and self.translate_cb.isChecked():
+            if not self._maybe_confirm_polish_notice():
+                self.polish_cb.blockSignals(True)
+                self.polish_cb.setChecked(False)
+                self.polish_cb.blockSignals(False)
+                self._sync_ollama_row()
+                self._emit_options()
+                return
         self._sync_ollama_row()
         self._emit_options()
+
+    def _maybe_confirm_polish_notice(self) -> bool:
+        if self.session.settings.get("polish_notice_shown") or get_setting(
+            "polish_notice_shown"
+        ):
+            return True
+        polish_dir = get_data_dir() / "polish"
+        if not ask_yes_no(
+            self.window(),
+            "Polish English",
+            "Polish runs entirely on this PC (llama.cpp + a Qwen model).\n\n"
+            "The first run downloads about 2–9 GB (3B, 7B, or 14B, whichever "
+            "fits this machine) into:\n"
+            f"{polish_dir}\n\n"
+            "Nothing is uploaded. This folder is never synced to Google Drive.\n"
+            "Help → How translation works has more detail.\n\n"
+            "Turn on Polish English?",
+        ):
+            return False
+        self.session.settings["polish_notice_shown"] = True
+        set_setting("polish_notice_shown", True)
+        return True
 
     def _uncheck_polish(self):
         self.polish_cb.blockSignals(True)
@@ -289,6 +317,7 @@ class OptionsBar(QWidget):
                 f"{stay}"
             )
             box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
+            bind_letter_shortcuts(box)
             box.exec()
             return
 
@@ -303,6 +332,7 @@ class OptionsBar(QWidget):
             "Open ollama.com", QMessageBox.ButtonRole.AcceptRole
         )
         box.addButton("OK", QMessageBox.ButtonRole.RejectRole)
+        bind_letter_shortcuts(box)
         box.exec()
         if box.clickedButton() is open_btn:
             QDesktopServices.openUrl(QUrl("https://ollama.com"))
@@ -412,7 +442,7 @@ class OptionsBar(QWidget):
                     f"{self._backend_label(self._last_non_ollama)}."
                 )
             )
-            QMessageBox.warning(
+            show_warning(
                 self.window(),
                 "Ollama download failed",
                 f"{err}\n\n{stay}",

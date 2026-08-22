@@ -15,6 +15,8 @@ from core.download_runner import (
     epub_translate_kwargs,
     eta_from_network_samples,
     format_completion_notes,
+    completion_dialog_title,
+    completion_has_warnings,
 )
 from core.parser import Chapter, NovelInfo
 
@@ -82,6 +84,22 @@ def test_format_completion_notes_polish_and_warnings():
     assert format_completion_notes() == ""
 
 
+def test_completion_dialog_title_never_says_success_with_warnings():
+    clean = "Completed: 2/2 novels\n\n  • Book.epub\n"
+    assert completion_has_warnings(clean) is False
+    assert completion_dialog_title(clean, "Multi-download complete") == (
+        "Multi-download complete"
+    )
+    warned = clean + "\nPolish was stopped — EPUB saved with machine translation."
+    assert completion_dialog_title(warned, "Library updated") == "Saved with warnings"
+    failed = "Update All: 1/2 succeeded\n  • Other: download failed\n"
+    assert completion_dialog_title(failed, "Update All") == "Saved with warnings"
+    partial = "Completed: 1/3 novels\n\n  • Book: HTTP 403\n"
+    assert completion_dialog_title(partial, "Multi-download complete") == (
+        "Saved with warnings"
+    )
+
+
 class _MemCache:
     def __init__(self, mapping=None):
         self.mapping = dict(mapping or {})
@@ -136,7 +154,7 @@ def test_library_update_eta_ignores_cache_hits():
     cache_lines = [s for s in statuses if s.startswith("Cached")]
     assert cache_lines
     assert all("ETA" not in s for s in cache_lines)
-    assert any("Downloading [1/1]" in s for s in statuses)
+    assert any("Fetching chapters [1/1]" in s for s in statuses)
     assert chapters[-1].content == "<p>fresh https://example.com/4</p>"
 
 

@@ -13,7 +13,8 @@ Current release version lives in `core/updater.py` (`__version__`) and the READM
 All application code lives at the repository root (there used to be a duplicate copy in `novel_downloader/`; it was removed - do not recreate it).
 
 - `app.py` - thin entry → `gui.app.run()`
-- `gui/` - PySide6 UI (`main_window`, pages, workers, dark `style.qss`). Worker→UI must use `@Slot` methods on the main window (never bare lambdas — they can run on the worker thread and crash Qt). Menus: File (books / data / log), Library (check / Drive sync / reset), Help (updates, How translation works, **Cache…**, About, Drive OAuth).
+- `gui/` - PySide6 UI (`main_window`, pages, workers, dark `style.qss`). Worker→UI must use `@Slot` methods on the main window (never bare lambdas — they can run on the worker thread and crash Qt). Menus: File (books / data / log), Library (check / Drive sync / reset), Help (updates, How translation works, **Cache…**, About, Drive OAuth). Shortcuts: Ctrl+Enter fetch/download on Single/Multi; Esc cancels an active job. Window geometry is restored from settings.
+- `gui/dialogs.py` - QMessageBox helpers. Fusion underlines `&Yes`/`&No` but those are Alt+Y/N; bind **Y**/**N** (and other first letters) so the keys work. Use these instead of `QMessageBox.question/information/warning/critical`.
 - `core/branding.py` - product name, data-dir name, exe basename, and legacy aliases
 - `core/parser.py` - `BaseParser`, `Chapter`/`NovelInfo` dataclasses (`Chapter.used_heuristic` when sites.json content selectors miss), parser registry, `create_http_session()` (curl_cffi Chrome impersonation with requests fallback)
 - `core/cleaner.py` - `ContentCleaner`: watermark/ad removal, XHTML structure fixing, br-to-p conversion
@@ -23,13 +24,13 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/epub_builder.py` - `EPUBBuilder` and `TranslatedEPUBBuilder` (ebooklib); translations are applied at the text-node level, never with raw string replacement. Atomic write (sibling `.tmp` then replace). Translated builds skip a second `clean_html`. Cancel during translation raises `DownloadCancelled` (no EPUB). Cancel during polish still writes the EPUB (`polish_cancelled`).
 - `core/download_runner.py` - UI-agnostic pause/cancel/chapter-cache/EPUB orchestration. ETA uses uncached/network samples only. Completion notes cover leftover Chinese, heuristic chapters, and polish-cancelled.
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release). Frozen onefile relaunch must strip `_PYI_*` / stale `_MEI` env and set `PYINSTALLER_RESET_ENVIRONMENT=1`. Windows helper: **ShellExecute** a hidden `powershell.exe -File` (not a Popen child — the onefile bootloader kills those on exit). POSIX: `/bin/sh` or `/bin/bash` — **never** `sys.executable` when frozen. Relaunch the bare binary with double-fork + exec — **never** `/usr/bin/open` (that opens Terminal.app).
-- `core/settings.py` - persistent settings JSON; atomic tmp+replace under a lock around the full read-modify-write. `get_data_dir()`, `get_default_books_dir()`. `cache_max_mb` (default 2048; `0` = unlimited).
+- `core/settings.py` - persistent settings JSON; atomic tmp+replace under a lock around the full read-modify-write. `get_data_dir()`, `get_default_books_dir()`. `cache_max_mb` (default 2048; `0` = unlimited). `polish_notice_shown` (first-run Polish dialog). `window_x/y/w/h` (0 width/height = default size).
 - `core/cache.py` - SQLite caches: chapters, translations (including polished spans), **covers**, **chapter-list snapshots**. Local-only; never Drive-synced. Default 2 GB cap; LRU by oldest stored chapter HTML first, then covers, TOCs, translations last; VACUUM after purge. Help → Cache… is the UI.
 - `core/download_job.py` - local-only `active_download.json` so Pause/close/reboot can resume (never Drive-synced)
 - `core/library.py` - history + tracked library (`library.json`), chapter-diff helpers for updates
 - `core/drive_sync.py` - optional Google Drive sync (`drive.file` scope only; visible folder; **library.json + EPUBs only**). GUI queues a silent auto-sync after successful Single / Multi / Library Update / Update All (does not switch to the Library tab).
 - `core/notify.py` - OS done/update notifications (Windows toast payloads via base64 — never interpolate novel titles into expandable PowerShell)
-- `core/logger.py` - tee stdout/stderr to `logs/huaepub.log` (1 MB startup rotate, keep `.log.1`)
+- `core/logger.py` - stdlib `logging` + `RotatingFileHandler` to `logs/huaepub.log` (1 MB, keep `.log.1`, rotates during a long session). Outside pytest, tees stdout/stderr into the logger (do not add a StreamHandler back to stdout). `sys.excepthook` / thread hook + faulthandler → `logs/huaepub.fault.log`. Existing `print()` calls stay; they are captured via the tee.
 - `core/utils.py` - shared helpers (`safe_filename`, URL extraction, ETA formatting)
 - `core/security.py` - SSRF URL validation, `safe_http_request` (re-checks redirect hops), `safe_extract_zip` (zip-slip + size caps), `write_secret_file` / update-helper JSON
 - `parsers/` - `sites.json` (host + CSS selectors) read by a single `SiteConfigParser`; `generic.py` is the heuristic fallback for unknown hosts. Registration order matters: `parsers/__init__.py` must register the JSON parser first and `generic` LAST. A content-selector miss sets `Chapter.used_heuristic` and is shown in the completion dialog.
@@ -68,3 +69,6 @@ Library updates rebuild a full EPUB from cache + new chapters. Drive sync is off
 - Product fetches (pages, covers, LibreTranslate) must go through `safe_http_request` / `validate_fetch_url`, not raw `session.get` with automatic redirects.
 - Product strings live in `core/branding.py` — prefer importing those over hardcoding.
 - Settings writes are atomic (tmp+replace) under one lock for the full read-modify-write.
+- Yes/No (and other) popups go through `gui/dialogs.py` so Y/N work without Alt. Do not use the static `QMessageBox.question` helpers.
+- `closeEvent` during a download: persist the resume job, `request_cancel` (do not clear the resume point), wait up to 15s, `terminate` only as a last resort. Update-install close stays a short wait.
+- Status copy should name the phase (Fetching chapters / Translating / Polishing / Writing EPUB). Completion dialogs with leftover Chinese, placeholders, heuristic chapters, or a cancelled polish pass use the title **Saved with warnings** — never a Success title with the warning only in the body.

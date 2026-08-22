@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.10.1**
+**Current version: 2.11.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -19,15 +19,16 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 - **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a successful download or library update, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab)
 - **Remove watermarks** and ads automatically
 - **Translate to English** using Google Translate (free, concurrent), a LibreTranslate server, or local **Ollama**
-- **Polish English** — after Google or LibreTranslate, a fast local copy-edit (llama.cpp + Qwen). Only awkward MTL spans are rewritten; fluent sentences are copied. Ollama is not required.
+- **Polish English** — after Google or LibreTranslate, a fast local copy-edit (llama.cpp + Qwen). Only awkward MTL spans are rewritten; fluent sentences are copied. Ollama is not required. The first time you tick it, a dialog explains the local download (~2–9 GB into `~/.huaepub/polish`).
 - **Chapter + translation cache** — stored in `~/.huaepub/cache.db` so re-runs and resumes skip network fetches. Default size cap is **2 GB** (Help → **Cache…**); oldest stored chapter HTML is deleted first. Nothing is cleared on a timer.
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes. EPUBs are written to a sibling `.tmp` then replaced so a crash cannot leave a half-written file.
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
-- **Progress tracking** with ETA (network/uncached work only — cached chapters do not fake “ETA 0s”), Pause, and Cancel. Failed chapters are retried at the end of the run. **Download EPUB** is disabled while a job is already running.
-- **Completion notes** — leftover Chinese, heuristic chapter guesses, or a cancelled polish pass show as “Saved with warnings”
+- **Progress tracking** with ETA (network/uncached work only — cached chapters do not fake “ETA 0s”), Pause, and Cancel. Status names the phase: fetching chapters, translating (including retry pass), polishing, or writing the EPUB. Failed chapters are retried at the end of the run. **Download EPUB** is disabled while a job is already running.
+- **Completion notes** — leftover Chinese, heuristic chapter guesses, or a cancelled polish pass show as “Saved with warnings” (Single, Multi, and Library). A clean run still says Success / complete.
+- **Keyboard** — **Ctrl+Enter** fetches (or downloads when ready) on Single / Multi. **Esc** cancels an active download. **Y** / **N** confirm Yes/No dialogs (the underlined letters are not Alt-only). Window size and position are remembered.
 - **Custom output folder** and persistent settings in `~/.huaepub/` (migrates from `~/.noveldownloader/` if present). `settings.json` is written atomically.
 - **Auto-updater** — downloads prebuilt release builds, verifies `SHA256SUMS.txt`, then a helper replaces the binary and **reopens the app on every OS** (Windows, macOS, Linux, and source installs)
-- **Log file** (`~/.huaepub/logs/huaepub.log`) — File → **Open log file**
+- **Log file** (`~/.huaepub/logs/huaepub.log`) — File → **Open log file**. Rotates at 1 MB during a long session (keeps `.log.1`). Crashes dump to `huaepub.fault.log` in the same folder.
 
 ## Installation
 
@@ -92,7 +93,7 @@ HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Optio
 | Use chapter cache (resume) | Reuses chapters already saved on this PC |
 | Watch clipboard for URLs | When on, copied novel URLs are queued into Multi (and fill Single if empty) |
 | Translator | Google (default), LibreTranslate, or local **Ollama** |
-| Polish English | After Google/LibreTranslate, local copy-edit on this PC. First run downloads llama.cpp + a Qwen GGUF that fits this GPU (`~/.huaepub/polish`). Greyed out if Translate is off or Translator is already Ollama. |
+| Polish English | After Google/LibreTranslate, local copy-edit on this PC. First tick shows a one-time size/path notice; the first run then downloads llama.cpp + a Qwen GGUF that fits this GPU (`~/.huaepub/polish`). Greyed out if Translate is off or Translator is already Ollama. |
 | Translation Workers | Concurrent Google/LibreTranslate requests (default 200). Ollama auto-drops to 2. Polish does not use this number. |
 | Ollama model / URL | Shown only when Translator is Ollama (full local translation). If you have no models, HuaEPUB asks to download `qwen2.5:3b` (~2 GB). URL must be localhost. |
 | Save to | Where EPUB files are written |
@@ -141,7 +142,7 @@ Resume data is **local only**. Google Drive sync never uploads the chapter cache
 
 1. Paste the book URL → **Fetch Chapters**.
 2. Select chapters with Select All / None / Invert, or a **Range** (e.g. from `200` to `450`).
-3. **Download EPUB** — progress shows chapter fetch, then EPUB build/translate. The button is disabled while a job is running.
+3. **Download EPUB** (or **Ctrl+Enter** when the button is enabled) — progress names the phase (fetching chapters, translating, polishing, writing EPUB). The button is disabled while a job is running. **Esc** cancels.
 4. Use **Recent** to reopen a URL from earlier downloads.
 5. If anything looks off (leftover Chinese, a generic content guess, or polish stopped early), the dialog title is **Saved with warnings**.
 
@@ -149,7 +150,7 @@ Resume data is **local only**. Google Drive sync never uploads the chapter cache
 
 1. Open the **Multi** tab.
 2. Paste several book URLs (one per line, or a block of text containing URLs).
-3. **Fetch All**, then **Download All**.
+3. **Fetch All**, then **Download All** (or **Ctrl+Enter** for the next of those two).
 4. Novels run one after another. You can Pause / Cancel / resume the queue the same way as Single.
 
 ### Library mode
@@ -205,7 +206,8 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/settings.json` | App options (atomic tmp+replace writes) |
 | `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
 | `~/.huaepub/google_token.json` | Drive refresh token (owner-only when the OS allows) |
-| `~/.huaepub/logs/huaepub.log` | Diagnostics |
+| `~/.huaepub/logs/huaepub.log` | Diagnostics (1 MB rotate during a session; keep `.log.1`) |
+| `~/.huaepub/logs/huaepub.fault.log` | Native crash dumps (faulthandler) |
 
 On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 

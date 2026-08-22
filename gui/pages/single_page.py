@@ -32,6 +32,7 @@ class SinglePage(QWidget):
         self.recent_btn = QPushButton("Recent")
         self.recent_btn.setObjectName("secondaryBtn")
         self.fetch_btn = QPushButton("Fetch Chapters")
+        self.fetch_btn.setToolTip("Fetch the chapter list (Ctrl+Enter)")
         self.recent_btn.clicked.connect(self.recent_requested.emit)
         self.fetch_btn.clicked.connect(self._on_fetch)
         url_row.addWidget(self.url_edit, 1)

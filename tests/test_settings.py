@@ -29,6 +29,11 @@ class TestSettings:
         assert loaded['drive_sync_enabled'] is False
         assert loaded['drive_sync_library'] is True
         assert loaded['drive_sync_epubs'] is True
+        assert loaded['polish_notice_shown'] is False
+        assert loaded['window_w'] == 0
+        assert loaded['window_h'] == 0
+        assert loaded['window_x'] == 0
+        assert loaded['window_y'] == 0
 
     def test_default_books_dir(self, temp_data_dir):
         books = settings.get_default_books_dir()
@@ -42,6 +47,21 @@ class TestSettings:
         assert settings.get_setting('output_dir') == '/tmp/books'
         # Untouched keys keep their defaults
         assert settings.get_setting('translate') is True
+
+    def test_window_geometry_and_polish_notice_persist(self):
+        settings.update_settings(
+            polish_notice_shown=True,
+            window_x=40,
+            window_y=50,
+            window_w=1100,
+            window_h=800,
+        )
+        loaded = settings.load_settings()
+        assert loaded['polish_notice_shown'] is True
+        assert loaded['window_x'] == 40
+        assert loaded['window_y'] == 50
+        assert loaded['window_w'] == 1100
+        assert loaded['window_h'] == 800
 
     def test_update_many(self):
         settings.update_settings(translate=False, clean=False)

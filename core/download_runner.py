@@ -83,6 +83,35 @@ def format_completion_notes(
     return "\n".join(parts)
 
 
+_WARNING_MARKERS = (
+    "placeholder",
+    "failed",
+    "polish was stopped",
+    "significant chinese",
+    "generic content guess",
+)
+
+
+def completion_has_warnings(body: str) -> bool:
+    """True when a completion dialog body is not a clean success."""
+    text = body or ""
+    low = text.lower()
+    if any(marker in low for marker in _WARNING_MARKERS):
+        return True
+    for pat in (r"Completed:\s*(\d+)/(\d+)", r"Update All:\s*(\d+)/(\d+)"):
+        match = re.search(pat, text)
+        if match and int(match.group(1)) != int(match.group(2)):
+            return True
+    return False
+
+
+def completion_dialog_title(body: str, ok_title: str) -> str:
+    """Never use a success title when warnings or failures are in the body."""
+    if completion_has_warnings(body):
+        return "Saved with warnings"
+    return ok_title
+
+
 def eta_from_network_samples(
     network_elapsed: float,
     network_done: int,
@@ -284,7 +313,7 @@ def download_chapters_with_cache(
             continue
 
         set_status(
-            f"Downloading [{uncached_done + 1}/{uncached_total}]: "
+            f"Fetching chapters [{uncached_done + 1}/{uncached_total}]: "
             f"{chapter.title[:40]}{eta_text}"
         )
         t0 = time.monotonic()
@@ -306,7 +335,7 @@ def download_chapters_with_cache(
 
     still_failed: List[str] = []
     if failed:
-        set_status(f"Retrying {len(failed)} failed chapter(s)...")
+        set_status(f"Retrying failed chapters ({len(failed)})…")
         print(f"Retrying {len(failed)} failed chapter(s)...")
         for chapter in failed:
             paused_for += control.wait_while_paused(set_status)
@@ -403,8 +432,10 @@ def build_epub(
     polish = bool(ollama_polish) and backend != "ollama"
     if translate and polish:
         set_status("Translating, then polishing English…")
+    elif translate:
+        set_status("Translating chapters…")
     else:
-        set_status("Building EPUB...")
+        set_status("Writing EPUB…")
     cleaner = ContentCleaner() if clean else None
     translator = None
     if translate:

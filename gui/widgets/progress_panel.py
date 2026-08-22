@@ -26,7 +26,8 @@ class ProgressPanel(QWidget):
         self.download_btn = QPushButton("Download EPUB")
         self.download_btn.setEnabled(False)
         self.download_btn.setToolTip(
-            "Disabled while a download is already running."
+            "Disabled while a download is already running. Ctrl+Enter starts "
+            "the download when this button is enabled."
         )
         self.pause_btn = QPushButton("Pause")
         self.pause_btn.setObjectName("secondaryBtn")
@@ -38,7 +39,7 @@ class ProgressPanel(QWidget):
         self.cancel_btn.setObjectName("dangerBtn")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setToolTip(
-            "Clears the resume point. Cached chapter text stays. "
+            "Clears the resume point (Esc). Cached chapter text stays. "
             "Cancel during translation writes no EPUB; "
             "cancel during polish still saves the machine-translated EPUB."
         )

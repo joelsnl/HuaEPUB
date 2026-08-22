@@ -80,6 +80,13 @@ DEFAULTS: Dict[str, Any] = {
     # Local cache.db cap in MiB. 0 = unlimited. Oldest chapter HTML is
     # deleted first when the file is over this size (translations kept).
     'cache_max_mb': 2048,
+    # One-shot honesty dialog the first time Polish English is checked.
+    'polish_notice_shown': False,
+    # Main window geometry. 0 width/height means "use the built-in default".
+    'window_x': 0,
+    'window_y': 0,
+    'window_w': 0,
+    'window_h': 0,
 }
 
 _lock = threading.Lock()
