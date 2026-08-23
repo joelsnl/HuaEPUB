@@ -135,59 +135,8 @@ class BaseParser(ABC):
         return response.text
 
     def fetch_page(self, url: str, retries: int = 3) -> BeautifulSoup:
-        """
-        Fetch a page and return BeautifulSoup object.
-        Handles 429 errors with longer waits.
-        """
-        from core.security import UnsafeURLError, safe_http_request
-
-        last_error = None
-        rate_limit_retry = 0  # Track 429 retries separately
-        
-        for attempt in range(retries):
-            try:
-                self._apply_referer()
-                response = safe_http_request(
-                    self.session, "GET", url, allow_http=True, timeout=30
-                )
-                
-                # Check for 429 specifically
-                if response.status_code == 429:
-                    if rate_limit_retry < len(self.rate_limit_delays):
-                        wait = self.rate_limit_delays[rate_limit_retry]
-                        print(f"  Rate limited (429). Waiting {wait}s before retry...")
-                        time.sleep(wait)
-                        rate_limit_retry += 1
-                        continue  # Don't count as a regular retry
-                    else:
-                        response.raise_for_status()
-                
-                response.raise_for_status()
-                self._referer = url
-                return BeautifulSoup(self._html_from_response(response), 'lxml')
-
-            except UnsafeURLError as e:
-                raise ValueError(f"Blocked URL: {e}") from e
-            except Exception as e:
-                last_error = e
-                error_str = str(e)
-                
-                # Check if it's a 429 error from exception
-                if '429' in error_str:
-                    if rate_limit_retry < len(self.rate_limit_delays):
-                        wait = self.rate_limit_delays[rate_limit_retry]
-                        print(f"  Rate limited (429). Waiting {wait}s before retry...")
-                        time.sleep(wait)
-                        rate_limit_retry += 1
-                        continue
-                
-                print(f"  Attempt {attempt + 1}/{retries} failed: {e}")
-                if attempt < retries - 1:
-                    wait = 2 ** (attempt + 1)
-                    print(f"  Retrying in {wait}s...")
-                    time.sleep(wait)
-        
-        raise last_error
+        """Fetch a page and return BeautifulSoup. Retry/429 logic lives in fetch_html."""
+        return BeautifulSoup(self.fetch_html(url, retries=retries), "lxml")
     
     def fetch_html(self, url: str, retries: int = 3) -> str:
         """Fetch page and return raw HTML string with 429 handling."""

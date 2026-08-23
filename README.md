@@ -173,7 +173,7 @@ Use this only if you want the same library list (and optionally EPUBs) on more t
 
 **Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, logs, polish models).
 
-**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `polish/`.
+**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `polish/`. Library uploads compare the last seen Drive revision so a second device’s delete/merge is not overwritten blindly.
 
 1. Create a Google Cloud project, enable **Google Drive API**, create an OAuth client (**Desktop app**).
 2. Save the client JSON as:
@@ -254,7 +254,7 @@ Add an object to `parsers/sites.json`. First matching `domains` entry wins. `gen
 }
 ```
 
-Optional fields: `description`, `cover`, `chapter_title`, `remove`, `toc_link`, `reverse`, `delay`, `encoding`, `language`, `book_id` (regex), `chapter_list_url` (may include `{book_id}`), `chapter_href_contains`, `referer`, `visit_toc_first`.
+Optional fields: `description`, `cover`, `chapter_title`, `remove`, `toc_link`, `reverse`, `delay`, `encoding`, `language`, `book_id` (regex), `chapter_list_url` (may include `{book_id}`), `chapter_href_contains`, `referer`, `visit_toc_first`, `chapter_list_next` (CSS selector for the next TOC page), `content_next` (CSS selector for the next *page of this chapter* — not 下一章). Configured sites follow those keys only; the generic parser follows `rel=next` on TOCs and 下一页 / next page on chapter bodies.
 
 ## Running Tests
 
@@ -282,22 +282,24 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── parser.py       # Base parser class + registry
 │   ├── cleaner.py      # Watermark/ad removal
 │   ├── translator.py   # Translation (Google / LibreTranslate / Ollama)
+│   ├── ollama_setup.py # Ollama install / GPU / probe / pull
 │   ├── local_polish.py # Polish English entry (KEEP/REPLACE)
-│   ├── polish/         # llama.cpp serve + span copy-edit
+│   ├── polish/         # llama.cpp serve + span copy-edit (pinned hosts + hashes)
 │   ├── epub_builder.py # EPUB creation (atomic write; skip second clean after translate)
-│   ├── download_runner.py  # Pause/cancel/chapter download (UI-agnostic)
+│   ├── download_runner.py  # Pause/cancel/chapter download + translate_then_build
 │   ├── settings.py     # Persistent app settings (atomic tmp+replace)
 │   ├── cache.py        # Chapter + translation + cover + TOC caches (SQLite, 2 GB LRU)
 │   ├── download_job.py # Local incomplete-download resume (not Drive)
 │   ├── library.py      # Library + history store
 │   ├── drive_sync.py   # Optional Google Drive sync (library.json + EPUBs only)
-│   ├── security.py     # SSRF guards, safe zip extract, secret file perms
+│   ├── security.py     # SSRF guards, safe zip/tar extract, secret file perms
 │   ├── notify.py       # Desktop notifications
 │   ├── logger.py       # Log-to-file setup
 │   └── updater.py      # Auto-updater (version + GitHub releases + relaunch helper)
 ├── parsers/
 │   ├── sites.json      # Host + CSS selector configs
 │   ├── config.py       # Single parser that reads sites.json
+│   ├── pagination.py   # TOC / chapter-body next-page walks
 │   └── generic.py      # Fallback parser for other sites
 └── tests/              # Offline pytest suite
 ```

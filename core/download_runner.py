@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.cache import NovelCache
-from core.cleaner import ContentCleaner
+from core.cleaner import ContentCleaner, count_chinese_chars, is_chinese
 from core.download_job import save_job
 from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder
 from core.library import LibraryStore
@@ -389,6 +389,202 @@ def epub_translate_kwargs(
         o.get("ollama_polish", settings.get("ollama_polish", False))
     )
     return kwargs
+
+
+def translate_then_build(
+    builder: TranslatedEPUBBuilder,
+    novel_info: NovelInfo,
+    chapters: List[Chapter],
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> str:
+    """
+    Clean, translate (and optionally polish), apply at text nodes, write EPUB.
+
+    Lives here so cancel/ETA/warnings stay on the runner. The builder only
+    extracts/applies nodes and writes the file.
+    """
+    translator = builder.translator
+    if not translator:
+        return builder.build(novel_info, chapters, output_path, progress_callback)
+
+    builder.chapters_with_chinese = []
+    builder.polish_cancelled = False
+    total_steps = len(chapters) * 2
+    current_step = 0
+
+    if progress_callback:
+        progress_callback(0, total_steps, "Preparing for translation...")
+
+    all_texts: List[Tuple[str, int, str]] = []
+
+    if is_chinese(novel_info.title):
+        all_texts.append(("title", 0, novel_info.title))
+        print(f"Will translate title: {novel_info.title}")
+    if is_chinese(novel_info.author):
+        all_texts.append(("author", 0, novel_info.author))
+        print(f"Will translate author: {novel_info.author}")
+    if novel_info.description and is_chinese(novel_info.description):
+        all_texts.append(("description", 0, novel_info.description))
+        print("Will translate description")
+    for idx, chapter in enumerate(chapters):
+        if is_chinese(chapter.title):
+            all_texts.append(("chapter_title", idx, chapter.title))
+    print(
+        f"Will translate {sum(1 for t in all_texts if t[0] == 'chapter_title')} "
+        "chapter titles"
+    )
+
+    for idx, chapter in enumerate(chapters):
+        current_step += 1
+        if progress_callback:
+            progress_callback(
+                current_step, total_steps, f"Cleaning: {chapter.title[:30]}..."
+            )
+        if builder.cleaner:
+            chapter.content = builder.cleaner.clean_html(chapter.content)
+        for text in builder._extract_text_segments(chapter.content):
+            if is_chinese(text) and len(text.strip()) > 0:
+                all_texts.append(("content", idx, text))
+
+    if progress_callback:
+        progress_callback(
+            current_step, total_steps, f"Translating {len(all_texts)} segments..."
+        )
+    print(f"Total segments to translate: {len(all_texts)}")
+
+    if all_texts:
+        texts_to_translate = [t[2] for t in all_texts]
+        net_clock: Optional[float] = None
+        requests_at_clock = 0
+        retry_pass_num = 0
+
+        def _network_requests() -> int:
+            stats = getattr(translator, "stats", None) or {}
+            try:
+                return int(stats.get("requests", 0) or 0)
+            except Exception:
+                return 0
+
+        def translate_progress(completed, total):
+            nonlocal current_step, net_clock, requests_at_clock
+            if not progress_callback or total <= 0:
+                return
+            eta = ""
+            requests = _network_requests()
+            if requests > 0:
+                if net_clock is None:
+                    net_clock = time.monotonic()
+                    requests_at_clock = max(0, requests - 1)
+                elapsed = time.monotonic() - net_clock
+                net_done = max(0, requests - requests_at_clock)
+                min_samples = min(10, max(2, total // 20))
+                remaining = total - completed
+                if net_done >= min_samples and remaining > 0 and elapsed > 0:
+                    eta = f"  (ETA {format_eta(remaining * (elapsed / net_done))})"
+            hits = 0
+            stats = getattr(translator, "stats", None) or {}
+            try:
+                hits = int(stats.get("cache_hits", 0) or 0)
+            except Exception:
+                pass
+            cache_note = ""
+            if hits and completed:
+                cache_note = f" · {min(hits, completed)} cached"
+            pct = (completed / total) * len(chapters)
+            if retry_pass_num > 0:
+                status = (
+                    f"Retry pass {retry_pass_num}: {completed}/{total}"
+                    f"{cache_note}{eta}"
+                )
+            else:
+                status = f"Translating: {completed}/{total}{cache_note}{eta}"
+            progress_callback(int(len(chapters) + pct), total_steps, status)
+
+        def on_retry_pass(pass_number, remaining, total_segments, cooldown):
+            nonlocal net_clock, retry_pass_num, requests_at_clock
+            retry_pass_num = pass_number
+            net_clock = None
+            requests_at_clock = _network_requests()
+            if not progress_callback:
+                return
+            if cooldown > 0:
+                progress_callback(
+                    current_step,
+                    total_steps,
+                    f"Retry pass {pass_number}: cooling down {int(cooldown)}s "
+                    f"({remaining} left)...",
+                )
+            else:
+                progress_callback(
+                    current_step,
+                    total_steps,
+                    f"Retry pass {pass_number}: retrying {remaining} segments...",
+                )
+
+        if hasattr(translator, "translate_texts_with_retry"):
+            translated = translator.translate_texts_with_retry(
+                texts_to_translate,
+                translate_progress,
+                is_chinese_fn=lambda t: is_chinese(t),
+                count_chinese_fn=lambda t: count_chinese_chars(t),
+                pass_callback=on_retry_pass,
+            )
+        else:
+            translated = translator.translate_texts(
+                texts_to_translate, translate_progress
+            )
+
+        if getattr(translator, "_cancel_requested", False):
+            raise DownloadCancelled()
+
+        if builder.polish and hasattr(translator, "polish_texts"):
+            polish_start = time.monotonic()
+
+            def polish_progress(completed, total):
+                if not progress_callback or total <= 0:
+                    return
+                eta = ""
+                if completed > 0 and completed < total:
+                    elapsed = time.monotonic() - polish_start
+                    if elapsed > 0:
+                        eta = (
+                            "  (ETA "
+                            f"{format_eta((total - completed) * (elapsed / completed))})"
+                        )
+                progress_callback(
+                    int(len(chapters) * 1.5),
+                    total_steps,
+                    f"Polishing English: {completed}/{total}{eta}",
+                )
+
+            print(f"Polishing {len(translated)} segments (KEEP/REPLACE, local LLM)...")
+            translated = translator.polish_texts(translated, polish_progress)
+            if getattr(translator, "_cancel_requested", False):
+                builder.polish_cancelled = True
+                print(
+                    "Polish cancelled — packaging EPUB with machine translation "
+                    "(already-polished spans kept)."
+                )
+
+        builder.apply_translations(novel_info, chapters, all_texts, translated)
+
+    if builder.verify_translation:
+        builder._verify_translations(chapters)
+
+    for idx, chapter in enumerate(chapters):
+        if not chapter.content or len(chapter.content.strip()) < 10:
+            print(f"Warning: Chapter {idx} '{chapter.title}' has empty/minimal content")
+            if not chapter.content:
+                chapter.content = "<p>Chapter content not available.</p>"
+
+    print("Building EPUB with translated content...")
+    print(f"  Final title: {novel_info.title}")
+    print(f"  Final author: {novel_info.author}")
+    return builder.build(
+        novel_info, chapters, output_path, progress_callback,
+        skip_html_clean=True,
+    )
 
 
 def make_translator(

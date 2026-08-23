@@ -1,25 +1,31 @@
 """Tests for core.security helpers."""
 
 import hashlib
+import io
 import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
+import tarfile
+
 from core.security import (
     UnsafeURLError,
     fetch_cover_bytes,
+    github_asset_digest,
     github_asset_host_ok,
     is_allowed_epub_path,
     is_fetch_url_safe,
     safe_epub_basename,
+    safe_extract_tar,
     safe_extract_zip,
     safe_http_request,
     validate_fetch_url,
     validate_github_asset_host,
     validate_libretranslate_url,
     validate_ollama_url,
+    validate_polish_download_url,
     validate_update_helper_paths,
     write_secret_file,
     write_update_helper_config,
@@ -220,6 +226,78 @@ class TestSafeExtractZip:
                 max_member_bytes=1000,
                 max_total_bytes=150,
             )
+
+
+class TestSafeExtractTar:
+    def test_rejects_tar_slip(self, tmp_path):
+        tar_path = tmp_path / "evil.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo(name="../escape.txt")
+            data = b"nope"
+            info.size = len(data)
+            tf.addfile(info, fileobj=io.BytesIO(data))
+        with pytest.raises(ValueError):
+            safe_extract_tar(tar_path, tmp_path / "out")
+        assert not (tmp_path / "escape.txt").exists()
+
+    def test_extracts_safe_member(self, tmp_path):
+        tar_path = tmp_path / "ok.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo(name="bin/llama-server")
+            data = b"ELF"
+            info.size = len(data)
+            tf.addfile(info, fileobj=io.BytesIO(data))
+        out = tmp_path / "out"
+        written = safe_extract_tar(tar_path, out)
+        assert any(p.name == "llama-server" for p in written)
+        assert (out / "bin" / "llama-server").read_bytes() == b"ELF"
+
+    def test_rejects_total_uncompressed_over_limit(self, tmp_path):
+        tar_path = tmp_path / "bomb.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            for name, payload in (("a.bin", b"x" * 100), ("b.bin", b"y" * 100)):
+                info = tarfile.TarInfo(name=name)
+                info.size = len(payload)
+                tf.addfile(info, fileobj=io.BytesIO(payload))
+        with pytest.raises(ValueError, match="uncompressed size"):
+            safe_extract_tar(
+                tar_path,
+                tmp_path / "out",
+                max_member_bytes=1000,
+                max_total_bytes=150,
+            )
+
+
+class TestPolishDownloadUrl:
+    def test_allows_github_and_huggingface(self):
+        validate_polish_download_url(
+            "https://github.com/ggml-org/llama.cpp/releases/download/b1/x.zip"
+        )
+        validate_polish_download_url(
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+        )
+        validate_polish_download_url(
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/x.gguf"
+        )
+        validate_polish_download_url("https://cdn-lfs.huggingface.co/x")
+        validate_polish_download_url("https://cas-bridge.xethub.hf.co/x")
+
+    def test_rejects_http_and_other_hosts(self):
+        with pytest.raises(UnsafeURLError):
+            validate_polish_download_url("http://huggingface.co/x")
+        with pytest.raises(UnsafeURLError):
+            validate_polish_download_url("https://evil.example/x.gguf")
+
+
+class TestGithubAssetDigest:
+    def test_parses_sha256_prefix(self):
+        digest = "a" * 64
+        assert github_asset_digest({"digest": f"sha256:{digest}"}) == digest
+
+    def test_empty_when_missing_or_invalid(self):
+        assert github_asset_digest({}) == ""
+        assert github_asset_digest({"digest": "md5:abc"}) == ""
+        assert github_asset_digest({"digest": "sha256:short"}) == ""
 
 
 class TestWriteSecretFile:

@@ -69,6 +69,8 @@ DEFAULTS: Dict[str, Any] = {
     'drive_folder_name': DRIVE_FOLDER_NAME,
     'drive_folder_id': '',
     'drive_library_hash': '',
+    # last seen Drive library.json headRevisionId (empty = first sync / old client)
+    'drive_library_revision': '',
     'drive_last_synced_at': 0.0,
     'drive_last_sync_summary': '',
     # Library shelf: 'grid' | 'list'

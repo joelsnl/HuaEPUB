@@ -13,11 +13,18 @@ no sites.json config claims.
 """
 
 import re
+import time
 from typing import List
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from core.parser import BaseParser, Chapter, NovelInfo
+from parsers.pagination import (
+    next_content_page_url,
+    next_from_rel,
+    walk_content_pages,
+    walk_list_pages,
+)
 
 # Link text that looks like a chapter
 CHAPTER_TEXT_RE = re.compile(
@@ -109,9 +116,21 @@ class GenericParser(BaseParser):
     # Chapter list
     # ------------------------------------------------------------------
 
+    def _page_delay(self) -> None:
+        delay = float(getattr(self, "request_delay", 0) or 0)
+        if delay > 0:
+            time.sleep(delay)
+
     def get_chapter_list(self, url: str) -> List[Chapter]:
         soup = self.fetch_page(url)
-        chapters = self._parse_chapter_list(soup, url)
+        chapters = walk_list_pages(
+            first_soup=soup,
+            first_url=url,
+            parse_chapters=self._parse_chapter_list,
+            next_url=next_from_rel,
+            fetch_page=self.fetch_page,
+            delay=self._page_delay,
+        )
         if not chapters:
             raise ValueError(
                 "Generic parser could not find a chapter list on this page. "
@@ -191,9 +210,31 @@ class GenericParser(BaseParser):
 
     def get_chapter_content(self, chapter: Chapter) -> str:
         soup = self.fetch_page(chapter.url)
-        return self._content_html_from_soup(soup, chapter)
+        first = self._content_html_from_soup(soup, chapter)
 
-    def _content_html_from_soup(self, soup: BeautifulSoup, chapter: Chapter) -> str:
+        def fetch_more(next_url: str):
+            more_soup = self.fetch_page(next_url)
+            extra = self._content_html_from_soup(
+                more_soup, chapter, include_title=False
+            )
+            return extra, more_soup
+
+        return walk_content_pages(
+            first_html=first,
+            first_soup=soup,
+            first_url=chapter.url,
+            next_url=next_content_page_url,
+            fetch_html_and_soup=fetch_more,
+            delay=self._page_delay,
+        )
+
+    def _content_html_from_soup(
+        self,
+        soup: BeautifulSoup,
+        chapter: Chapter,
+        *,
+        include_title: bool = True,
+    ) -> str:
         for tag in NOISE_TAGS:
             for el in soup.find_all(tag):
                 el.decompose()
@@ -212,6 +253,8 @@ class GenericParser(BaseParser):
         if content_el is None:
             raise ValueError(f"Could not find chapter content at {chapter.url}")
 
+        if not include_title:
+            return str(content_el)
         title_el = soup.select_one('h1')
         chapter_title = title_el.get_text(strip=True) if title_el else chapter.title
 

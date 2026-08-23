@@ -241,18 +241,20 @@ class TestBackends:
 
 class TestOllamaDevice:
     def test_env_forces_cpu(self, monkeypatch):
+        from core import ollama_setup as setup
         from core import translator as tr
         monkeypatch.setenv('HUAEPUB_OLLAMA_GPU', '0')
-        tr._gpu_cached = None
+        setup._gpu_cached = None
         assert tr.ollama_gpu_available() is False
         opts = tr.ollama_infer_options()
         assert opts['num_gpu'] == 0
         assert opts['num_thread'] >= 2
 
     def test_env_forces_gpu(self, monkeypatch):
+        from core import ollama_setup as setup
         from core import translator as tr
         monkeypatch.setenv('HUAEPUB_OLLAMA_GPU', '1')
-        tr._gpu_cached = None
+        setup._gpu_cached = None
         assert tr.ollama_gpu_available() is True
         opts = tr.ollama_infer_options()
         assert opts['num_gpu'] == 99
@@ -466,7 +468,7 @@ class TestOllamaModelPick:
         monkeypatch.setattr(shutil, 'which', lambda _name: None)
         # Do not patch os.name — pathlib.Path then tries WindowsPath and
         # crashes pytest on Linux CI.
-        monkeypatch.setattr(tr, '_is_windows', lambda: True)
+        monkeypatch.setattr("core.ollama_setup._is_windows", lambda: True)
         monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
         monkeypatch.setenv('PROGRAMFILES', str(tmp_path / 'pf'))
         monkeypatch.setenv('PROGRAMFILES(X86)', str(tmp_path / 'pf86'))
@@ -483,7 +485,7 @@ class TestOllamaModelPick:
         from pathlib import Path
 
         monkeypatch.setattr(shutil, 'which', lambda _name: None)
-        monkeypatch.setattr(tr, '_is_windows', lambda: False)
+        monkeypatch.setattr("core.ollama_setup._is_windows", lambda: False)
         monkeypatch.setattr(Path, 'home', staticmethod(lambda: tmp_path))
         assert tr.ollama_is_installed() is False
         exe = tmp_path / '.local' / 'bin' / 'ollama'

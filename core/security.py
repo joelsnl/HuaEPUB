@@ -5,11 +5,13 @@ Shared security helpers: safe URL fetches, zip extraction, and secret file perms
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
 import socket
 import stat
+import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
@@ -48,6 +50,12 @@ _GITHUB_ASSET_HOSTS = {
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
     "github-releases.githubusercontent.com",
+}
+
+_HF_ASSET_HOSTS = {
+    "huggingface.co",
+    "www.huggingface.co",
+    "cdn-lfs.huggingface.co",
 }
 
 
@@ -233,6 +241,69 @@ def validate_github_asset_host(url: str) -> None:
     host = urlparse(url or "").hostname
     if not github_asset_host_ok(host or ""):
         raise UnsafeURLError(f"Update download host not allowed: {host or '(none)'}")
+
+
+def huggingface_host_ok(host: str) -> bool:
+    """True for huggingface.co and its LFS / Xet CDN hostnames."""
+    h = (host or "").strip("[]").lower().rstrip(".")
+    if not h:
+        return False
+    if h in _HF_ASSET_HOSTS:
+        return True
+    if h.endswith(".huggingface.co"):
+        return True
+    if h.endswith(".xethub.hf.co"):
+        return True
+    if h.endswith(".hf.co") and "cas-bridge" in h:
+        return True
+    return False
+
+
+def polish_download_host_ok(host: str) -> bool:
+    """llama.cpp GitHub builds and official Hugging Face GGUFs only."""
+    return github_asset_host_ok(host) or huggingface_host_ok(host)
+
+
+def validate_polish_download_url(url: str) -> None:
+    parsed = urlparse(url or "")
+    if (parsed.scheme or "").lower() != "https":
+        raise UnsafeURLError("Polish downloads must use https")
+    host = parsed.hostname or ""
+    if not polish_download_host_ok(host):
+        raise UnsafeURLError(f"Polish download host not allowed: {host or '(none)'}")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_sha256(path: Path, expected: str) -> None:
+    want = (expected or "").strip().lower()
+    if len(want) != 64 or any(c not in "0123456789abcdef" for c in want):
+        raise ValueError("sha256 must be a 64-char hex digest")
+    got = sha256_file(path)
+    if got != want:
+        raise ValueError(f"SHA256 mismatch for {Path(path).name}: expected {want}, got {got}")
+
+
+def github_asset_digest(asset: dict) -> str:
+    """
+    GitHub release assets may publish `digest` as `sha256:<hex>`.
+    Empty string if upstream did not publish one.
+    """
+    raw = str((asset or {}).get("digest") or "").strip().lower()
+    if raw.startswith("sha256:"):
+        raw = raw.split(":", 1)[1]
+    if len(raw) == 64 and all(c in "0123456789abcdef" for c in raw):
+        return raw
+    return ""
 
 
 def safe_epub_basename(value: str, *, fallback_title: str = "") -> str:
@@ -485,6 +556,67 @@ def safe_extract_zip(
                     out.write(chunk)
             written.append(target)
 
+    return written
+
+
+def safe_extract_tar(
+    tar_path: Path,
+    dest_dir: Path,
+    *,
+    max_member_bytes: int = _MAX_ZIP_MEMBER_BYTES,
+    max_total_bytes: int = _MAX_ZIP_TOTAL_BYTES,
+    max_entries: int = _MAX_ZIP_ENTRIES,
+) -> List[Path]:
+    """Extract a tar/tar.gz without path traversal. Same size caps as zip."""
+    dest_dir = Path(dest_dir).resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    written: List[Path] = []
+    total_bytes = 0
+    entry_count = 0
+
+    with tarfile.open(tar_path, "r:*") as tf:
+        for info in tf.getmembers():
+            if not info.isfile():
+                continue
+            name = (info.name or "").replace("\\", "/")
+            if not name or name.endswith("/"):
+                continue
+            if name.startswith("/") or name.startswith("../") or "/../" in f"/{name}/":
+                raise ValueError(f"Unsafe tar entry path: {info.name!r}")
+            if ":" in name.split("/")[0]:
+                raise ValueError(f"Unsafe tar entry path: {info.name!r}")
+            target = (dest_dir / name).resolve()
+            try:
+                target.relative_to(dest_dir)
+            except ValueError as e:
+                raise ValueError(f"Tar entry escapes destination: {info.name!r}") from e
+
+            entry_count += 1
+            if entry_count > max_entries:
+                raise ValueError(f"Tar has too many extractable entries (>{max_entries})")
+            if info.size > max_member_bytes:
+                raise ValueError(f"Tar entry too large: {info.name!r}")
+            total_bytes += int(info.size or 0)
+            if total_bytes > max_total_bytes:
+                raise ValueError(
+                    f"Tar uncompressed size exceeds limit ({max_total_bytes} bytes)"
+                )
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            src = tf.extractfile(info)
+            if src is None:
+                continue
+            with src, open(target, "wb") as out:
+                copied = 0
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > max_member_bytes:
+                        raise ValueError(f"Tar entry too large: {info.name!r}")
+                    out.write(chunk)
+            written.append(target)
     return written
 
 

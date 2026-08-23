@@ -3,7 +3,7 @@
 from bs4 import BeautifulSoup
 
 import parsers  # noqa: F401 — register SiteConfigParser + GenericParser
-from core.parser import get_parser_for_url, _parser_registry
+from core.parser import Chapter, get_parser_for_url, _parser_registry
 from parsers.config import SiteConfigParser
 from parsers.generic import GenericParser
 
@@ -226,3 +226,164 @@ class TestSelectorParser:
         out = parser.get_chapter_content(chapter)
         assert chapter.used_heuristic is True
         assert "这是正文段落" in out
+
+
+def _toc_page(chapters, next_href="", rel_next=""):
+    items = "".join(
+        f'<li><a href="{href}">{title}</a></li>' for title, href in chapters
+    )
+    nxt = f'<a class="next-list" href="{next_href}">下一页</a>' if next_href else ""
+    rel = f'<a rel="next" href="{rel_next}">next</a>' if rel_next else ""
+    return f"<ul class='toc'>{items}</ul>{nxt}{rel}"
+
+
+def _chapter_page(body, next_href="", next_label="下一页"):
+    nxt = f'<a class="next-page" href="{next_href}">{next_label}</a>' if next_href else ""
+    return f"<h2 class='ch'>Ch</h2><div class='chapter-body'><p>{body}</p></div>{nxt}"
+
+
+class TestSitePagination:
+    def _parser(self, **extra):
+        spec = {
+            "name": "demo.test",
+            "domains": ["demo.test"],
+            "content": ["div.chapter-body"],
+            "chapter_list": "ul.toc a",
+            "title": "h1.book",
+            "author": "span.author",
+            "chapter_title": "h2.ch",
+        }
+        spec.update(extra)
+        parser = SiteConfigParser(spec=spec)
+        parser.request_delay = 0
+        return parser
+
+    def test_chapter_list_next_follows_selector(self):
+        parser = self._parser(chapter_list_next="a.next-list")
+        pages = {
+            "https://demo.test/book": BeautifulSoup(
+                _toc_page(
+                    [("Ch 1", "/c/1"), ("Ch 2", "/c/2")],
+                    next_href="/book?p=2",
+                    rel_next="/book?p=99",
+                ),
+                "lxml",
+            ),
+            "https://demo.test/book?p=2": BeautifulSoup(
+                _toc_page([("Ch 3", "/c/3")]),
+                "lxml",
+            ),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        chapters = parser.get_chapter_list("https://demo.test/book")
+        assert [c.title for c in chapters] == ["Ch 1", "Ch 2", "Ch 3"]
+
+    def test_chapter_list_ignores_rel_next_without_key(self):
+        parser = self._parser()
+        pages = {
+            "https://demo.test/book": BeautifulSoup(
+                _toc_page(
+                    [("Ch 1", "/c/1"), ("Ch 2", "/c/2")],
+                    rel_next="/book?p=2",
+                ),
+                "lxml",
+            ),
+            "https://demo.test/book?p=2": BeautifulSoup(
+                _toc_page([("Ch 3", "/c/3")]),
+                "lxml",
+            ),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        chapters = parser.get_chapter_list("https://demo.test/book")
+        assert [c.title for c in chapters] == ["Ch 1", "Ch 2"]
+
+    def test_content_next_appends_without_second_title(self):
+        parser = self._parser(content_next="a.next-page")
+        pages = {
+            "https://demo.test/c/1": BeautifulSoup(
+                _chapter_page("第一页正文", next_href="/c/1?p=2"),
+                "lxml",
+            ),
+            "https://demo.test/c/1?p=2": BeautifulSoup(
+                _chapter_page("第二页正文"),
+                "lxml",
+            ),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        html = parser.get_chapter_content(
+            Chapter(title="Ch", url="https://demo.test/c/1")
+        )
+        assert html.count("<h1>") == 1
+        assert "第一页正文" in html and "第二页正文" in html
+
+    def test_content_ignores_next_without_key(self):
+        parser = self._parser()
+        pages = {
+            "https://demo.test/c/1": BeautifulSoup(
+                _chapter_page("仅一页", next_href="/c/1?p=2"),
+                "lxml",
+            ),
+            "https://demo.test/c/1?p=2": BeautifulSoup(
+                _chapter_page("不该出现"),
+                "lxml",
+            ),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        html = parser.get_chapter_content(
+            Chapter(title="Ch", url="https://demo.test/c/1")
+        )
+        assert "仅一页" in html
+        assert "不该出现" not in html
+
+
+class TestGenericPagination:
+    def test_rel_next_extends_chapter_list(self):
+        parser = GenericParser()
+        parser.request_delay = 0
+
+        def toc(start, nxt=""):
+            links = "".join(
+                f'<a href="/c/{i}">第{i}章 title</a>' for i in range(start, start + 5)
+            )
+            rel = f'<a rel="next" href="{nxt}">下一页</a>' if nxt else ""
+            return BeautifulSoup(
+                f'<div class="chapter-list">{links}</div>{rel}', "lxml"
+            )
+
+        pages = {
+            "https://unknown.example/novel/1/": toc(1, "/novel/1/?p=2"),
+            "https://unknown.example/novel/1/?p=2": toc(6),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        chapters = parser.get_chapter_list("https://unknown.example/novel/1/")
+        assert len(chapters) == 10
+        assert chapters[0].title.startswith("第1章")
+        assert chapters[-1].title.startswith("第10章")
+
+    def test_content_follows_next_page_not_next_chapter(self):
+        parser = GenericParser()
+        parser.request_delay = 0
+        body = "正文段落内容测试。" * 40
+        pages = {
+            "https://unknown.example/c/1": BeautifulSoup(
+                f"<h1>第1章</h1><div class='chapter-content'><p>{body}页一</p></div>"
+                "<a href='/c/1?p=2'>下一页</a>"
+                "<a href='/c/2'>下一章</a>",
+                "lxml",
+            ),
+            "https://unknown.example/c/1?p=2": BeautifulSoup(
+                f"<h1>第1章</h1><div class='chapter-content'><p>{body}页二</p></div>",
+                "lxml",
+            ),
+            "https://unknown.example/c/2": BeautifulSoup(
+                f"<h1>第2章</h1><div class='chapter-content'><p>{body}不该出现</p></div>",
+                "lxml",
+            ),
+        }
+        parser.fetch_page = lambda url: pages[url]
+        html = parser.get_chapter_content(
+            Chapter(title="第1章", url="https://unknown.example/c/1")
+        )
+        assert "页一" in html and "页二" in html
+        assert "不该出现" not in html
+        assert html.count("<h1>") == 1

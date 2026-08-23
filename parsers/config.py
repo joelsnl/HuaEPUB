@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 
 from core.parser import Chapter, NovelInfo
 from parsers.generic import GenericParser
+from parsers.pagination import next_from_selector, walk_content_pages, walk_list_pages
 
 _SITES: Optional[List[dict]] = None
 _LOCK = threading.Lock()
@@ -345,7 +346,19 @@ class SiteConfigParser(GenericParser):
             html = self.fetch_html(list_url)
             soup = BeautifulSoup(html, "lxml")
 
-        chapters = self.parse_chapter_list(soup, url)
+        if spec.get("chapter_list_next"):
+            chapters = walk_list_pages(
+                first_soup=soup,
+                first_url=url,
+                parse_chapters=self.parse_chapter_list,
+                next_url=lambda s, u: next_from_selector(
+                    s, spec.get("chapter_list_next") or "", u
+                ),
+                fetch_page=self.fetch_page,
+                delay=self._page_delay,
+            )
+        else:
+            chapters = self.parse_chapter_list(soup, url)
         if not chapters:
             raise ValueError(
                 f"{self.SITE_NAME} parser could not find a chapter list. "
@@ -353,23 +366,14 @@ class SiteConfigParser(GenericParser):
             )
         return chapters
 
-    def get_chapter_content(self, chapter: Chapter) -> str:
-        self._ensure_spec(chapter.url)
-        soup = self.fetch_page(chapter.url)
-        spec = self.spec
+    def _content_element(self, soup, spec: dict):
         content_el = None
         for sel in _as_list(spec.get("content")):
             content_el = self._first(soup, sel)
             if content_el is not None:
                 break
         if content_el is None:
-            chapter.used_heuristic = True
-            print(
-                f"Warning: {self.SITE_NAME} content selector missed at {chapter.url}; "
-                "using generic density heuristic. The chapter text may be wrong."
-            )
-            return self._content_html_from_soup(soup, chapter)
-
+            return None
         remove = spec.get("remove")
         if remove:
             try:
@@ -377,6 +381,20 @@ class SiteConfigParser(GenericParser):
                     el.decompose()
             except Exception:
                 pass
+        return content_el
+
+    def get_chapter_content(self, chapter: Chapter) -> str:
+        self._ensure_spec(chapter.url)
+        soup = self.fetch_page(chapter.url)
+        spec = self.spec
+        content_el = self._content_element(soup, spec)
+        if content_el is None:
+            chapter.used_heuristic = True
+            print(
+                f"Warning: {self.SITE_NAME} content selector missed at {chapter.url}; "
+                "using generic density heuristic. The chapter text may be wrong."
+            )
+            return self._content_html_from_soup(soup, chapter)
 
         title_el = None
         for sel in _as_list(spec.get("chapter_title")):
@@ -386,4 +404,23 @@ class SiteConfigParser(GenericParser):
         chapter_title = (
             title_el.get_text(strip=True) if title_el else chapter.title
         )
-        return f"<h1>{chapter_title}</h1>\n{content_el}"
+        first = f"<h1>{chapter_title}</h1>\n{content_el}"
+        if not spec.get("content_next"):
+            return first
+
+        def fetch_more(next_url: str):
+            more_soup = self.fetch_page(next_url)
+            extra_el = self._content_element(more_soup, spec)
+            extra = str(extra_el) if extra_el is not None else ""
+            return extra, more_soup
+
+        return walk_content_pages(
+            first_html=first,
+            first_soup=soup,
+            first_url=chapter.url,
+            next_url=lambda s, u: next_from_selector(
+                s, spec.get("content_next") or "", u
+            ),
+            fetch_html_and_soup=fetch_more,
+            delay=self._page_delay,
+        )

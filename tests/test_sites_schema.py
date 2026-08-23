@@ -21,8 +21,10 @@ ALLOWED_KEYS = frozenset({
     "cover_template",
     "chapter_title",
     "chapter_list",
+    "chapter_list_next",
     "chapter_list_url",
     "chapter_href_contains",
+    "content_next",
     "remove",
     "reverse",
     "toc_link",
@@ -81,6 +83,10 @@ def _check_spec(spec: Any, index: int) -> str:
 
     if "chapter_list" in spec:
         _nonempty_strings(spec["chapter_list"], field="chapter_list", name=name)
+    if "chapter_list_next" in spec:
+        _nonempty_strings(spec["chapter_list_next"], field="chapter_list_next", name=name)
+    if "content_next" in spec:
+        _nonempty_strings(spec["content_next"], field="content_next", name=name)
     if "delay" in spec:
         assert isinstance(spec["delay"], (int, float)), f"{name}: delay must be a number"
     if "reverse" in spec:

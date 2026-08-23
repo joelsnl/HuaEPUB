@@ -7,22 +7,29 @@ import re
 import shutil
 import stat
 import subprocess
-import tarfile
 import threading
 import time
-import zipfile
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import requests
 from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
 
 from core.polish.engine import EngineError, classify_host
 from core.polish.hardware import DeviceProfile, cuda_driver_major, estimate_params_b
 from core.polish.paths import cache_dir, env_value
+from core.security import (
+    github_asset_digest,
+    safe_extract_tar,
+    safe_extract_zip,
+    safe_http_request,
+    validate_polish_download_url,
+    verify_sha256,
+)
 
 GITHUB_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 USER_AGENT = "HuaEPUB"
@@ -45,6 +52,14 @@ HF_GGUF = {
         "qwen2.5:3b",
         "qwen2.5-3b-instruct-q4_k_m.gguf",
         "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+    ),
+}
+
+# Official Qwen repo SHA256 when Hugging Face publishes one (3B Q4_K_M).
+# 7B/14B files are often split; verify those when upstream publishes a digest.
+HF_GGUF_SHA256 = {
+    "qwen2.5-3b-instruct-q4_k_m.gguf": (
+        "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
     ),
 }
 
@@ -189,7 +204,7 @@ def resolve_gguf(profile: DeviceProfile, *, download: bool, log: Log = _noop_log
         )
     dest = cache_dir() / "models" / filename
     log(f"Downloading {filename} from Hugging Face…")
-    download_file(url, dest, log=log)
+    download_file(url, dest, log=log, expected_sha256=HF_GGUF_SHA256.get(filename))
     return dest, alias
 
 
@@ -275,55 +290,91 @@ def _http_headers() -> dict[str, str]:
 
 def github_latest_release(log: Log = _noop_log) -> dict:
     cache = cache_dir() / "llama.cpp-release.json"
+    session = requests.Session()
     try:
-        with httpx.Client(timeout=30.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
-            response = client.get(GITHUB_RELEASES)
-            response.raise_for_status()
-            data = response.json()
+        response = safe_http_request(
+            session,
+            "GET",
+            GITHUB_RELEASES,
+            timeout=30,
+            extra_check=validate_polish_download_url,
+            headers={"User-Agent": USER_AGENT},
+        )
+        response.raise_for_status()
+        data = response.json()
         cache.write_text(json.dumps(data), encoding="utf-8")
         return data
-    except httpx.HTTPError as exc:
+    except Exception as exc:
         if cache.is_file():
             log(f"GitHub unreachable ({exc}); using cached release metadata.")
             return json.loads(cache.read_text(encoding="utf-8"))
         raise EngineError(f"Could not list llama.cpp releases: {exc}") from exc
 
 
-def download_file(url: str, dest: Path, log: Log = _noop_log) -> None:
+def download_file(
+    url: str,
+    dest: Path,
+    log: Log = _noop_log,
+    expected_sha256: str | None = None,
+) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".partial")
     if tmp.exists():
         tmp.unlink()
-    with httpx.Client(timeout=None, follow_redirects=True, headers=_http_headers()) as client:
-        with client.stream("GET", url) as response:
+    session = requests.Session()
+    response = safe_http_request(
+        session,
+        "GET",
+        url,
+        timeout=(30, 3600),
+        extra_check=validate_polish_download_url,
+        stream=True,
+        headers=_http_headers(),
+    )
+    try:
+        try:
             response.raise_for_status()
-            total = int(response.headers.get("Content-Length") or 0)
-            console = Console()
-            with Progress(
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                DownloadColumn(),
-                TransferSpeedColumn(),
-                console=console,
-            ) as progress:
-                task = progress.add_task(dest.name, total=total or None)
-                with tmp.open("wb") as handle:
-                    for chunk in response.iter_bytes(1024 * 256):
-                        handle.write(chunk)
-                        progress.advance(task, len(chunk))
-    tmp.replace(dest)
-    log(f"Saved {dest} ({dest.stat().st_size / (1024 * 1024):.1f} MB)")
+        except Exception as exc:
+            raise EngineError(f"Download failed: {exc}") from exc
+        total = int(response.headers.get("Content-Length") or 0)
+        console = Console()
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(dest.name, total=total or None)
+            with tmp.open("wb") as handle:
+                for chunk in response.iter_content(1024 * 256):
+                    if not chunk:
+                        continue
+                    handle.write(chunk)
+                    progress.advance(task, len(chunk))
+        tmp.replace(dest)
+        digest = (expected_sha256 or "").strip()
+        if digest:
+            try:
+                verify_sha256(dest, digest)
+            except ValueError as exc:
+                dest.unlink(missing_ok=True)
+                raise EngineError(str(exc)) from exc
+        log(f"Saved {dest} ({dest.stat().st_size / (1024 * 1024):.1f} MB)")
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
 
 
 def _extract(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith(".zip"):
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(dest)
+        safe_extract_zip(archive, dest)
         return
-    with tarfile.open(archive) as tf:
-        tf.extractall(dest)
+    safe_extract_tar(archive, dest)
 
 
 def _make_executable(path: Path) -> None:
@@ -344,7 +395,9 @@ def install_llama_server(profile: DeviceProfile, *, download: bool, log: Log = _
             "so HuaEPUB can fetch the matching GitHub build."
         )
     release = github_latest_release(log=log)
-    assets = {item["name"]: item["browser_download_url"] for item in release.get("assets") or [] if "name" in item}
+    asset_list = [item for item in (release.get("assets") or []) if item.get("name")]
+    assets = {item["name"]: item["browser_download_url"] for item in asset_list}
+    digests = {item["name"]: github_asset_digest(item) for item in asset_list}
     chosen = pick_release_asset(list(assets), binary_preferences(profile))
     if not chosen:
         raise EngineError(
@@ -359,13 +412,13 @@ def install_llama_server(profile: DeviceProfile, *, download: bool, log: Log = _
         return exe
     log(f"Downloading llama.cpp {tag} / {chosen}")
     archive = cache_dir() / "downloads" / chosen
-    download_file(assets[chosen], archive, log=log)
+    download_file(assets[chosen], archive, log=log, expected_sha256=digests.get(chosen) or None)
     _extract(archive, out_dir)
     extra = cudart_asset_for(chosen)
     if extra and extra in assets:
         log(f"Downloading CUDA runtime {extra}")
         rt = cache_dir() / "downloads" / extra
-        download_file(assets[extra], rt, log=log)
+        download_file(assets[extra], rt, log=log, expected_sha256=digests.get(extra) or None)
         _extract(rt, out_dir)
     exe = find_llama_server(out_dir)
     if not exe:

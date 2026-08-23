@@ -72,6 +72,8 @@ def build():
         '--hidden-import=gui.main_window',
         '--hidden-import=gui.app',
         '--hidden-import=httpx',
+        '--hidden-import=core.ollama_setup',
+        '--hidden-import=parsers.pagination',
         '--hidden-import=core.polish',
         '--hidden-import=core.polish.api',
         '--hidden-import=core.polish.detect',

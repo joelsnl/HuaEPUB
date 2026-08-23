@@ -128,6 +128,11 @@ class DriveSyncError(Exception):
     pass
 
 
+class DriveRevisionConflict(DriveSyncError):
+    """Remote library.json changed since the last pull; merge again before overwrite."""
+    pass
+
+
 def oauth_client_path() -> Path:
     return get_data_dir() / OAUTH_CLIENT_FILE
 
@@ -768,8 +773,21 @@ class DriveSync:
                     set_setting("drive_folder_id", parent_id)
                     self.reset_layout_cache()
             else:
+                set_setting("drive_library_revision", "")
                 return None
         try:
+            try:
+                meta = service.files().get(
+                    fileId=file_id,
+                    fields="id,headRevisionId",
+                    supportsAllDrives=True,
+                ).execute()
+                set_setting(
+                    "drive_library_revision",
+                    str(meta.get("headRevisionId") or ""),
+                )
+            except Exception as e:
+                print(f"Warning: could not read library.json revision: {e}")
             content = service.files().get_media(fileId=file_id).execute()
             if isinstance(content, bytes):
                 raw = json.loads(content.decode("utf-8"))
@@ -802,12 +820,33 @@ class DriveSync:
 
         try:
             if file_id:
+                try:
+                    meta = service.files().get(
+                        fileId=file_id,
+                        fields="id,headRevisionId",
+                        supportsAllDrives=True,
+                    ).execute()
+                    remote_rev = str(meta.get("headRevisionId") or "")
+                    expected = str(get_setting("drive_library_revision") or "")
+                    if expected and remote_rev and remote_rev != expected:
+                        raise DriveRevisionConflict(
+                            "library.json changed on Drive since the last pull. "
+                            "Sync again so tombstones are not overwritten."
+                        )
+                except DriveRevisionConflict:
+                    raise
+                except Exception as e:
+                    print(f"Warning: could not compare library.json revision: {e}")
                 updated = service.files().update(
                     fileId=file_id,
                     media_body=media,
-                    fields="id,modifiedTime,size",
+                    fields="id,modifiedTime,size,headRevisionId",
                     supportsAllDrives=True,
                 ).execute()
+                set_setting(
+                    "drive_library_revision",
+                    str(updated.get("headRevisionId") or ""),
+                )
                 print(
                     f"Updated Drive library.json id={updated.get('id')} "
                     f"modified={updated.get('modifiedTime')} "
@@ -822,13 +861,19 @@ class DriveSync:
                 created = service.files().create(
                     body=meta,
                     media_body=media,
-                    fields="id,modifiedTime",
+                    fields="id,modifiedTime,headRevisionId",
                     supportsAllDrives=True,
                 ).execute()
+                set_setting(
+                    "drive_library_revision",
+                    str(created.get("headRevisionId") or ""),
+                )
                 print(
                     f"Created Drive library.json id={created.get('id')} "
                     f"in folder {root_id} novels={len(data.library)}"
                 )
+        except DriveRevisionConflict:
+            raise
         except Exception as e:
             raise DriveSyncError(
                 f"Failed to upload library.json: {self._format_api_error(e)}"
@@ -842,60 +887,72 @@ class DriveSync:
         Pull remote (if any), merge with local store, write local, push merged.
         Returns merged LibraryData.
         """
-        local = store.get_data()
-        remote = self.pull_library()
-        if remote is None:
-            merged = local
-            print(
-                f"No remote library.json yet; keeping local "
-                f"({len(local.library)} novel(s))"
-            )
-        else:
-            merged = merge_library(local, remote)
-            print(
-                f"Merged library: local={len(local.library)} "
-                f"remote={len(remote.library)} → {len(merged.library)}"
-            )
-            # Never let an empty local wipe a populated remote due to bad merge
-            if (
-                not merged.library
-                and remote.library
-                and not getattr(local, "removed", None)
-            ):
-                print("Merge produced empty library; keeping remote copy")
-                merged = remote
+        last_conflict: DriveRevisionConflict | None = None
+        for attempt in range(2):
+            local = store.get_data()
+            remote = self.pull_library()
+            if remote is None:
+                merged = local
+                print(
+                    f"No remote library.json yet; keeping local "
+                    f"({len(local.library)} novel(s))"
+                )
+            else:
+                merged = merge_library(local, remote)
+                print(
+                    f"Merged library: local={len(local.library)} "
+                    f"remote={len(remote.library)} → {len(merged.library)}"
+                )
+                # Never let an empty local wipe a populated remote due to bad merge
+                if (
+                    not merged.library
+                    and remote.library
+                    and not getattr(local, "removed", None)
+                ):
+                    print("Merge produced empty library; keeping remote copy")
+                    merged = remote
 
-        # Attach Drive EPUB ids so Download EPUB works on other devices
-        try:
-            remote_books = self.list_remote_books()
-            if remote_books:
-                for entry in merged.library:
-                    name = entry.epub_filename or (
-                        Path(entry.output_path).name if entry.output_path else ""
-                    )
-                    if name and name in remote_books:
-                        entry.drive_file_id = remote_books[name].id
-                        if not entry.epub_filename:
-                            entry.epub_filename = name
-        except Exception as e:
-            print(f"Warning: could not attach remote EPUB ids: {e}")
+            # Attach Drive EPUB ids so Download EPUB works on other devices
+            try:
+                remote_books = self.list_remote_books()
+                if remote_books:
+                    for entry in merged.library:
+                        name = entry.epub_filename or (
+                            Path(entry.output_path).name if entry.output_path else ""
+                        )
+                        if name and name in remote_books:
+                            entry.drive_file_id = remote_books[name].id
+                            if not entry.epub_filename:
+                                entry.epub_filename = name
+            except Exception as e:
+                print(f"Warning: could not attach remote EPUB ids: {e}")
 
-        store.replace_data(merged)
-        try:
-            self.purge_removed_epubs(merged)
-        except Exception as e:
-            print(f"Warning: could not delete removed Drive EPUBs: {e}")
-        # Avoid uploading an empty library over a non-empty remote we failed to read
-        if (
-            merged.library
-            or getattr(merged, "removed", None)
-            or remote is None
-            or not getattr(remote, "library", None)
-        ):
-            self.push_library(merged)
-        else:
-            print("Skipping push of empty library over known remote novels")
-        return merged
+            store.replace_data(merged)
+            try:
+                self.purge_removed_epubs(merged)
+            except Exception as e:
+                print(f"Warning: could not delete removed Drive EPUBs: {e}")
+            # Avoid uploading an empty library over a non-empty remote we failed to read
+            try:
+                if (
+                    merged.library
+                    or getattr(merged, "removed", None)
+                    or remote is None
+                    or not getattr(remote, "library", None)
+                ):
+                    self.push_library(merged)
+                else:
+                    print("Skipping push of empty library over known remote novels")
+                return merged
+            except DriveRevisionConflict as e:
+                last_conflict = e
+                print(
+                    "Drive library.json changed during sync; "
+                    f"merging again ({attempt + 1}/2)"
+                )
+        raise last_conflict or DriveRevisionConflict(
+            "library.json changed on Drive; sync again."
+        )
 
     # ------------------------------------------------------------------
     # EPUBs

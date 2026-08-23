@@ -29,6 +29,7 @@ class TestSettings:
         assert loaded['drive_sync_enabled'] is False
         assert loaded['drive_sync_library'] is True
         assert loaded['drive_sync_epubs'] is True
+        assert loaded['drive_library_revision'] == ''
         assert loaded['polish_notice_shown'] is False
         assert loaded['window_w'] == 0
         assert loaded['window_h'] == 0
