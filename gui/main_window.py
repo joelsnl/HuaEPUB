@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from core.download_runner import (
     completion_dialog_title, downloads_folder, epub_path, format_completion_notes,
 )
 from core.logger import setup_logging
+from core.reader import KIND_CACHE, resolve_reader_book, resume_index
+from core.reading import get_position, set_position
 from core.settings import get_default_books_dir, save_settings, set_setting
 from core.notify import notify
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
@@ -43,6 +46,7 @@ from core.drive_sync import oauth_setup_instructions
 from gui.dialogs import ask_yes_no, exec_box, show_error, show_info, show_warning
 from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
+from gui.pages.reader_page import ReaderPage
 from gui.pages.single_page import SinglePage
 from gui.session import AppSession
 from core.download_runner import translator_backend_kwargs
@@ -55,6 +59,7 @@ from gui.workers.download_worker import (
 )
 from gui.workers.drive_workers import DriveConnectWorker, DriveSyncWorker
 from gui.workers.fetch_worker import FetchWorker
+from gui.workers.reader_worker import DriveEpubDownloadWorker, ReaderChapterFetchWorker
 
 import parsers  # noqa: F401 — register site parsers
 
@@ -83,6 +88,10 @@ class MainWindow(QMainWindow):
         self._clipboard_last = ""
         self._clipboard_seen = set()
         self._http = create_http_session()
+        self._reader_return = None
+        self._pending_reader_entry = None
+        self._reader_last_fetch = 0.0
+        self._reader_open_gen = 0
 
         self._sig_update_check.connect(
             self._on_update_check_ready, Qt.ConnectionType.QueuedConnection
@@ -107,9 +116,11 @@ class MainWindow(QMainWindow):
         self.single = SinglePage()
         self.multi = MultiPage()
         self.library = LibraryPage(self.session)
+        self.reader = ReaderPage()
         self.tabs.addTab(self.single, "Single")
         self.tabs.addTab(self.multi, "Multi")
         self.tabs.addTab(self.library, "Library")
+        self.tabs.addTab(self.reader, "Read")
         layout.addWidget(self.tabs, 1)
 
         self.options = OptionsBar(self.session)
@@ -162,6 +173,7 @@ class MainWindow(QMainWindow):
     def _wire(self):
         self.single.fetch_requested.connect(self._start_fetch)
         self.single.recent_requested.connect(self._show_recent)
+        self.single.read_requested.connect(self._open_reader_from_single)
         self.progress.download_clicked.connect(self._start_single_download)
         self.progress.pause_clicked.connect(self._toggle_pause)
         self.progress.cancel_clicked.connect(self._cancel_download)
@@ -173,6 +185,7 @@ class MainWindow(QMainWindow):
         self.library.update_all_requested.connect(self._start_library_update_all)
         self.library.update_selected.connect(self._start_library_update)
         self.library.open_selected.connect(self._open_library_url)
+        self.library.read_selected.connect(self._open_reader_from_library)
         self.library.remove_selected.connect(self._remove_library)
         self.library.refresh_requested.connect(self.library.refresh)
         self.library.drive_connect.connect(self._drive_connect)
@@ -183,6 +196,9 @@ class MainWindow(QMainWindow):
         self.library.view_changed.connect(lambda v: self._persist_settings())
         self.library.filter_changed.connect(lambda v: self._persist_settings())
         self.library.download_epub_selected.connect(self._download_library_epub)
+        self.reader.back_requested.connect(self._close_reader)
+        self.reader.chapter_requested.connect(self._on_reader_chapter)
+        self.reader.font_changed.connect(self._on_reader_font)
         self.options.options_changed.connect(self._persist_settings)
 
     # ------------------------------------------------------------------
@@ -238,6 +254,9 @@ class MainWindow(QMainWindow):
     def _shortcut_escape(self):
         if self.session.control.is_downloading or self.progress.cancel_btn.isEnabled():
             self._cancel_download()
+            return
+        if self.tabs.currentWidget() is self.reader:
+            self._close_reader()
 
     def _restore_window_geometry(self):
         s = self.session.settings
@@ -267,6 +286,7 @@ class MainWindow(QMainWindow):
         save_settings(self.session.settings)
 
     def closeEvent(self, event):
+        self._save_reader_position()
         self._persist_settings()
         self._save_window_geometry()
         downloading = bool(self.session.control.is_downloading)
@@ -917,6 +937,282 @@ class MainWindow(QMainWindow):
         self._queue_drive_sync()
         self._finish_worker_later()
 
+    # ------------------------------------------------------------------
+    # In-app reader
+    # ------------------------------------------------------------------
+
+    @Slot(object)
+    def _open_reader_from_library(self, entry):
+        if entry is None:
+            return
+        self._open_reader(
+            source_url=entry.source_url,
+            title=entry.translated_title or entry.title or "",
+            output_path=entry.output_path or "",
+            epub_filename=entry.epub_filename or "",
+            drive_file_id=entry.drive_file_id or "",
+        )
+
+    @Slot()
+    def _open_reader_from_single(self):
+        info = self.single.novel_info
+        if info is None:
+            show_info(self, "Read", "Fetch a novel first.")
+            return
+        entry = self.session.library_store.get_library_entry(info.source_url or "")
+        self._open_reader(
+            source_url=info.source_url or "",
+            title=self.single.translated_title or info.title or "",
+            output_path=(entry.output_path if entry else "") or "",
+            epub_filename=(entry.epub_filename if entry else "") or "",
+            drive_file_id=(entry.drive_file_id if entry else "") or "",
+            extra_chapters=self.single.chapters,
+        )
+
+    def _open_reader(
+        self,
+        *,
+        source_url: str,
+        title: str,
+        output_path: str = "",
+        epub_filename: str = "",
+        drive_file_id: str = "",
+        extra_chapters=None,
+        extra_epub_path: str = "",
+        allow_drive: bool = True,
+    ):
+        self._save_reader_position()
+        self._reader_open_gen += 1
+        result = resolve_reader_book(
+            source_url=source_url,
+            title=title,
+            output_path=output_path,
+            epub_filename=epub_filename,
+            drive_file_id=drive_file_id if allow_drive else "",
+            output_dir=self.session.output_dir,
+            cache=self.session.cache,
+            extra_chapters=extra_chapters,
+            extra_epub_path=extra_epub_path,
+        )
+        if result.need_drive:
+            if self._worker_busy or self.session.control.is_downloading:
+                show_warning(
+                    self, "Read", "Busy — wait for the current job to finish."
+                )
+                return
+            if self.session.drive_sync.is_connected() and drive_file_id:
+                self._start_drive_epub_for_reader(
+                    source_url=source_url,
+                    title=title,
+                    output_path=output_path,
+                    epub_filename=epub_filename,
+                    drive_file_id=drive_file_id,
+                    extra_chapters=extra_chapters,
+                )
+                return
+            result = resolve_reader_book(
+                source_url=source_url,
+                title=title,
+                output_path=output_path,
+                epub_filename=epub_filename,
+                drive_file_id="",
+                output_dir=self.session.output_dir,
+                cache=self.session.cache,
+                extra_chapters=extra_chapters,
+            )
+        if result.error or result.book is None:
+            show_info(self, "Read", result.error or "Nothing to read yet.")
+            return
+        self._present_reader(result.book)
+
+    def _start_drive_epub_for_reader(
+        self,
+        *,
+        source_url: str,
+        title: str,
+        output_path: str,
+        epub_filename: str,
+        drive_file_id: str,
+        extra_chapters=None,
+    ):
+        folder = downloads_folder(self.session.output_dir)
+        dest = epub_path(
+            folder,
+            title or "book",
+            preferred_name=epub_filename,
+            preferred_path=output_path,
+        )
+        self._pending_reader_entry = {
+            "source_url": source_url,
+            "title": title,
+            "output_path": output_path,
+            "epub_filename": epub_filename,
+            "drive_file_id": drive_file_id,
+            "extra_chapters": extra_chapters,
+            "gen": self._reader_open_gen,
+        }
+        worker = DriveEpubDownloadWorker(
+            self.session.drive_sync, drive_file_id, dest, folder
+        )
+        self.progress.set_status("Downloading EPUB from Drive…")
+        if not self._bind_and_run(
+            worker,
+            (worker.status, self._set_status_safe),
+            (worker.finished, self._drive_epub_for_reader_done),
+            (worker.error, self._drive_epub_for_reader_error),
+        ):
+            self._pending_reader_entry = None
+            show_warning(self, "Read", "Busy — wait for the current job to finish.")
+
+    @Slot(str)
+    def _drive_epub_for_reader_done(self, dest: str):
+        pending = self._pending_reader_entry or {}
+        self._pending_reader_entry = None
+        self._stop_thread(drain_pending_sync=False)
+        if pending.get("gen") != self._reader_open_gen:
+            return
+        self._open_reader(
+            source_url=pending.get("source_url") or "",
+            title=pending.get("title") or "",
+            output_path=pending.get("output_path") or "",
+            epub_filename=pending.get("epub_filename") or "",
+            drive_file_id=pending.get("drive_file_id") or "",
+            extra_chapters=pending.get("extra_chapters"),
+            extra_epub_path=dest,
+            allow_drive=False,
+        )
+
+    @Slot(str)
+    def _drive_epub_for_reader_error(self, msg: str):
+        pending = self._pending_reader_entry or {}
+        self._pending_reader_entry = None
+        self._stop_thread(drain_pending_sync=False)
+        if pending.get("gen") != self._reader_open_gen:
+            return
+        show_warning(self, "Read", f"Could not download the Drive EPUB.\n{msg}")
+        self._open_reader(
+            source_url=pending.get("source_url") or "",
+            title=pending.get("title") or "",
+            output_path=pending.get("output_path") or "",
+            epub_filename=pending.get("epub_filename") or "",
+            drive_file_id="",
+            extra_chapters=pending.get("extra_chapters"),
+            allow_drive=False,
+        )
+
+    def _present_reader(self, book):
+        pos = get_position(book.source_url, data_dir=self.session.data_dir)
+        idx = resume_index(book, pos)
+        scroll = float((pos or {}).get("scroll") or 0.0)
+        try:
+            font_pt = int(self.session.settings.get("reader_font_pt") or 18)
+        except (TypeError, ValueError):
+            font_pt = 18
+        current = self.tabs.currentWidget()
+        if current is not self.reader:
+            self._reader_return = current
+        self.reader.load_book(book, index=idx, scroll=scroll, font_pt=font_pt)
+        self.tabs.setCurrentWidget(self.reader)
+        self._ensure_chapter_loaded(idx)
+
+    def _ensure_chapter_loaded(self, index: int):
+        book = self.reader.book
+        if book is None or not (0 <= index < len(book.chapters)):
+            return
+        ch = book.chapters[index]
+        if (ch.html or "").strip():
+            self.reader.set_status("")
+            return
+        if book.kind != KIND_CACHE or not ch.url:
+            self.reader.set_status("This chapter is not in the EPUB.")
+            return
+        if self._worker_busy or self.session.control.is_downloading:
+            self.reader.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status("Busy — wait for the current job to finish")
+            return
+        delay = 0.0
+        parser = get_parser_for_url(ch.url) or get_parser_for_url(book.source_url)
+        try:
+            site_delay = float(getattr(parser, "request_delay", 2.0) or 2.0)
+        except (TypeError, ValueError):
+            site_delay = 2.0
+        if self._reader_last_fetch:
+            elapsed = time.monotonic() - self._reader_last_fetch
+            if elapsed < site_delay:
+                delay = site_delay - elapsed
+        worker = ReaderChapterFetchWorker(
+            index,
+            ch.url,
+            ch.title,
+            book.source_url,
+            self.session.cache,
+            delay=delay,
+        )
+        self.reader.set_status("Fetching chapter…")
+        if not self._bind_and_run(
+            worker,
+            (worker.status, self._on_reader_fetch_status),
+            (worker.finished, self._reader_chapter_fetched),
+            (worker.error, self._reader_chapter_fetch_error),
+        ):
+            self.reader.set_status("Busy — wait for the current job to finish")
+
+    @Slot(str)
+    def _on_reader_fetch_status(self, text: str):
+        self.reader.set_status(text)
+        self.progress.set_status(text)
+
+    @Slot(int, str, str)
+    def _reader_chapter_fetched(self, index: int, url: str, html: str):
+        self._reader_last_fetch = time.monotonic()
+        self._finish_worker_later()
+        book = self.reader.book
+        if book is None or not (0 <= index < len(book.chapters)):
+            return
+        ch = book.chapters[index]
+        if url and ch.url and ch.url != url:
+            return
+        self.reader.update_chapter_html(index, html)
+        ch.html = html
+        self.reader.set_status("")
+        self.progress.set_status("Ready")
+
+    @Slot(int, str)
+    def _reader_chapter_fetch_error(self, index: int, msg: str):
+        self._finish_worker_later()
+        self.reader.set_status(msg)
+        show_warning(self, "Read", msg)
+
+    @Slot(int)
+    def _on_reader_chapter(self, index: int):
+        self._save_reader_position()
+        self._ensure_chapter_loaded(index)
+
+    @Slot(int)
+    def _on_reader_font(self, pt: int):
+        self.session.settings["reader_font_pt"] = int(pt)
+        set_setting("reader_font_pt", int(pt))
+
+    def _save_reader_position(self):
+        book = self.reader.book
+        if book is None or not book.source_url:
+            return
+        idx = self.reader.current_index()
+        ch = book.chapters[idx] if 0 <= idx < len(book.chapters) else None
+        set_position(
+            book.source_url,
+            chapter_url=(ch.url or ch.key) if ch else "",
+            chapter_index=idx,
+            scroll=self.reader.scroll_ratio(),
+            data_dir=self.session.data_dir,
+        )
+
+    @Slot()
+    def _close_reader(self):
+        self._save_reader_position()
+        target = self._reader_return or self.library
+        self.tabs.setCurrentWidget(target)
+
     def _open_library_url(self, url: str):
         self.tabs.setCurrentWidget(self.single)
         self.single.set_url(url)
@@ -937,7 +1233,8 @@ class MainWindow(QMainWindow):
             f'Remove “{title}” from your library?\n\n'
             "This deletes:\n"
             "• the local EPUB in your books folder\n"
-            "• chapter, cover, and table-of-contents cache for this novel"
+            "• chapter, cover, and table-of-contents cache for this novel\n"
+            "• the reading position on this PC"
             f"{extra}"
         )
         if not ask_yes_no(self, "Remove", msg):
@@ -952,7 +1249,8 @@ class MainWindow(QMainWindow):
         target = removed or entry
         if target:
             purge_novel_artifacts(
-                target, cache=self.session.cache, extra_dirs=extra_dirs
+                target, cache=self.session.cache, extra_dirs=extra_dirs,
+                data_dir=self.session.data_dir,
             )
         self.library.refresh()
         if drive_on and self.session.drive_sync.is_connected():

@@ -16,6 +16,7 @@ from core.parser import Chapter, NovelInfo
 class SinglePage(QWidget):
     fetch_requested = Signal(str)
     recent_requested = Signal()
+    read_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,11 +34,17 @@ class SinglePage(QWidget):
         self.recent_btn.setObjectName("secondaryBtn")
         self.fetch_btn = QPushButton("Fetch Chapters")
         self.fetch_btn.setToolTip("Fetch the chapter list (Ctrl+Enter)")
+        self.read_btn = QPushButton("Read")
+        self.read_btn.setObjectName("secondaryBtn")
+        self.read_btn.setEnabled(False)
+        self.read_btn.setToolTip("Preview from the local EPUB or cached chapters")
         self.recent_btn.clicked.connect(self.recent_requested.emit)
         self.fetch_btn.clicked.connect(self._on_fetch)
+        self.read_btn.clicked.connect(self.read_requested.emit)
         url_row.addWidget(self.url_edit, 1)
         url_row.addWidget(self.recent_btn)
         url_row.addWidget(self.fetch_btn)
+        url_row.addWidget(self.read_btn)
         root.addLayout(url_row)
 
         info = QHBoxLayout()
@@ -121,6 +128,7 @@ class SinglePage(QWidget):
             self.cover_label.setText("No Cover")
             self.cover_label.setPixmap(QPixmap())
         self.populate_chapters(select_all=True)
+        self.read_btn.setEnabled(bool(chapters))
 
     def populate_chapters(self, select_all: bool = True):
         self.tree.clear()

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 HuaEPUB (formerly novelDownloader) is a Python GUI application (PySide6 / Qt) for downloading Chinese web novels, optionally translating them to English (Google Translate, LibreTranslate, or local Ollama), optionally polishing Google/LibreTranslate English with local llama.cpp, and packaging them as EPUB files.
 
-Modes: **Single**, **Multi** (block-paste URLs), and **Library** (track novels, check/update for new chapters). Optional Google Drive sync for library metadata and/or EPUBs. User data lives under `~/.huaepub/` (migrates from `~/.noveldownloader/` when present).
+Modes: **Single**, **Multi** (block-paste URLs), **Library** (track novels, check/update for new chapters), and **Read** (in-app reader). Optional Google Drive sync for library metadata and/or EPUBs. User data lives under `~/.huaepub/` (migrates from `~/.noveldownloader/` when present).
 
 Current release version lives in `core/updater.py` (`__version__`) and the README header — keep those two in sync on every release.
 
@@ -13,7 +13,7 @@ Current release version lives in `core/updater.py` (`__version__`) and the READM
 All application code lives at the repository root (there used to be a duplicate copy in `novel_downloader/`; it was removed - do not recreate it).
 
 - `app.py` - thin entry → `gui.app.run()`
-- `gui/` - PySide6 UI (`main_window`, pages, workers, dark `style.qss`). Worker→UI must use `@Slot` methods on the main window (never bare lambdas — they can run on the worker thread and crash Qt). Menus: File (books / data / log), Library (check / Drive sync / reset), Help (updates, How translation works, **Cache…**, About, Drive OAuth). Shortcuts: Ctrl+Enter fetch/download on Single/Multi; Esc cancels an active job. Window geometry is restored from settings.
+- `gui/` - PySide6 UI (`main_window`, pages, workers, dark `style.qss`). Worker→UI must use `@Slot` methods on the main window (never bare lambdas — they can run on the worker thread and crash Qt). Menus: File (books / data / log), Library (check / Drive sync / reset), Help (updates, How translation works, **Cache…**, About, Drive OAuth). Shortcuts: Ctrl+Enter fetch/download on Single/Multi; Esc cancels an active job (or closes the reader if idle). Window geometry is restored from settings. The **Read** tab prefers a local EPUB, else cached chapter HTML (on-demand site fetch for a missing chapter). Reading position is `reading.json` — local only, never Drive-synced.
 - `gui/dialogs.py` - QMessageBox helpers. Fusion underlines `&Yes`/`&No` but those are Alt+Y/N; bind **Y**/**N** (and other first letters) so the keys work. Use these instead of `QMessageBox.question/information/warning/critical`.
 - `core/branding.py` - product name, data-dir name, exe basename, and legacy aliases
 - `core/parser.py` - `BaseParser`, `Chapter`/`NovelInfo` dataclasses (`Chapter.used_heuristic` when sites.json content selectors miss), parser registry, `create_http_session()` (curl_cffi Chrome impersonation with requests fallback)
@@ -25,9 +25,11 @@ All application code lives at the repository root (there used to be a duplicate 
 - `core/epub_builder.py` - `EPUBBuilder` and `TranslatedEPUBBuilder` (ebooklib); `apply_translations` writes at the text-node level, never with raw string replacement. Atomic write (sibling `.tmp` then replace). Translated builds skip a second `clean_html`. `build_with_translation` delegates sequencing to `translate_then_build`.
 - `core/download_runner.py` - UI-agnostic pause/cancel/chapter-cache/EPUB orchestration, including `translate_then_build` (clean → translate → polish → apply → write). ETA uses uncached/network samples only. Completion notes cover leftover Chinese, heuristic chapters, and polish-cancelled. Cancel during translation raises `DownloadCancelled` (no EPUB). Cancel during polish still writes the EPUB (`polish_cancelled`).
 - `core/updater.py` - auto-updater against GitHub releases (`__version__` lives here — bump on each release). Frozen onefile relaunch must strip `_PYI_*` / stale `_MEI` env and set `PYINSTALLER_RESET_ENVIRONMENT=1`. Windows helper: **ShellExecute** a hidden `powershell.exe -File` (not a Popen child — the onefile bootloader kills those on exit). POSIX: `/bin/sh` or `/bin/bash` — **never** `sys.executable` when frozen. Relaunch the bare binary with double-fork + exec — **never** `/usr/bin/open` (that opens Terminal.app).
-- `core/settings.py` - persistent settings JSON; atomic tmp+replace under a lock around the full read-modify-write. `get_data_dir()`, `get_default_books_dir()`. `cache_max_mb` (default 2048; `0` = unlimited). `polish_notice_shown` (first-run Polish dialog). `window_x/y/w/h` (0 width/height = default size). `drive_library_revision` (last seen Drive `library.json` `headRevisionId`; empty = first sync).
+- `core/settings.py` - persistent settings JSON; atomic tmp+replace under a lock around the full read-modify-write. `get_data_dir()`, `get_default_books_dir()`. `cache_max_mb` (default 2048; `0` = unlimited). `polish_notice_shown` (first-run Polish dialog). `window_x/y/w/h` (0 width/height = default size). `drive_library_revision` (last seen Drive `library.json` `headRevisionId`; empty = first sync). `reader_font_pt` (in-app reader).
 - `core/cache.py` - SQLite caches: chapters, translations (including polished spans), **covers**, **chapter-list snapshots**. Local-only; never Drive-synced. Default 2 GB cap; LRU by oldest stored chapter HTML first, then covers, TOCs, translations last; VACUUM after purge. Help → Cache… is the UI.
 - `core/download_job.py` - local-only `active_download.json` so Pause/close/reboot can resume (never Drive-synced)
+- `core/reading.py` - local-only `reading.json` (chapter index + scroll). Never Drive-synced.
+- `core/reader.py` - resolve a book for the in-app reader (EPUB under the books folder, else cache TOC/HTML). Sanitize HTML for QTextBrowser.
 - `core/library.py` - history + tracked library (`library.json`), chapter-diff helpers for updates
 - `core/drive_sync.py` - optional Google Drive sync (`drive.file` scope only; visible folder; **library.json + EPUBs only**). `push_library` compares stored `drive_library_revision` to remote `headRevisionId` and raises `DriveRevisionConflict` on mismatch (empty stored revision allows the first overwrite). `sync_library_with_store` re-pulls, re-merges, and retries push once. Do not rewrite folder-discovery heuristics. GUI queues a silent auto-sync after successful Single / Multi / Library Update / Update All (does not switch to the Library tab).
 - `core/notify.py` - OS done/update notifications (Windows toast payloads via base64 — never interpolate novel titles into expandable PowerShell)
@@ -48,6 +50,8 @@ Chapter downloads are sequential on purpose (per-site `request_delay` avoids ban
 
 Library updates rebuild a full EPUB from cache + new chapters. Drive sync is offline-first and opt-in (Library tab). After a successful download/update, the GUI queues a silent Drive sync if Drive is enabled.
 
+The **Read** tab prefers a local EPUB under the books folder, else cached TOC/HTML. A cache miss fetches one chapter (site `request_delay`, no translation/polish). Reading position is local `reading.json` only.
+
 ## Commands
 - Run the app: `python3 app.py`
 - Run tests: `python3 -m pytest tests/`
@@ -64,7 +68,7 @@ Library updates rebuild a full EPUB from cache + new chapters. Drive sync is off
 - Keep the default of 200 translation workers; the retry/backoff logic in `translator.py` handles rate limiting. Polish does not use that worker count.
 - Cancel during chapter fetch or Chinese→English translation: abort and write no EPUB (resume point is cleared). Cancel during polish: still write the EPUB with machine translation (`polish_cancelled`). Download EPUB stays disabled while a job is running.
 - Cache is not timer-cleared. Default cap is 2 GB (`cache_max_mb`); oldest stored chapter HTML is evicted first. Translations are kept unless the file is still over the cap.
-- Drive OAuth uses `drive.file` only; client JSON at `~/.huaepub/google_oauth_client.json`. Do not reintroduce hidden `appDataFolder` sync. Never Drive-sync `cache.db`, resume files, or `polish/`. `push_library` must honor `headRevisionId` (do not blindly overwrite a remote that changed since the last pull).
+- Drive OAuth uses `drive.file` only; client JSON at `~/.huaepub/google_oauth_client.json`. Do not reintroduce hidden `appDataFolder` sync. Never Drive-sync `cache.db`, resume files, `reading.json`, or `polish/`. `push_library` must honor `headRevisionId` (do not blindly overwrite a remote that changed since the last pull).
 - Polish binary/GGUF downloads must stay on GitHub / Hugging Face https hosts; extract via the safe zip/tar helpers; do not invent SHA256s for unofficial or split GGUFs.
 - Auto-updates must fail closed without a matching `SHA256SUMS` entry; never fall back to unsigned `main.zip`. Release CI must publish `HuaEPUB-*.zip` (with legacy `NovelDownloader` binary inside), `HuaEPUB-source.zip`, legacy `novelDownloader-source.zip` alias, and `SHA256SUMS.txt`.
 - Frozen updates (all OSes): GUI must quit after a successful download so the helper can swap/relaunch. Strip `_PYI_*` and set `PYINSTALLER_RESET_ENVIRONMENT=1` on every relaunch path. Frozen POSIX: launch `_update_helper.sh` via `/bin/sh` or `/bin/bash` — **never** `sys.executable` when frozen (that reopens the GUI). Prefer python3 inside the helper for replace; re-hash staged `_new_*` before `mv`. Relaunch with double-fork + exec — never `/usr/bin/open` on a bare binary. Windows: ShellExecute a hidden `powershell.exe -File` (not a Popen child of the onefile process).

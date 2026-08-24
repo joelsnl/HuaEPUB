@@ -66,6 +66,7 @@ class LibraryPage(QWidget):
     update_all_requested = Signal()
     update_selected = Signal(object)  # LibraryEntry
     open_selected = Signal(str)
+    read_selected = Signal(object)
     remove_selected = Signal(str)
     download_epub_selected = Signal(object)
     refresh_requested = Signal()
@@ -90,7 +91,7 @@ class LibraryPage(QWidget):
 
         header = QHBoxLayout()
         header.addWidget(QLabel(
-            "Your library — covers & TOC stay on this device; Drive syncs library.json + EPUBs."
+            "Your library — double-click to read. Covers & TOC stay on this device; Drive syncs library.json + EPUBs."
         ))
         header.addStretch(1)
         self.filter_all = QPushButton("All")
@@ -172,8 +173,10 @@ class LibraryPage(QWidget):
         self.grid.setSpacing(6)
         self.grid.setSelectionMode(QAbstractItemView.SingleSelection)
         self.grid.setUniformItemSizes(True)
+        self.grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.grid.itemSelectionChanged.connect(self._on_grid_select)
         self.grid.itemDoubleClicked.connect(self._on_grid_activate)
+        self.grid.itemActivated.connect(self._on_grid_activate)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Title", "Chapters", "Status", "Updated"])
@@ -183,12 +186,14 @@ class LibraryPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_table_select)
         self.table.doubleClicked.connect(self._on_table_activate)
+        self.table.activated.connect(self._on_table_activate)
 
         self.stack.addWidget(self.grid)
         self.stack.addWidget(self.table)
         root.addWidget(self.stack, 1)
 
         actions = QHBoxLayout()
+        self.read_btn = QPushButton("Read")
         self.update_btn = QPushButton("Update")
         self.update_btn.setObjectName("successBtn")
         self.open_btn = QPushButton("Open URL")
@@ -196,11 +201,12 @@ class LibraryPage(QWidget):
         self.remove_btn = QPushButton("Remove")
         self.remove_btn.setObjectName("secondaryBtn")
         self.dl_epub_btn = QPushButton("Download EPUB")
+        self.read_btn.clicked.connect(self._emit_read)
         self.update_btn.clicked.connect(self._emit_update)
         self.open_btn.clicked.connect(self._emit_open)
         self.remove_btn.clicked.connect(self._emit_remove)
         self.dl_epub_btn.clicked.connect(self._emit_dl_epub)
-        for b in (self.update_btn, self.open_btn, self.remove_btn, self.dl_epub_btn):
+        for b in (self.read_btn, self.update_btn, self.open_btn, self.remove_btn, self.dl_epub_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         root.addLayout(actions)
@@ -440,10 +446,20 @@ class LibraryPage(QWidget):
 
     def _on_grid_activate(self, item):
         self._selected_url = item.data(Qt.UserRole)
-        self._emit_update()
+        self._emit_read()
 
     def _on_table_activate(self, _idx):
-        self._emit_update()
+        self._emit_read()
+
+    def _emit_read(self):
+        e = self.selected_entry()
+        if not e:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_last_read_emit", 0.0) < 0.25:
+            return
+        self._last_read_emit = now
+        self.read_selected.emit(e)
 
     def _emit_update(self):
         e = self.selected_entry()

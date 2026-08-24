@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.12.0**
+**Current version: 2.13.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -11,6 +11,7 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 
 ## Features
 
+- **In-app reader** — **Read** tab (Library **Read** / double-click, or Single **Read** after fetch). Prefers the local EPUB (translated/polished English if that is what you downloaded). If the file is only on Drive, it is pulled into the books folder first. Otherwise it reads cached chapter HTML (usually the original site text) and fetches a missing chapter on demand — no EPUB rebuild, no translation/polish. Reading position stays in `~/.huaepub/reading.json` on this PC (not Drive).
 - **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site; if a configured site’s content selector misses, the same heuristic is used and the completion dialog warns you
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
@@ -25,7 +26,7 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA (network/uncached work only — cached chapters do not fake “ETA 0s”), Pause, and Cancel. Status names the phase: fetching chapters, translating (including retry pass), polishing, or writing the EPUB. Failed chapters are retried at the end of the run. **Download EPUB** is disabled while a job is already running.
 - **Completion notes** — leftover Chinese, heuristic chapter guesses, or a cancelled polish pass show as “Saved with warnings” (Single, Multi, and Library). A clean run still says Success / complete.
-- **Keyboard** — **Ctrl+Enter** fetches (or downloads when ready) on Single / Multi. **Esc** cancels an active download. **Y** / **N** confirm Yes/No dialogs (the underlined letters are not Alt-only). Window size and position are remembered.
+- **Keyboard** — **Ctrl+Enter** fetches (or downloads when ready) on Single / Multi. **Esc** cancels an active download, or closes the reader when idle. In the reader: **Left** / **Right** or **J** / **K** for chapters, **+** / **-** for font size. **Y** / **N** confirm Yes/No dialogs (the underlined letters are not Alt-only). Window size and position are remembered.
 - **Custom output folder** and persistent settings in `~/.huaepub/` (migrates from `~/.noveldownloader/` if present). `settings.json` is written atomically.
 - **Auto-updater** — downloads prebuilt release builds, verifies `SHA256SUMS.txt`, then a helper replaces the binary and **reopens the app on every OS** (Windows, macOS, Linux, and source installs)
 - **Log file** (`~/.huaepub/logs/huaepub.log`) — File → **Open log file**. Rotates at 1 MB during a long session (keeps `.log.1`). Crashes dump to `huaepub.fault.log` in the same folder.
@@ -73,7 +74,7 @@ Each zip includes `HuaEPUB` plus a legacy `NovelDownloader` binary (same build) 
 
 ## User Manual
 
-HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Options below the main area (translate, clean, cache, workers, save folder) apply to all modes and are remembered between sessions.
+HuaEPUB has four tabs at the top: **Single**, **Multi**, **Library**, and **Read**. Options below the main area (translate, clean, cache, workers, save folder) apply to downloads in all modes and are remembered between sessions.
 
 ### Quick start (one novel)
 
@@ -82,7 +83,7 @@ HuaEPUB has three tabs at the top: **Single**, **Multi**, and **Library**. Optio
 3. Click **Fetch Chapters**.
 4. Select the chapters you want (or leave all selected).
 5. Click **Download EPUB**.
-6. When it finishes, the EPUB is in your Save folder (default `~/.huaepub/books`).
+6. When it finishes, the EPUB is in your Save folder (default `~/.huaepub/books`). You can also click **Read** after **Fetch Chapters** to preview from cache before building an EPUB.
 
 ### Options (what they mean)
 
@@ -161,19 +162,29 @@ After you download a novel, it appears in **Library** so you can update it later
 2. Choose **Grid** (covers) or **List** (compact table).
 3. Click **Check updates** — each cover shows status under the title (`Checking…`, `N new`, `Up to date`, or an error), and thumbnails are refreshed from the site.
 4. Filter **All** or **Updates** (novels that have new chapters).
-5. Select a novel → **Update** (rebuilds a full EPUB; old chapters come from cache). ETA is based only on chapters that still need a network fetch, so a 500-chapter update with 3 new chapters will not show “ETA 0s”.
+5. Select a novel → **Read** (or double-click / Enter) to open it in the **Read** tab. **Update** rebuilds a full EPUB; old chapters come from cache. ETA is based only on chapters that still need a network fetch, so a 500-chapter update with 3 new chapters will not show “ETA 0s”.
 6. Or use **Update All** when several books have new chapters.
-7. **Open URL** / **Download EPUB** / **Remove** as needed. **Remove** deletes the local EPUB, this novel’s chapter/cover/TOC cache, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
+7. **Open URL** / **Download EPUB** / **Remove** as needed. **Remove** deletes the local EPUB, this novel’s chapter/cover/TOC cache, the local reading position, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
 
 The cover grid reflows when you resize the window and scrolls when there are more novels than fit on screen.
+
+### In-app reader
+
+**Read** opens the local EPUB when it is already in your books folder (the same file Play Books would get). If that file is missing but Drive has it and sync is connected, HuaEPUB downloads the EPUB first. Otherwise it uses the cached table of contents plus cached chapter HTML — usually the original site text, not the translated EPUB. The badge at the top says **EPUB** or **Cached** so that is not a surprise.
+
+A missing cached chapter is fetched one at a time with the site delay (same as downloads). That writes the chapter to `cache.db` and shows it; it does not rebuild an EPUB or run translation/polish. If a download is already running, the fetch waits with a short status message.
+
+Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. It is never uploaded to Drive. Removing a novel from the library also clears that book’s position.
+
+Keyboard while the reader is focused: **Left** / **Right** or **J** / **K** for chapters, **+** / **-** for font size (remembered as `reader_font_pt`). **Esc** closes the reader when no download is running; during a job it still cancels the download.
 
 ### Google Drive sync (optional)
 
 Use this only if you want the same library list (and optionally EPUBs) on more than one PC.
 
-**Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, logs, polish models).
+**Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, reading position, logs, polish models).
 
-**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `polish/`. Library uploads compare the last seen Drive revision so a second device’s delete/merge is not overwritten blindly.
+**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `reading.json`, not `polish/`. Library uploads compare the last seen Drive revision so a second device’s delete/merge is not overwritten blindly.
 
 1. Create a Google Cloud project, enable **Google Drive API**, create an OAuth client (**Desktop app**).
 2. Save the client JSON as:
@@ -203,6 +214,7 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/cache.db` | Chapter HTML, translations (including polished spans), covers, TOC snapshots. Local only; default 2 GB cap via Help → Cache… |
 | `~/.huaepub/polish/` | llama.cpp + Qwen GGUF for Polish English (first-run download; never Drive-synced) |
 | `~/.huaepub/active_download.json` | Incomplete download resume point (if any; never Drive-synced) |
+| `~/.huaepub/reading.json` | In-app reader position (chapter + scroll; never Drive-synced) |
 | `~/.huaepub/settings.json` | App options (atomic tmp+replace writes) |
 | `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
 | `~/.huaepub/google_token.json` | Drive refresh token (owner-only when the OS allows) |
@@ -290,6 +302,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── settings.py     # Persistent app settings (atomic tmp+replace)
 │   ├── cache.py        # Chapter + translation + cover + TOC caches (SQLite, 2 GB LRU)
 │   ├── download_job.py # Local incomplete-download resume (not Drive)
+│   ├── reading.py      # Local reading position (not Drive)
+│   ├── reader.py       # In-app reader: EPUB vs cache HTML
 │   ├── library.py      # Library + history store
 │   ├── drive_sync.py   # Optional Google Drive sync (library.json + EPUBs only)
 │   ├── security.py     # SSRF guards, safe zip/tar extract, secret file perms

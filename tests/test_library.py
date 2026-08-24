@@ -268,7 +268,9 @@ class TestMergeLibrary:
             output_path=str(epub),
             epub_filename="A.epub",
         )
-        purge_novel_artifacts(entry, extra_dirs=[tmp_path / "books"])
+        purge_novel_artifacts(
+            entry, extra_dirs=[tmp_path / "books"], data_dir=tmp_path
+        )
         assert not epub.exists()
         assert other.exists()
 
@@ -282,5 +284,5 @@ class TestMergeLibrary:
             output_path=str(victim),
             epub_filename="../../victim.epub",
         )
-        purge_novel_artifacts(entry, extra_dirs=[books])
+        purge_novel_artifacts(entry, extra_dirs=[books], data_dir=tmp_path)
         assert victim.exists()

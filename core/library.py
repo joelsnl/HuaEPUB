@@ -590,12 +590,20 @@ def _unlink_epub(path: Path) -> bool:
     return False
 
 
-def purge_novel_artifacts(entry: LibraryEntry, cache=None, extra_dirs=None) -> None:
+def purge_novel_artifacts(
+    entry: LibraryEntry, cache=None, extra_dirs=None, *, data_dir=None
+) -> None:
     """
     Delete this novel's local EPUB and per-book caches (chapters, TOC, cover).
     Does not wipe the shared translation cache (phrases are reused across books).
     Only unlinks .epub files under extra_dirs (books folder / output folder).
+    Also drops the local reading position (never Drive-synced).
     """
+    try:
+        from core.reading import clear_position
+        clear_position(entry.source_url, data_dir=data_dir)
+    except Exception as e:
+        print(f"Could not clear reading position for {entry.source_url}: {e}")
     if cache is not None:
         try:
             cache.purge_book(entry.source_url, cover_url=entry.cover_url or "")

@@ -35,6 +35,7 @@ class TestSettings:
         assert loaded['window_h'] == 0
         assert loaded['window_x'] == 0
         assert loaded['window_y'] == 0
+        assert loaded['reader_font_pt'] == 18
 
     def test_default_books_dir(self, temp_data_dir):
         books = settings.get_default_books_dir()

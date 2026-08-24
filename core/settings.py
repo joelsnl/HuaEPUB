@@ -84,6 +84,8 @@ DEFAULTS: Dict[str, Any] = {
     'cache_max_mb': 2048,
     # One-shot honesty dialog the first time Polish English is checked.
     'polish_notice_shown': False,
+    # In-app reader font size (points).
+    'reader_font_pt': 18,
     # Main window geometry. 0 width/height means "use the built-in default".
     'window_x': 0,
     'window_y': 0,
