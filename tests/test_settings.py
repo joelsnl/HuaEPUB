@@ -23,6 +23,7 @@ class TestSettings:
         assert loaded['translate'] is True
         assert loaded['workers'] == 200
         assert loaded['translation_backend'] == 'google'
+        assert loaded['translation_glossary'] == 'auto'
         assert loaded['ollama_url'] == 'http://127.0.0.1:11434'
         assert loaded['ollama_model'] == 'qwen2.5:3b'
         assert loaded['ollama_polish'] is False
@@ -31,6 +32,9 @@ class TestSettings:
         assert loaded['drive_sync_epubs'] is True
         assert loaded['drive_library_revision'] == ''
         assert loaded['polish_notice_shown'] is False
+        assert loaded['nmt_notice_shown'] is False
+        assert loaded['glossary_qwen_ask'] is True
+        assert loaded['glossary_qwen_last_at'] == 0.0
         assert loaded['window_w'] == 0
         assert loaded['window_h'] == 0
         assert loaded['window_x'] == 0

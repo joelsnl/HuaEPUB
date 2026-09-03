@@ -4,71 +4,25 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QSize, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QItemSelectionModel, QMetaObject, QSize, Qt, QThread, Signal, Slot,
+)
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QFrame, QGroupBox, QHBoxLayout, QLabel,
+    QAbstractItemView, QCheckBox, QGroupBox, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QTableWidgetSelectionRange, QVBoxLayout, QWidget,
 )
-
-
-class _LibraryTile(QFrame):
-    """Cover + title + status line for the Library grid."""
-
-    def __init__(self, title: str, status: str, kind: str, pixmap: Optional[QPixmap], parent=None):
-        super().__init__(parent)
-        self.setObjectName("libraryTile")
-        self.setFixedSize(132, 220)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 4)
-        lay.setSpacing(2)
-
-        self.cover = QLabel()
-        self.cover.setFixedSize(110, 150)
-        self.cover.setAlignment(Qt.AlignCenter)
-        self.cover.setStyleSheet("background:#3a3a3a;border-radius:4px;")
-        if pixmap and not pixmap.isNull():
-            self.cover.setPixmap(pixmap)
-        else:
-            self.cover.setText("No Cover")
-            self.cover.setStyleSheet("background:#3a3a3a;border-radius:4px;color:#888;")
-        lay.addWidget(self.cover, 0, Qt.AlignHCenter)
-
-        self.title_lbl = QLabel(title)
-        self.title_lbl.setWordWrap(True)
-        self.title_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self.title_lbl.setFixedHeight(34)
-        self.title_lbl.setStyleSheet("font-size:11px;")
-        lay.addWidget(self.title_lbl)
-
-        self.status_lbl = QLabel(status or " ")
-        self.status_lbl.setAlignment(Qt.AlignHCenter)
-        self.status_lbl.setFixedHeight(18)
-        lay.addWidget(self.status_lbl)
-        self.set_status(status, kind)
-
-    def set_status(self, status: str, kind: str):
-        self.status_lbl.setText(status or " ")
-        colors = {
-            "update": "#f0b429",
-            "current": "#6bbf6b",
-            "checking": "#aaaaaa",
-            "error": "#e74c3c",
-        }
-        color = colors.get(kind, "#888888")
-        weight = "bold" if kind == "update" else "normal"
-        self.status_lbl.setStyleSheet(f"color:{color};font-size:11px;font-weight:{weight};")
 
 
 class LibraryPage(QWidget):
     check_requested = Signal()
     update_all_requested = Signal()
-    update_selected = Signal(object)  # LibraryEntry
+    update_selected = Signal(object)  # LibraryEntry or list[LibraryEntry]
     open_selected = Signal(str)
     read_selected = Signal(object)
-    remove_selected = Signal(str)
-    download_epub_selected = Signal(object)
+    remove_selected = Signal(object)  # list[str]
+    download_epub_selected = Signal(object)  # LibraryEntry or list[LibraryEntry]
     refresh_requested = Signal()
     drive_connect = Signal()
     drive_sync = Signal()
@@ -84,6 +38,7 @@ class LibraryPage(QWidget):
         self.check_status: Dict[str, dict] = {}
         self._entries: List = []
         self._selected_url: Optional[str] = None
+        self._status_base = ""
         self._view = session.settings.get("library_view", "grid") or "grid"
         self._filter = session.settings.get("library_filter", "all") or "all"
 
@@ -91,7 +46,9 @@ class LibraryPage(QWidget):
 
         header = QHBoxLayout()
         header.addWidget(QLabel(
-            "Your library — double-click to read. Covers & TOC stay on this device; Drive syncs library.json + EPUBs."
+            "Your library — Select All or Ctrl/Cmd-click (Shift for a range) for batch "
+            "Update / Remove / Download EPUB. Double-click to read. Covers & TOC stay "
+            "on this device; Drive syncs library.json + EPUBs."
         ))
         header.addStretch(1)
         self.filter_all = QPushButton("All")
@@ -171,7 +128,7 @@ class LibraryPage(QWidget):
         self.grid.setResizeMode(QListWidget.Adjust)
         self.grid.setMovement(QListWidget.Static)
         self.grid.setSpacing(6)
-        self.grid.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.setUniformItemSizes(True)
         self.grid.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.grid.itemSelectionChanged.connect(self._on_grid_select)
@@ -182,7 +139,7 @@ class LibraryPage(QWidget):
         self.table.setHorizontalHeaderLabels(["Title", "Chapters", "Status", "Updated"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_table_select)
         self.table.doubleClicked.connect(self._on_table_activate)
@@ -193,6 +150,16 @@ class LibraryPage(QWidget):
         root.addWidget(self.stack, 1)
 
         actions = QHBoxLayout()
+        self.select_all_btn = QPushButton("Select All")
+        self.select_none_btn = QPushButton("Select None")
+        self.select_invert_btn = QPushButton("Invert")
+        for b in (self.select_all_btn, self.select_none_btn, self.select_invert_btn):
+            b.setObjectName("secondaryBtn")
+            actions.addWidget(b)
+        self.select_all_btn.clicked.connect(self.select_all)
+        self.select_none_btn.clicked.connect(self.select_none)
+        self.select_invert_btn.clicked.connect(self.invert_selection)
+        actions.addStretch(1)
         self.read_btn = QPushButton("Read")
         self.update_btn = QPushButton("Update")
         self.update_btn.setObjectName("successBtn")
@@ -208,13 +175,13 @@ class LibraryPage(QWidget):
         self.dl_epub_btn.clicked.connect(self._emit_dl_epub)
         for b in (self.read_btn, self.update_btn, self.open_btn, self.remove_btn, self.dl_epub_btn):
             actions.addWidget(b)
-        actions.addStretch(1)
         root.addLayout(actions)
 
         self._sync_toggle_styles()
         self._apply_view()
         self._update_drive_enabled()
         self.drive_enabled.toggled.connect(self._update_drive_enabled)
+        self._refresh_status_and_actions()
 
     def _set_filter(self, value: str):
         self._filter = value
@@ -223,9 +190,11 @@ class LibraryPage(QWidget):
         self.refresh()
 
     def _set_view(self, value: str):
+        urls = self.selected_urls()
         self._view = value
         self._sync_toggle_styles()
         self._apply_view()
+        self._reselect_urls(urls)
         self.view_changed.emit(value)
 
     def _sync_toggle_styles(self):
@@ -267,8 +236,16 @@ class LibraryPage(QWidget):
             ]
         return entries
 
+    @Slot()
     def refresh(self):
-        selected = self._selected_url
+        if QThread.currentThread() != self.thread():
+            QMetaObject.invokeMethod(
+                self, "refresh", Qt.ConnectionType.QueuedConnection
+            )
+            return
+        selected = self.selected_urls()
+        if not selected and self._selected_url:
+            selected = [self._selected_url]
         all_entries = self.session.library_store.get_library()
         self._entries = self.filtered_entries()
         self.grid.clear()
@@ -317,39 +294,65 @@ class LibraryPage(QWidget):
             self.table.item(r, 0).setData(Qt.UserRole, entry.source_url)
 
         if selected:
-            self._reselect(selected)
+            self._reselect_urls(selected)
+        else:
+            self._capture_selection()
 
         total = len(all_entries)
         shown = len(self._entries)
         if self._filter == "updates":
             if total and not shown:
-                self.status_label.setText(
+                self._status_base = (
                     f"{total} novel(s) in library — none flagged yet. "
                     "Click All, or run Check updates."
                 )
             else:
-                self.status_label.setText(
+                self._status_base = (
                     f"Updates filter: {shown}/{total} novel(s) with new chapters"
                 )
         else:
-            self.status_label.setText(f"{total} novel(s) in library")
+            self._status_base = f"{total} novel(s) in library"
 
         self.update_all_btn.setEnabled(any(
             (self.check_status.get(e.source_url) or {}).get("state") == "update"
             for e in all_entries
         ))
+        self._refresh_status_and_actions()
 
-    def _reselect(self, url: str):
-        for i in range(self.grid.count()):
-            it = self.grid.item(i)
-            if it and it.data(Qt.UserRole) == url:
-                self.grid.setCurrentItem(it)
-                break
-        for r in range(self.table.rowCount()):
-            it = self.table.item(r, 0)
-            if it and it.data(Qt.UserRole) == url:
-                self.table.selectRow(r)
-                break
+    def _reselect_urls(self, urls: list[str]):
+        wanted = [u for u in urls if u]
+        wanted_set = set(wanted)
+        self.grid.blockSignals(True)
+        self.table.blockSignals(True)
+        try:
+            self.grid.clearSelection()
+            self.table.clearSelection()
+            first_grid = None
+            for i in range(self.grid.count()):
+                it = self.grid.item(i)
+                if it and it.data(Qt.UserRole) in wanted_set:
+                    it.setSelected(True)
+                    if first_grid is None:
+                        first_grid = it
+            if first_grid is not None:
+                self.grid.setCurrentItem(first_grid, QItemSelectionModel.Current)
+            last_col = max(self.table.columnCount() - 1, 0)
+            first_row = -1
+            for r in range(self.table.rowCount()):
+                it = self.table.item(r, 0)
+                if it and it.data(Qt.UserRole) in wanted_set:
+                    self.table.setRangeSelected(
+                        QTableWidgetSelectionRange(r, 0, r, last_col),
+                        True,
+                    )
+                    if first_row < 0:
+                        first_row = r
+            if first_row >= 0:
+                self.table.setCurrentCell(first_row, 0, QItemSelectionModel.Current)
+        finally:
+            self.grid.blockSignals(False)
+            self.table.blockSignals(False)
+        self._capture_selection()
 
     def _cover_pixmap(self, entry) -> Optional[QPixmap]:
         data = self.session.cache.get_cover(
@@ -376,9 +379,6 @@ class LibraryPage(QWidget):
             err = (info.get("error") or "Failed")[:36]
             return f"Failed: {err}", "error"
         return "", ""
-
-    def _status_text(self, url: str) -> str:
-        return self._status_display(url)[0]
 
     @Slot(str, object)
     def apply_entry_status(self, url: str, st: object):
@@ -426,23 +426,120 @@ class LibraryPage(QWidget):
                 for e in self.session.library_store.get_library()
             ))
 
+    def selected_urls(self) -> List[str]:
+        urls: List[str] = []
+        if self._view == "grid":
+            for i in range(self.grid.count()):
+                it = self.grid.item(i)
+                if it and it.isSelected():
+                    url = it.data(Qt.UserRole)
+                    if url:
+                        urls.append(url)
+            return urls
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            if it and it.isSelected():
+                url = it.data(Qt.UserRole)
+                if url:
+                    urls.append(url)
+        return urls
+
+    def selected_entries(self):
+        out = []
+        for url in self.selected_urls():
+            entry = self.session.library_store.get_library_entry(url)
+            if entry:
+                out.append(entry)
+        return out
+
     def selected_entry(self):
         url = self._selected_url
         if not url:
             return None
         return self.session.library_store.get_library_entry(url)
 
+    def select_all(self):
+        if self._view == "grid":
+            self.grid.selectAll()
+        else:
+            self.table.selectAll()
+
+    def select_none(self):
+        self.grid.clearSelection()
+        self.table.clearSelection()
+        self._capture_selection()
+
+    def invert_selection(self):
+        if self._view == "grid":
+            self.grid.blockSignals(True)
+            try:
+                for i in range(self.grid.count()):
+                    it = self.grid.item(i)
+                    if it:
+                        it.setSelected(not it.isSelected())
+            finally:
+                self.grid.blockSignals(False)
+        else:
+            self.table.blockSignals(True)
+            try:
+                last_col = max(self.table.columnCount() - 1, 0)
+                for r in range(self.table.rowCount()):
+                    it = self.table.item(r, 0)
+                    on = bool(it and it.isSelected())
+                    self.table.setRangeSelected(
+                        QTableWidgetSelectionRange(r, 0, r, last_col),
+                        not on,
+                    )
+            finally:
+                self.table.blockSignals(False)
+        self._capture_selection()
+
+    def _capture_selection(self):
+        urls = self.selected_urls()
+        current = None
+        if self._view == "grid":
+            it = self.grid.currentItem()
+            if it:
+                current = it.data(Qt.UserRole)
+        else:
+            row = self.table.currentRow()
+            it = self.table.item(row, 0) if row >= 0 else None
+            if it:
+                current = it.data(Qt.UserRole)
+        if current in urls:
+            self._selected_url = current
+        else:
+            self._selected_url = urls[0] if urls else None
+        self._refresh_status_and_actions()
+
+    def _refresh_status_and_actions(self):
+        n = len(self.selected_urls())
+        base = self._status_base or ""
+        if n and base:
+            self.status_label.setText(f"{base} · {n} selected")
+        elif n:
+            self.status_label.setText(f"{n} selected")
+        else:
+            self.status_label.setText(base)
+        self.update_btn.setText("Update" if n <= 1 else f"Update ({n})")
+        self.remove_btn.setText("Remove" if n <= 1 else f"Remove ({n})")
+        self.dl_epub_btn.setText("Download EPUB" if n <= 1 else f"Download EPUB ({n})")
+        has = n > 0
+        self.read_btn.setEnabled(has)
+        self.update_btn.setEnabled(has)
+        self.open_btn.setEnabled(has)
+        self.remove_btn.setEnabled(has)
+        self.dl_epub_btn.setEnabled(has)
+
     def _on_grid_select(self):
-        items = self.grid.selectedItems()
-        self._selected_url = items[0].data(Qt.UserRole) if items else None
+        if self._view != "grid":
+            return
+        self._capture_selection()
 
     def _on_table_select(self):
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            self._selected_url = None
+        if self._view != "list":
             return
-        item = self.table.item(rows[0].row(), 0)
-        self._selected_url = item.data(Qt.UserRole) if item else None
+        self._capture_selection()
 
     def _on_grid_activate(self, item):
         self._selected_url = item.data(Qt.UserRole)
@@ -462,22 +559,25 @@ class LibraryPage(QWidget):
         self.read_selected.emit(e)
 
     def _emit_update(self):
-        e = self.selected_entry()
-        if e:
-            self.update_selected.emit(e)
+        entries = self.selected_entries()
+        if not entries:
+            return
+        self.update_selected.emit(entries if len(entries) > 1 else entries[0])
 
     def _emit_open(self):
         if self._selected_url:
             self.open_selected.emit(self._selected_url)
 
     def _emit_remove(self):
-        if self._selected_url:
-            self.remove_selected.emit(self._selected_url)
+        urls = self.selected_urls()
+        if urls:
+            self.remove_selected.emit(urls)
 
     def _emit_dl_epub(self):
-        e = self.selected_entry()
-        if e:
-            self.download_epub_selected.emit(e)
+        entries = self.selected_entries()
+        if not entries:
+            return
+        self.download_epub_selected.emit(entries if len(entries) > 1 else entries[0])
 
     def set_check_busy(self, busy: bool):
         self.check_btn.setEnabled(not busy)

@@ -67,8 +67,22 @@ def ram_mb() -> int:
     return 8192
 
 
+def nvidia_smi_executable() -> str | None:
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    if platform.system() == "Windows":
+        for path in (
+            r"C:\Windows\System32\nvidia-smi.exe",
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        ):
+            if Path(path).is_file():
+                return path
+    return None
+
+
 def nvidia_gpus() -> list[tuple[str, int, int]]:
-    exe = shutil.which("nvidia-smi")
+    exe = nvidia_smi_executable()
     if not exe:
         return []
     raw = _run(
@@ -93,7 +107,8 @@ def nvidia_gpus() -> list[tuple[str, int, int]]:
 
 
 def cuda_driver_major() -> int:
-    raw = _run(["nvidia-smi"])
+    exe = nvidia_smi_executable()
+    raw = _run([exe]) if exe else None
     if not raw:
         return 12
     match = re.search(r"CUDA Version:\s*(\d+)", raw)

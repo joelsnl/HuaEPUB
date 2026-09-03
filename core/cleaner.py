@@ -79,40 +79,46 @@ DEPRECATED_TAG_CONVERSIONS = [
     ('font', 'span', {}),
 ]
 
-# Default watermark patterns
+# Default watermark patterns (Traditional + Simplified — most sites use Simplified)
 DEFAULT_WATERMARKS = [
-    # Standard Chinese watermarks
-    r'本書由.{0,30}首發', r'本文由.{0,30}首發', r'正版請.{0,30}閱讀',
-    r'請到.{0,30}閱讀', r'最新章節.{0,30}閱讀', r'手機閱讀.{0,50}',
-    r'訪問下載.{0,50}', r'更多精彩.{0,50}', r'歡迎廣大書友.{0,50}',
-    r'喜歡請收藏.{0,50}', r'請記住本書.{0,50}', r'百度搜索.{0,50}',
-    r'最快更新.{0,50}', r'無彈窗.{0,30}',
-    r'關注公眾號.{0,50}', r'微信公眾號.{0,50}', r'掃碼關注.{0,50}',
-    r'點擊下載.{0,50}', r'APP下載.{0,50}',
-    r'本書首發.{0,80}',
-    r'提供給你無錯章節.{0,50}',
-    r'台灣小說網.{0,30}',
+    r'本[書书]由.{0,30}首[發发]', r'本文由.{0,30}首[發发]',
+    r'正版[請请].{0,30}[閱阅][讀读]', r'[請请]到.{0,30}[閱阅][讀读]',
+    r'最新章[節节].{0,30}[閱阅][讀读]', r'手[機机][閱阅][讀读].{0,50}',
+    r'[訪访][問问]下[載载].{0,50}', r'更多精彩.{0,50}', r'[歡欢]迎廣大書友.{0,50}',
+    r'[歡欢]迎广大书友.{0,50}', r'喜[歡欢][請请]收藏.{0,50}',
+    r'[請请][記记]住本[書书].{0,50}', r'百度搜索.{0,50}',
+    r'最快更新.{0,50}', r'[無无]彈窗.{0,30}', r'[無无]弹窗.{0,30}',
+    r'[關关]注[公眾公众]號.{0,50}', r'[關关]注公众号.{0,50}',
+    r'微信[公眾公众][號号].{0,50}', r'[掃扫][碼码][關关]注.{0,50}',
+    r'[點点][擊击]下[載载].{0,50}', r'APP下[載载].{0,50}',
+    r'本[書书]首[發发].{0,80}',
+    r'提供[給给]你[無无][錯错]章[節节].{0,50}',
+    r'[台臺]灣小說網.{0,30}', r'台湾小说网.{0,30}',
+    r'[請请]收藏(?:本站|本[書书]|本[頁页])?', r'[記记]住.{0,6}(?:網址|网址|域名|本站).{0,40}',
+    r'天才一秒[記记]住.{0,50}', r'本章未完.{0,40}',
     r'twkan\.com',
-    
+    r'(?:https?://|www\.)[^\s<>]{3,60}',
+    r'(?<![A-Za-z0-9])[a-z0-9][a-z0-9.-]{1,40}\.(?:com|net|cc|org|xyz|top)(?![A-Za-z])',
+
     # Fullwidth alphanumeric URLs (ａｂｃ style)
     r'[ａ-ｚＡ-Ｚ０-９]+\.[ａ-ｚＡ-Ｚ]+',
-    
+
     # Double-struck/mathematical alphanumeric URLs
     r'[𝕒-𝕫𝔸-𝕫𝟘-𝟡]+\.[𝕒-𝕫𝔸-𝕫]+',
-    
+
     # Sans-serif bold
     r'[𝖺-𝗓𝖠-𝗓𝟢-𝟫]+\.[𝖺-𝗓𝖠-𝗓]+',
     r'[\U0001D5BA-\U0001D5D3\U0001D5A0-\U0001D5B9]+\.[\U0001D5BA-\U0001D5D3\U0001D5A0-\U0001D5B9]+',
-    
+
     # Sans-serif
     r'[\U0001D5A0-\U0001D5D3]+\.[\U0001D5A0-\U0001D5D3]+',
-    
+
     # Monospace
     r'[\U0001D68A-\U0001D6A3\U0001D670-\U0001D689]+\.[\U0001D68A-\U0001D6A3]+',
-    
+
     # General math alphanumeric
     r'[\U0001D400-\U0001D7FF]+\.[\U0001D400-\U0001D7FF]+',
-    
+
     # Arrow followed by stylized URL
     r'→\s*[\U0001D400-\U0001D7FFａ-ｚＡ-Ｚ０-９]+\.[\U0001D400-\U0001D7FFａ-ｚＡ-Ｚ]+',
 ]
@@ -151,7 +157,29 @@ class ContentCleaner:
             'attrs_stripped': 0,
             'tags_unwrapped': 0,
         }
-    
+        self._site_junk_learned = False
+        self._learned_literals: List[str] = []
+
+    def add_literals(self, texts: List[str]) -> int:
+        """Add exact strings (site footers) as watermark removals."""
+        seen = {p.pattern for p in self.watermark_patterns}
+        added = 0
+        for raw in texts or []:
+            text = (raw or "").strip()
+            if len(text) < 4:
+                continue
+            pat = re.escape(text)
+            if pat in seen:
+                continue
+            try:
+                self.watermark_patterns.append(re.compile(pat, re.IGNORECASE))
+            except re.error:
+                continue
+            seen.add(pat)
+            self._learned_literals.append(text)
+            added += 1
+        return added
+
     def reset_stats(self):
         """Reset statistics."""
         for key in self.stats:
@@ -314,26 +342,14 @@ class ContentCleaner:
                     self._remove_element_keep_tail(elem)
                     self.stats['elements_removed'] += 1
         
-        # Remove empty ad divs (txtad, etc.)
+        # Remove ad containers even when they have text (empty-only missed real ads)
         for ns in [f'{{{XHTML_NS}}}', '']:
-            for elem in root.findall(f'.//{ns}div'):
-                class_attr = elem.get('class', '')
-                classes = set(class_attr.lower().split())
+            for elem in list(root.findall(f'.//{ns}div')):
+                class_attr = (elem.get('class') or '').lower()
+                classes = set(class_attr.split())
                 if classes & REMOVE_DIV_CLASSES:
-                    has_content = False
-                    if elem.text and elem.text.strip():
-                        has_content = True
-                    for child in elem:
-                        if child.tag not in [etree.Comment]:
-                            has_content = True
-                            break
-                        if child.tail and child.tail.strip():
-                            has_content = True
-                            break
-                    
-                    if not has_content:
-                        self._remove_element_keep_tail(elem)
-                        self.stats['ad_divs_removed'] += 1
+                    self._remove_element_keep_tail(elem)
+                    self.stats['ad_divs_removed'] += 1
         
         # Convert deprecated tags
         for old_tag, new_tag, attrs in DEPRECATED_TAG_CONVERSIONS:
@@ -596,25 +612,13 @@ class ContentCleaner:
                 self._remove_element_keep_tail(elem)
                 self.stats['elements_removed'] += 1
         
-        # Remove empty ad divs
-        for elem in root.iter('div'):
-            class_attr = elem.get('class', '')
-            classes = set(class_attr.lower().split())
+        # Remove ad containers even when they have text (empty-only missed real ads)
+        for elem in list(root.iter('div')):
+            class_attr = (elem.get('class') or '').lower()
+            classes = set(class_attr.split())
             if classes & REMOVE_DIV_CLASSES:
-                has_content = False
-                if elem.text and elem.text.strip():
-                    has_content = True
-                for child in elem:
-                    if child.tag not in [etree.Comment]:
-                        has_content = True
-                        break
-                    if child.tail and child.tail.strip():
-                        has_content = True
-                        break
-                
-                if not has_content:
-                    self._remove_element_keep_tail(elem)
-                    self.stats['ad_divs_removed'] += 1
+                self._remove_element_keep_tail(elem)
+                self.stats['ad_divs_removed'] += 1
         
         # Convert deprecated tags
         for old_tag, new_tag, attrs in DEPRECATED_TAG_CONVERSIONS:

@@ -4,7 +4,8 @@ Optional Google Drive sync for library metadata and EPUB files.
 
 Offline-first: local ~/.huaepub/ is always usable. Drive is opt-in.
 drive.file scope only — visible My Drive folder (never hidden appDataFolder).
-Never sync cache.db, active_download.json, or ~/.huaepub/polish/.
+Never sync cache.db, active_download.json, ~/.huaepub/polish/,
+~/.huaepub/nmt/, glossary.json, glossary-qwen.json, or glossaries/.
 
 Auth uses browser OAuth (loopback) via google-auth-oauthlib.
 
@@ -12,8 +13,8 @@ Client config: ~/.huaepub/google_oauth_client.json
   (Desktop OAuth client JSON downloaded from Google Cloud Console)
 Token cache: ~/.huaepub/google_token.json
 
-The GUI queues a silent auto-sync after successful Single / Multi /
-Library Update / Update All when Drive is enabled.
+The GUI queues a silent auto-sync after Library Update / Update All
+(and after Drive Connect) when Drive is enabled. Single / Multi do not.
 """
 
 from __future__ import annotations
@@ -168,7 +169,7 @@ class DriveSync:
         self._books_id: Optional[str] = None
         self._email: str = ""
 
-    def reset_layout_cache(self):
+    def reset_layout_cache(self) -> None:
         """Clear cached folder ids."""
         with self._lock:
             self._root_id = None
@@ -365,7 +366,7 @@ class DriveSync:
                 self._service = None
                 return False
 
-    def logout(self):
+    def logout(self) -> None:
         with self._lock:
             self._creds = None
             self._service = None

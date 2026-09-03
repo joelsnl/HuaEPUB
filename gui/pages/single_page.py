@@ -33,7 +33,7 @@ class SinglePage(QWidget):
         self.recent_btn = QPushButton("Recent")
         self.recent_btn.setObjectName("secondaryBtn")
         self.fetch_btn = QPushButton("Fetch Chapters")
-        self.fetch_btn.setToolTip("Fetch the chapter list (Ctrl+Enter)")
+        self.fetch_btn.setToolTip("Fetch the chapter list")
         self.read_btn = QPushButton("Read")
         self.read_btn.setObjectName("secondaryBtn")
         self.read_btn.setEnabled(False)

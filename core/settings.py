@@ -50,8 +50,10 @@ DEFAULTS: Dict[str, Any] = {
     'workers': 200,
     # '' means "use ~/.huaepub/books"
     'output_dir': '',
-    # 'google', 'libretranslate', or 'ollama'
+    # 'google', 'libretranslate', 'ollama', or 'ctranslate2' (Offline NMT)
     'translation_backend': 'google',
+    # Built-in xianxia pack: 'auto' (default) | 'xianxia' | 'user' | 'off'
+    'translation_glossary': 'auto',
     'libretranslate_url': 'https://libretranslate.com',
     'ollama_url': 'http://127.0.0.1:11434',
     'ollama_model': 'qwen2.5:3b',
@@ -84,6 +86,11 @@ DEFAULTS: Dict[str, Any] = {
     'cache_max_mb': 2048,
     # One-shot honesty dialog the first time Polish English is checked.
     'polish_notice_shown': False,
+    # One-shot notice the first time Offline NMT is selected.
+    'nmt_notice_shown': False,
+    # Offer a local Qwen pass over user/per-novel glossaries.
+    'glossary_qwen_ask': True,
+    'glossary_qwen_last_at': 0.0,
     # In-app reader font size (points).
     'reader_font_pt': 18,
     # Main window geometry. 0 width/height means "use the built-in default".
@@ -216,23 +223,12 @@ def _load_settings_unlocked() -> Dict[str, Any]:
 
 def _write_settings_unlocked(settings: Dict[str, Any]) -> None:
     """Write settings.json via tmp+replace. Caller must hold _lock."""
+    from core.atomic_io import atomic_write_json
+
     data_dir = get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / SETTINGS_FILE
-    tmp = path.with_suffix(".json.tmp")
-    payload = json.dumps(settings, indent=2)
-    with open(tmp, 'w', encoding='utf-8') as f:
-        f.write(payload)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    tmp.replace(path)
-    try:
-        tmp.unlink(missing_ok=True)
-    except OSError:
-        pass
+    atomic_write_json(path, settings, fsync=True, ensure_ascii=True)
 
 
 def load_settings() -> Dict[str, Any]:

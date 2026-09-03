@@ -26,10 +26,9 @@ class DriveSyncWorker(QObject):
     finished = Signal(str, str)  # summary, error
     progress = Signal(str)
 
-    def __init__(self, session, silent: bool = True, parent=None):
+    def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
-        self.silent = silent
 
     @Slot()
     def run(self):

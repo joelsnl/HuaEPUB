@@ -31,6 +31,7 @@ class AppSession:
         clipboard: bool,
         workers: int,
         backend: str,
+        translation_glossary: str = "auto",
         drive_enabled: bool,
         drive_library: bool,
         drive_epubs: bool,
@@ -47,6 +48,7 @@ class AppSession:
         self.settings["clipboard_watcher"] = clipboard
         self.settings["workers"] = workers
         self.settings["translation_backend"] = backend
+        self.settings["translation_glossary"] = translation_glossary
         self.settings["ollama_model"] = ollama_model
         self.settings["ollama_url"] = ollama_url
         self.settings["ollama_polish"] = bool(ollama_polish)

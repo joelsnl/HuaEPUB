@@ -9,7 +9,11 @@ from core.parser import Chapter, NovelInfo
 from core.reader import (
     KIND_CACHE,
     KIND_EPUB,
+    ReaderBook,
+    ReaderChapter,
     find_local_epub,
+    html_needs_live_translate,
+    next_cache_prefetch_index,
     resolve_reader_book,
     resume_index,
     sanitize_reader_html,
@@ -184,3 +188,25 @@ class TestReadingJson:
         entry = LibraryEntry(source_url=url, title="Book")
         purge_novel_artifacts(entry, extra_dirs=[books], data_dir=tmp_path)
         assert get_position(url, data_dir=tmp_path) is None
+
+
+def test_next_cache_prefetch_index():
+    book = ReaderBook(
+        source_url="https://example.com/book",
+        title="T",
+        kind=KIND_CACHE,
+        chapters=[
+            ReaderChapter(title="1", key="a", index=0, html="<p>hi</p>", url="https://x/1"),
+            ReaderChapter(title="2", key="b", index=1, html="", url="https://x/2"),
+        ],
+    )
+    assert next_cache_prefetch_index(book, 0) == 1
+    assert next_cache_prefetch_index(book, 1) is None
+    book.chapters[1].html = "<p>next</p>"
+    assert next_cache_prefetch_index(book, 0) is None
+
+
+def test_html_needs_live_translate():
+    assert html_needs_live_translate("") is False
+    assert html_needs_live_translate("<p>Hello there.</p>") is False
+    assert html_needs_live_translate("<p>这是一段用于测试的中文正文内容</p>") is True

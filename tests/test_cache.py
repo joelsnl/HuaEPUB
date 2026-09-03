@@ -44,6 +44,14 @@ class TestChapterCache:
         cache.put_chapter('b', 'https://x/1', 't', 'new')
         assert cache.get_chapter('https://x/1') == 'new'
 
+    def test_sample_chapter_contents_first_and_last(self, cache):
+        for i in range(6):
+            cache.put_chapter("book1", f"https://x/{i}", f"t{i}", f"chapter-{i}-html")
+        sample = cache.sample_chapter_contents("book1", limit=4)
+        assert "chapter-0-html" in sample
+        assert "chapter-5-html" in sample
+        assert len(sample) <= 4
+
 
 class TestTranslationCache:
     def test_roundtrip(self, cache):
@@ -62,6 +70,33 @@ class TestTranslationCache:
     def test_whitespace_normalized_key(self, cache):
         cache.put_translation('  你好  ', 'Hello', 'google')
         assert cache.get_translation('你好', 'google') == 'Hello'
+
+    def test_internal_whitespace_normalized(self, cache):
+        cache.put_translation('你好\n世界', 'Hello world', 'google')
+        assert cache.get_translation('你好 世界', 'google') == 'Hello world'
+
+    def test_bulk_get_and_delete(self, cache):
+        cache.put_translation('甲', 'A', 'google')
+        cache.put_translation('乙', 'B', 'google')
+        cache.put_translation('丙', 'C', 'libretranslate')
+        hits = cache.get_translations_bulk(['甲', '乙', '丁'], ['google'])
+        assert hits['甲'] == 'A'
+        assert hits['乙'] == 'B'
+        assert '丁' not in hits
+        cache.delete_translations([('甲', 'google'), ('乙', 'google')])
+        assert cache.get_translation('甲', 'google') is None
+        assert cache.get_translation('丙', 'libretranslate') == 'C'
+
+    def test_chapter_fingerprint_roundtrip(self, cache):
+        from core.cache import chapter_fingerprint
+
+        html = '<p>这是一段中文</p>'
+        fp = chapter_fingerprint(html)
+        cache.put_chapter_translation(fp, 'google', ['Hello'], commit=True)
+        assert cache.get_chapter_translation(fp, 'google') == ['Hello']
+        assert cache.get_chapter_translation('nope', 'google') is None
+        cache.delete_chapter_translation(fp, 'google')
+        assert cache.get_chapter_translation(fp, 'google') is None
 
 
 class TestCoverCache:
@@ -103,6 +138,27 @@ class TestChapterListCache:
         assert cache.get_cover(source_url="https://book/1") is None
         assert cache.get_cover(cover_url="https://book/1/cover.jpg") is None
         assert cache.get_chapter_list("https://book/1") is None
+
+    def test_meta_includes_fetched_at(self, cache):
+        cache.put_chapter_list(
+            "https://book/1",
+            [{"url": "https://book/1/c1", "title": "Ch1"}],
+            fetched_at=1_700_000_000,
+        )
+        meta = cache.get_chapter_list_meta("https://book/1")
+        assert meta is not None
+        rows, fetched_at = meta
+        assert rows[0]["url"] == "https://book/1/c1"
+        assert fetched_at == 1_700_000_000
+
+    def test_max_age_skips_stale_toc(self, cache):
+        cache.put_chapter_list(
+            "https://book/1",
+            [{"url": "https://book/1/c1", "title": "Ch1"}],
+            fetched_at=1_000.0,
+        )
+        assert cache.get_chapter_list("https://book/1") is not None
+        assert cache.get_chapter_list("https://book/1", max_age=10) is None
 
 
 class TestCacheEviction:

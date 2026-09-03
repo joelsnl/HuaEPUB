@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from core.security import (
     is_allowed_epub_path,
@@ -56,6 +56,7 @@ class LibraryEntry:
     output_path: str = ""
     drive_file_id: str = ""
     epub_filename: str = ""
+    description: str = ""
 
 
 @dataclass
@@ -110,6 +111,7 @@ def _library_from_dict(e: dict) -> Optional[LibraryEntry]:
             output_path=e.get('output_path', '') or '',
             drive_file_id=e.get('drive_file_id', '') or '',
             epub_filename=e.get('epub_filename', '') or '',
+            description=e.get('description', '') or '',
         )
     except (TypeError, ValueError):
         return None
@@ -192,6 +194,8 @@ def _prefer_library_entry(a: LibraryEntry, b: LibraryEntry) -> LibraryEntry:
         merged.translated_title = loser.translated_title
     if not merged.author and loser.author:
         merged.author = loser.author
+    if not merged.description and loser.description:
+        merged.description = loser.description
     return merged
 
 
@@ -302,12 +306,9 @@ class LibraryStore:
 
     def _save(self):
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            from core.atomic_io import atomic_write_json
             payload = library_data_to_dict(self._data)
-            tmp = self._path.with_suffix(".json.tmp")
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-            tmp.replace(self._path)
+            atomic_write_json(self._path, payload, fsync=False)
         except Exception as e:
             print(f"Failed to save library.json to {self._path}: {e}")
 
@@ -319,7 +320,7 @@ class LibraryStore:
                 removed=list(self._data.removed),
             )
 
-    def replace_data(self, data: LibraryData):
+    def replace_data(self, data: LibraryData) -> None:
         """Replace entire store contents (used after Drive merge)."""
         with self._lock:
             self._data = LibraryData(
@@ -333,7 +334,7 @@ class LibraryStore:
                 f"→ {self._path}"
             )
 
-    def reload(self):
+    def reload(self) -> None:
         """Re-read library.json from disk into memory."""
         with self._lock:
             self._load()
@@ -350,7 +351,7 @@ class LibraryStore:
         author: str = '',
         chapter_count: int = 0,
         output_path: str = '',
-    ):
+    ) -> None:
         if not source_url:
             return
         entry = HistoryEntry(
@@ -387,7 +388,8 @@ class LibraryStore:
         output_path: str = '',
         drive_file_id: str = '',
         epub_filename: str = '',
-    ):
+        description: str = '',
+    ) -> None:
         if not source_url:
             return
         with self._lock:
@@ -409,6 +411,7 @@ class LibraryStore:
                 output_path=output_path or (prev.output_path if prev else ''),
                 drive_file_id=drive_file_id or (prev.drive_file_id if prev else ''),
                 epub_filename=epub_filename or (prev.epub_filename if prev else ''),
+                description=description or (prev.description if prev else ''),
             )
             self._data.library = [
                 e for e in self._data.library if e.source_url != source_url
@@ -425,7 +428,7 @@ class LibraryStore:
         drive_file_id: str = '',
         epub_filename: str = '',
         output_path: str = '',
-    ):
+    ) -> None:
         """Update Drive/EPUB fields without bumping last_downloaded_at."""
         if not source_url:
             return
@@ -449,7 +452,8 @@ class LibraryStore:
         translated_title: str = '',
         author: str = '',
         cover_url: str = '',
-    ):
+        description: str = '',
+    ) -> None:
         """Update display metadata without bumping last_downloaded_at."""
         if not source_url:
             return
@@ -464,6 +468,8 @@ class LibraryStore:
                         e.author = author
                     if cover_url:
                         e.cover_url = cover_url
+                    if description:
+                        e.description = description
                     self._save()
                     return
 
@@ -530,7 +536,7 @@ class LibraryStore:
         *,
         clear_library: bool = True,
         clear_history: bool = False,
-    ):
+    ) -> None:
         """
         Wipe tracked library and/or recent history.
         Does not touch EPUB files or the chapter/translation cache.
@@ -556,7 +562,9 @@ class LibraryStore:
             self._save()
 
 
-def new_chapters_since(chapters, last_chapter_url: str, last_chapter_count: int = 0):
+def new_chapters_since(
+    chapters, last_chapter_url: str, last_chapter_count: int = 0
+) -> Tuple[list, int]:
     """
     Return (new_chapters, start_index) for chapters after the last download.
 

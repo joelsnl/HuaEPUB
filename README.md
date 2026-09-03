@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.13.0**
+**Current version: 2.14.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -15,18 +15,19 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 - **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site; if a configured site’s content selector misses, the same heuristic is used and the completion dialog warns you
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
-- **Library mode** — cover-grid or list shelf, track novels, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
+- **Library mode** — cover-grid or list shelf, track novels, multi-select for batch update/remove/EPUB download, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
 - **Pause / Resume** — pause a long download, or close the app / shut down the PC and resume later from a banner on startup (local only; not synced to Drive)
-- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a successful download or library update, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab)
+- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a Library Update / Update All, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab). Single / Multi do not auto-sync.
 - **Remove watermarks** and ads automatically
-- **Translate to English** using Google Translate (free, concurrent), a LibreTranslate server, or local **Ollama**
+- **Translate to English** using Google (New/HTML/Old), Microsoft Edge, a LibreTranslate server, local **Ollama**, or **Offline NMT** (CTranslate2; optional xianxia/wuxia glossary)
+- **Novel glossary** — Auto (default) applies the built-in cultivation pack only when the book looks like xianxia/wuxia. Urban/romance skip it. The pack is a curated web-novel list (not a general Chinese dictionary). Each book **mines names, sects, and techniques** from its own Chinese into `~/.huaepub/glossaries/<title>.json` (pinyin, not Google). If the polish Qwen GGUF is already on disk (7B+), a classify pass can fix those names; **Help → Polish glossaries with Qwen…** shows Accept all / Discard. It will not start a GGUF download. You do not need to edit the JSON by hand.
 - **Polish English** — after Google or LibreTranslate, a fast local copy-edit (llama.cpp + Qwen). Only awkward MTL spans are rewritten; fluent sentences are copied. Ollama is not required. The first time you tick it, a dialog explains the local download (~2–9 GB into `~/.huaepub/polish`).
 - **Chapter + translation cache** — stored in `~/.huaepub/cache.db` so re-runs and resumes skip network fetches. Default size cap is **2 GB** (Help → **Cache…**); oldest stored chapter HTML is deleted first. Nothing is cleared on a timer.
 - **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes. EPUBs are written to a sibling `.tmp` then replaced so a crash cannot leave a half-written file.
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA (network/uncached work only — cached chapters do not fake “ETA 0s”), Pause, and Cancel. Status names the phase: fetching chapters, translating (including retry pass), polishing, or writing the EPUB. Failed chapters are retried at the end of the run. **Download EPUB** is disabled while a job is already running.
 - **Completion notes** — leftover Chinese, heuristic chapter guesses, or a cancelled polish pass show as “Saved with warnings” (Single, Multi, and Library). A clean run still says Success / complete.
-- **Keyboard** — **Ctrl+Enter** fetches (or downloads when ready) on Single / Multi. **Esc** cancels an active download, or closes the reader when idle. In the reader: **Left** / **Right** or **J** / **K** for chapters, **+** / **-** for font size. **Y** / **N** confirm Yes/No dialogs (the underlined letters are not Alt-only). Window size and position are remembered.
+- **Keyboard** — **Y** / **N** confirm Yes/No dialogs (the underlined letters are not Alt-only). Window size and position are remembered.
 - **Custom output folder** and persistent settings in `~/.huaepub/` (migrates from `~/.noveldownloader/` if present). `settings.json` is written atomically.
 - **Auto-updater** — downloads prebuilt release builds, verifies `SHA256SUMS.txt`, then a helper replaces the binary and **reopens the app on every OS** (Windows, macOS, Linux, and source installs)
 - **Log file** (`~/.huaepub/logs/huaepub.log`) — File → **Open log file**. Rotates at 1 MB during a long session (keeps `.log.1`). Crashes dump to `huaepub.fault.log` in the same folder.
@@ -55,7 +56,7 @@ Download the latest release from the [Releases](https://github.com/joelsnl/HuaEP
 - `HuaEPUB-macos.zip`
 - `HuaEPUB-linux.zip`
 
-Each zip includes `HuaEPUB` plus a legacy `NovelDownloader` binary (same build) so older in-app updaters still work. Each release also includes `SHA256SUMS.txt`.
+Each zip is just `HuaEPUB` (`HuaEPUB.exe` on Windows). Each release also includes `SHA256SUMS.txt`.
 
 ### Option 3: Build Standalone Executable Yourself
 
@@ -89,13 +90,13 @@ HuaEPUB has four tabs at the top: **Single**, **Multi**, **Library**, and **Read
 
 | Option | What it does |
 |--------|----------------|
-| Remove watermarks & ads | Cleans site junk from chapter HTML |
+| Remove watermarks & ads | Strips site junk; learns repeating ads from the first chapters (not Polish) |
 | Translate to English | Machine-translates text while building the EPUB |
 | Use chapter cache (resume) | Reuses chapters already saved on this PC |
 | Watch clipboard for URLs | When on, copied novel URLs are queued into Multi (and fill Single if empty) |
-| Translator | Google (default), LibreTranslate, or local **Ollama** |
+| Translator | **Google (New)** (default, Calibre translate-pa), Google (HTML), Google (Old / gtx), **Microsoft Edge**, LibreTranslate, local **Ollama**, or **Offline NMT** |
 | Polish English | After Google/LibreTranslate, local copy-edit on this PC. First tick shows a one-time size/path notice; the first run then downloads llama.cpp + a Qwen GGUF that fits this GPU (`~/.huaepub/polish`). Greyed out if Translate is off or Translator is already Ollama. |
-| Translation Workers | Concurrent Google/LibreTranslate requests (default 200). Ollama auto-drops to 2. Polish does not use this number. |
+| Translation Workers | Google in-flight **ceiling** (default 200). Starts at 8 GETs and climbs on success; a 429 pauses new requests so this IP can recover. LibreTranslate may pack several paragraphs per call. Ollama auto-drops to 2. Polish does not use this number. |
 | Ollama model / URL | Shown only when Translator is Ollama (full local translation). If you have no models, HuaEPUB asks to download `qwen2.5:3b` (~2 GB). URL must be localhost. |
 | Save to | Where EPUB files are written |
 | Cache size | Help → **Cache…** — default 2 GB; `0` / Unlimited keeps everything. Oldest chapter HTML is deleted first; translations are kept unless the file is still over the cap. |
@@ -112,6 +113,38 @@ Keep **Translator** on **Google** (or LibreTranslate) and tick **Polish English*
 - If llama.cpp is already listening on `:8080` (or vLLM on `:8000`), that server is used instead of starting a new one.
 - Progress and errors go to `~/.huaepub/logs/huaepub.log` (File → **Open log file**). Help → **How translation works** summarizes this in the app. Cancel during polish still **saves** the EPUB with Google/LibreTranslate English (already-polished sentences are kept).
 - If Ollama is occupying the GPU so llama.cpp cannot start, polish can fall back to Ollama. Quit Ollama from the tray icon if you want the llama.cpp path.
+
+### Offline NMT (CTranslate2)
+
+Pick **Translator → Offline NMT** for a free local engine. This is not bundled in the prebuilt exe.
+
+```bash
+pip install -r requirements-nmt.txt   # ctranslate2 + sentencepiece + CUDA 12 libs
+```
+
+The first **translate** pass (after chapters are fetched) downloads Helsinki-NLP **opus-mt-zh-en** (CTranslate2, ~320 MB) into `~/.huaepub/nmt/` — not once per chapter. **Glossary** is Auto by default: the built-in web-novel pack (ranks like Grand Elder / Golden Core, plus cultivation items) is used only when the title or chapter list looks like cultivation. Romance, urban, and similar books skip it so 公子 is not forced to “Young Master.” That pack is **not** a general Chinese dictionary (pinning everyday words would wreck sentences). Character names are harvested from the book into `~/.huaepub/glossaries/<novel-title>.json` during the translate pass. You can also add names in `~/.huaepub/glossary.json` (same JSON shape as the polish glossary). Quality is below Google + Polish; use Polish English after Offline NMT if you want a copy-edit pass. Never Drive-synced.
+
+#### GPU (NVIDIA)
+
+CTranslate2 does **not** run on “the GPU is there.” It needs **CUDA 12** libraries, especially `cublas64_12.dll`. The Game Ready driver is not that. **CUDA 13 is the wrong major** (it ships `cublas64_13.dll`). cuDNN is not required for this model.
+
+1. Use the **same Python** that launches `app.py`.
+2. Install the CUDA 12 wheels (also pulled by `requirements-nmt.txt`):
+
+```bash
+python -m pip install nvidia-cublas-cu12 nvidia-cuda-runtime-cu12
+```
+
+3. **Fully quit and reopen** HuaEPUB (Python 3.8+ will not see new DLLs in an already-running process).
+
+If GPU still fails after that:
+
+- Windows: `winget install Nvidia.CUDA --version 12.9`  
+  or the [CUDA 12.9 toolkit archive](https://developer.nvidia.com/cuda-12-9-0-download-archive) → Windows → x86_64 → exe. Runtime is enough.
+- Linux: install CUDA **12.x** from NVIDIA or your distro, then reboot.
+- macOS: CTranslate2 has no Metal backend here — Offline NMT stays on CPU.
+
+Ollama’s `cuda_v12` folder is used automatically if Ollama is installed. If CUDA 12 still cannot load, the app falls back to **CPU Offline NMT** (not Google) and prints these same steps in the log.
 
 ### Local translation with Ollama
 
@@ -143,16 +176,18 @@ Resume data is **local only**. Google Drive sync never uploads the chapter cache
 
 1. Paste the book URL → **Fetch Chapters**.
 2. Select chapters with Select All / None / Invert, or a **Range** (e.g. from `200` to `450`).
-3. **Download EPUB** (or **Ctrl+Enter** when the button is enabled) — progress names the phase (fetching chapters, translating, polishing, writing EPUB). The button is disabled while a job is running. **Esc** cancels.
+3. **Download EPUB** — progress names the phase (fetching chapters, translating, polishing, writing EPUB). The button is disabled while a job is running.
 4. Use **Recent** to reopen a URL from earlier downloads.
 5. If anything looks off (leftover Chinese, a generic content guess, or polish stopped early), the dialog title is **Saved with warnings**.
+6. **Preview** on the completion dialog opens the book in the Read tab so you can check the EPUB you just wrote.
 
 ### Multi mode
 
 1. Open the **Multi** tab.
 2. Paste several book URLs (one per line, or a block of text containing URLs).
-3. **Fetch All**, then **Download All** (or **Ctrl+Enter** for the next of those two).
+3. **Fetch All**, then **Download All**.
 4. Novels run one after another. You can Pause / Cancel / resume the queue the same way as Single.
+5. **Preview** on the completion dialog opens a finished EPUB in the Read tab (pick which novel if more than one succeeded).
 
 ### Library mode
 
@@ -162,9 +197,9 @@ After you download a novel, it appears in **Library** so you can update it later
 2. Choose **Grid** (covers) or **List** (compact table).
 3. Click **Check updates** — each cover shows status under the title (`Checking…`, `N new`, `Up to date`, or an error), and thumbnails are refreshed from the site.
 4. Filter **All** or **Updates** (novels that have new chapters).
-5. Select a novel → **Read** (or double-click / Enter) to open it in the **Read** tab. **Update** rebuilds a full EPUB; old chapters come from cache. ETA is based only on chapters that still need a network fetch, so a 500-chapter update with 3 new chapters will not show “ETA 0s”.
-6. Or use **Update All** when several books have new chapters.
-7. **Open URL** / **Download EPUB** / **Remove** as needed. **Remove** deletes the local EPUB, this novel’s chapter/cover/TOC cache, the local reading position, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
+5. Select novels with **Select All** / **Select None** / **Invert**, or Ctrl/Shift-click. **Read** (or double-click / Enter) opens the current book in the **Read** tab. **Update** rebuilds a full EPUB for every selected book (one book uses the single updater; several use the same sequential queue as Update All). Old chapters come from cache. ETA is based only on chapters that still need a network fetch, so a 500-chapter update with 3 new chapters will not show “ETA 0s”.
+6. **Update All** still updates every book Check has flagged, regardless of selection.
+7. **Open URL** uses the current book. **Download EPUB** / **Remove** apply to the whole selection. **Remove** deletes the local EPUB, that novel’s chapter/cover/TOC cache, the local reading position, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
 
 The cover grid reflows when you resize the window and scrolls when there are more novels than fit on screen.
 
@@ -176,7 +211,7 @@ A missing cached chapter is fetched one at a time with the site delay (same as d
 
 Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. It is never uploaded to Drive. Removing a novel from the library also clears that book’s position.
 
-Keyboard while the reader is focused: **Left** / **Right** or **J** / **K** for chapters, **+** / **-** for font size (remembered as `reader_font_pt`). **Esc** closes the reader when no download is running; during a job it still cancels the download.
+Use **Prev** / **Next** and **A-** / **A+** (or the slider) in the reader. Font size is remembered as `reader_font_pt`.
 
 ### Google Drive sync (optional)
 
@@ -193,7 +228,7 @@ Use this only if you want the same library list (and optionally EPUBs) on more t
 3. In the app: **Library** → Google Drive panel → enable sync → **Connect** (browser login).
 4. Choose **Sync library** and/or **Sync EPUBs**.
 5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** (or Library → **Sync Drive now**) as needed. Progress appears in the status bar while syncing.
-6. After a successful Single / Multi / Library Update / Update All, HuaEPUB queues a **silent** Drive sync if sync is enabled. It does not switch you to the Library tab. Startup also runs a silent sync when Drive is already connected.
+6. After a successful Library Update / Update All, HuaEPUB queues a **silent** Drive sync if sync is enabled. It does not switch you to the Library tab. Single / Multi do not auto-sync. Startup also runs a silent sync when Drive is already connected.
 
 If Drive is offline, downloads and the local library still work.
 
@@ -213,6 +248,10 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/library.json` | Tracked library + recent history |
 | `~/.huaepub/cache.db` | Chapter HTML, translations (including polished spans), covers, TOC snapshots. Local only; default 2 GB cap via Help → Cache… |
 | `~/.huaepub/polish/` | llama.cpp + Qwen GGUF for Polish English (first-run download; never Drive-synced) |
+| `~/.huaepub/nmt/` | Optional Offline NMT CTranslate2 model (~320 MB; never Drive-synced) |
+| `~/.huaepub/glossary.json` | User novel terms (source/target). Always applied unless Glossary is Off |
+| `~/.huaepub/glossary-qwen.json` | Legacy extra terms (read only for cultivation books; new passes write per-novel files) |
+| `~/.huaepub/glossaries/` | Per-novel terms, including names harvested from that book |
 | `~/.huaepub/active_download.json` | Incomplete download resume point (if any; never Drive-synced) |
 | `~/.huaepub/reading.json` | In-app reader position (chapter + scroll; never Drive-synced) |
 | `~/.huaepub/settings.json` | App options (atomic tmp+replace writes) |
@@ -336,11 +375,14 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 - Cancel during polish still writes the EPUB with Google/LibreTranslate English
 
 ### "Translation failed" errors
-- Reduce workers (try 20-30 instead of 50)
-- Google may rate-limit; the app will retry with backoff
+- Reduce the workers ceiling if Google still 429s after the auto-throttle (try 16–32)
+- A 429 pauses **new** Google requests (in-flight cap starts at 8, floor 2, climbs on success). Letting 200 workers keep going just 429s until nothing translates.
 - If some segments persistently fail to translate, the app gives up after a
   few retry passes, keeps the best available text, and builds the EPUB anyway
   instead of getting stuck
+- If a finished book still has whole chapters in Chinese, re-run Translate.
+  Failed Chinese is no longer kept as a cache hit. Help → **Cache…** can
+  clear translations if you want a clean slate.
 
 ### "Could not extract book ID"
 - Make sure you're using the main novel page URL

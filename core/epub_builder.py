@@ -443,45 +443,12 @@ class TranslatedEPUBBuilder(EPUBBuilder):
     
     def _extract_text_segments(self, html: str) -> List[str]:
         """Extract text segments from HTML for translation."""
-        from bs4 import BeautifulSoup
-        
-        soup = BeautifulSoup(html, 'lxml')
-        return [str(node).strip() for node in self._find_translatable_nodes(soup)]
-    
+        return extract_translatable_segments(html)
+
     def _apply_content_translations(
         self, html: str, pairs: List[Tuple[str, str]]
     ) -> str:
-        """
-        Replace translatable text nodes with their translations.
-        
-        `pairs` is a list of (original, translated) in the same document order
-        that _extract_text_segments produced. Replacement happens on parsed
-        text nodes; BeautifulSoup escapes special characters on serialization,
-        so translations containing <, > or & can't break the XHTML.
-        """
-        from bs4 import BeautifulSoup
-        
-        soup = BeautifulSoup(html, 'lxml')
-        nodes = self._find_translatable_nodes(soup)
-        
-        j = 0
-        for node in nodes:
-            if j >= len(pairs):
-                break
-            original, translated = pairs[j]
-            if str(node).strip() != original:
-                # Safety net - shouldn't happen since the same HTML is parsed
-                # by both extraction and application
-                continue
-            j += 1
-            if translated and translated != original:
-                node.replace_with(translated)
-        
-        # Return only the body contents so the result can be re-wrapped
-        # by _wrap_xhtml without nested <html>/<body> tags
-        if soup.body is not None:
-            return ''.join(str(child) for child in soup.body.children)
-        return str(soup)
+        return apply_content_translations(html, pairs)
     
     def get_translation_warnings(self) -> List[Tuple[str, int]]:
         """
@@ -489,3 +456,44 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         Returns list of (chapter_title, chinese_char_count) tuples.
         """
         return self.chapters_with_chinese.copy()
+
+
+def extract_translatable_segments(html: str) -> List[str]:
+    """Chinese text nodes in document order (shared with prefetch)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "lxml")
+    return [
+        str(node).strip()
+        for node in TranslatedEPUBBuilder._find_translatable_nodes(soup)
+    ]
+
+
+def apply_content_translations(html: str, pairs: List[Tuple[str, str]]) -> str:
+    """
+    Replace translatable text nodes with their translations.
+
+    `pairs` is a list of (original, translated) in the same document order
+    that extract_translatable_segments produced. Replacement happens on
+    parsed text nodes; BeautifulSoup escapes special characters on
+    serialization, so translations containing <, > or & can't break XHTML.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "lxml")
+    nodes = TranslatedEPUBBuilder._find_translatable_nodes(soup)
+
+    j = 0
+    for node in nodes:
+        if j >= len(pairs):
+            break
+        original, translated = pairs[j]
+        if str(node).strip() != original:
+            continue
+        j += 1
+        if translated and translated != original:
+            node.replace_with(translated)
+
+    if soup.body is not None:
+        return "".join(str(child) for child in soup.body.children)
+    return str(soup)

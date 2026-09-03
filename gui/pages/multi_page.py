@@ -24,7 +24,7 @@ class MultiPage(QWidget):
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("secondaryBtn")
         self.fetch_btn = QPushButton("Fetch All")
-        self.fetch_btn.setToolTip("Fetch every pasted URL (Ctrl+Enter)")
+        self.fetch_btn.setToolTip("Fetch every pasted URL")
         self.clear_btn.clicked.connect(self.clear)
         self.fetch_btn.clicked.connect(self.fetch_all_requested.emit)
         header.addStretch(1)
@@ -39,6 +39,7 @@ class MultiPage(QWidget):
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["#", "Title", "Chapters", "Status"])
+        self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 40)
         self.table.setColumnWidth(2, 90)
@@ -47,7 +48,7 @@ class MultiPage(QWidget):
         self.download_btn = QPushButton("Download All")
         self.download_btn.setObjectName("successBtn")
         self.download_btn.setEnabled(False)
-        self.download_btn.setToolTip("Download every fetched novel (Ctrl+Enter when ready)")
+        self.download_btn.setToolTip("Download every fetched novel")
         self.download_btn.clicked.connect(self.download_all_requested.emit)
         root.addWidget(self.download_btn)
 

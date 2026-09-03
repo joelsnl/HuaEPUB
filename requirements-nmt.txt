@@ -1,0 +1,11 @@
+# Optional Offline NMT (Translator → Offline NMT)
+# Not installed by CI or the frozen exe. From source:
+#   pip install -r requirements-nmt.txt
+#
+# CTranslate2 wheels need CUDA 12 libraries for GPU (cublas64_12.dll).
+# An NVIDIA driver alone is not enough. CUDA 13 will not work.
+# The two nvidia-* lines are unused on CPU-only PCs; omit them if you want.
+ctranslate2>=4.6.3
+sentencepiece>=0.2.0
+nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12

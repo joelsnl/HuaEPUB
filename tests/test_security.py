@@ -281,12 +281,18 @@ class TestPolishDownloadUrl:
         )
         validate_polish_download_url("https://cdn-lfs.huggingface.co/x")
         validate_polish_download_url("https://cas-bridge.xethub.hf.co/x")
+        validate_polish_download_url("https://cdn.hf.co/x")
+        validate_polish_download_url("https://us.aws.cdn.hf.co/x")
 
     def test_rejects_http_and_other_hosts(self):
         with pytest.raises(UnsafeURLError):
             validate_polish_download_url("http://huggingface.co/x")
         with pytest.raises(UnsafeURLError):
             validate_polish_download_url("https://evil.example/x.gguf")
+        with pytest.raises(UnsafeURLError):
+            validate_polish_download_url("https://evil.hf.co/x")
+        with pytest.raises(UnsafeURLError):
+            validate_polish_download_url("https://cdn.hf.co.evil.com/x")
 
 
 class TestGithubAssetDigest:

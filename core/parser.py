@@ -11,11 +11,16 @@ heuristic is used instead.
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
 
 # Try curl_cffi first (best TLS fingerprinting, lightweight)
 HTTP_CLIENT = None
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_CURL_IPRESOLVE_V4 = 1
 
 try:
     from curl_cffi.requests import Session as CurlSession
@@ -30,11 +35,15 @@ if not HTTP_CLIENT:
     print("Warning: curl_cffi not installed. Run: pip install curl_cffi")
 
 
-def create_http_session():
+def create_http_session(*, ipv4: bool = False, pool_size: Optional[int] = None):
     """
     Create an HTTP session with Chrome TLS impersonation when curl_cffi
     is available, falling back to a plain requests session.
     Shared by parsers, the app (cover preview), and the EPUB builder.
+
+    ipv4/pool_size are off by default (parser fetches). Translate workers
+    pass them so unofficial Google/Microsoft sessions prefer IPv4 and reuse
+    a connection pool.
     """
     try:
         from core.utils import sanitize_runtime_env
@@ -42,13 +51,31 @@ def create_http_session():
     except Exception:
         pass
     if HTTP_CLIENT == "curl_cffi":
-        return CurlSession(impersonate="chrome120")
+        curl_kw = {"impersonate": "chrome120"}
+        if ipv4:
+            try:
+                from curl_cffi import CurlOpt
+                curl_kw["curl_options"] = {CurlOpt.IPRESOLVE: _CURL_IPRESOLVE_V4}
+            except Exception:
+                pass
+        try:
+            return CurlSession(**curl_kw)
+        except TypeError:
+            return CurlSession(impersonate="chrome120")
     import requests
     session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    })
+    session.headers.update({"User-Agent": CHROME_UA})
+    if pool_size:
+        try:
+            from requests.adapters import HTTPAdapter
+            size = max(8, int(pool_size or 8))
+            adapter = HTTPAdapter(
+                pool_connections=size, pool_maxsize=size, max_retries=0
+            )
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+        except Exception:
+            pass
     return session
 
 
@@ -61,6 +88,12 @@ class Chapter:
     index: int = 0
     # True when sites.json content selectors missed and GenericParser guessed.
     used_heuristic: bool = False
+    # Apply-as-you-go: cleaned Chinese HTML + (original, translated) pairs.
+    # translated_content is English HTML for preview; content stays source.
+    cleaned_html: str = ""
+    translated_content: str = ""
+    translation_applied: bool = False
+    translation_pairs: List[Tuple[str, str]] = field(default_factory=list)
     
     def __str__(self):
         return f"Chapter {self.index}: {self.title}"
@@ -205,6 +238,14 @@ def get_parser_for_url(url: str) -> Optional[BaseParser]:
                 return factory(url)
             return parser_class()
     return None
+
+
+def fetch_info_and_chapters(parser, url: str) -> Tuple[NovelInfo, List[Chapter]]:
+    """Info + TOC. Uses fetch_all_parallel when the parser implements it."""
+    fetch = getattr(parser, "fetch_all_parallel", None)
+    if callable(fetch):
+        return fetch(url)
+    return parser.get_novel_info(url), parser.get_chapter_list(url)
 
 
 def get_supported_sites() -> List[str]:

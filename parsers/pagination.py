@@ -37,6 +37,26 @@ def href_from_element(el, base_url: str) -> str:
     return canonicalize_page_url(urljoin(base_url, href))
 
 
+def links_to_chapters(links, base_url: str, *, href_contains: str = "") -> List[Chapter]:
+    """Turn <a> nodes into Chapter rows (same skip list as href_from_element)."""
+    chapters: List[Chapter] = []
+    seen: set[str] = set()
+    must = (href_contains or "").strip()
+    for link in links:
+        href = (link.get("href") or "").strip()
+        title = link.get_text(strip=True)
+        if not href or not title or href.startswith(("javascript:", "#", "mailto:")):
+            continue
+        if must and must not in href:
+            continue
+        absolute = urljoin(base_url, href)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        chapters.append(Chapter(title=title, url=absolute, index=len(chapters)))
+    return chapters
+
+
 def next_from_selector(soup: BeautifulSoup, selector: str, base_url: str) -> str:
     if not selector:
         return ""

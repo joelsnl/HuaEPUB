@@ -47,17 +47,30 @@ from core.security import (
     write_secret_file,
     write_update_helper_config,
 )
+from core.settings import get_app_dir, is_frozen
 
 SOURCE_UPDATE_ITEMS = [
     'app.py', 'core', 'gui', 'parsers', 'requirements.txt', 'README.md', 'build.py',
 ]
 
 # Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.13.0"
+__version__ = "2.14.0"
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+# Check is tag + notes only. SHA256SUMS / zip stay on Install.
+# (connect, read) — fail faster than a 15s hang (broken IPv6, stalled TLS).
+CHECK_TIMEOUT = (4, 8)
+DOWNLOAD_API_TIMEOUT = 15
+CHECK_CACHE_TTL = 45.0
+
+_check_lock = threading.Lock()
+_check_inflight: Optional[threading.Event] = None
+_check_cache: Optional[Tuple[bool, str, str, float]] = None
+_check_session = None
+_check_session_lock = threading.Lock()
 
 # Set when a frozen Windows update already swapped the on-disk exe and the
 # GUI should relaunch that path after showing the success dialog.
@@ -148,7 +161,7 @@ def get_pending_relaunch() -> Optional[Path]:
     return _pending_relaunch_exe
 
 
-def clear_pending_relaunch():
+def clear_pending_relaunch() -> None:
     global _pending_relaunch_exe
     _pending_relaunch_exe = None
 
@@ -156,19 +169,6 @@ def clear_pending_relaunch():
 def get_current_version() -> str:
     """Get the current application version."""
     return __version__
-
-
-def is_frozen() -> bool:
-    """Check if running as a compiled executable (PyInstaller)."""
-    return getattr(sys, 'frozen', False)
-
-
-def get_app_dir() -> Path:
-    """Get the application directory."""
-    if is_frozen():
-        return Path(sys.executable).parent
-    else:
-        return Path(os.path.dirname(os.path.abspath(__file__))).parent
 
 
 def get_executable_path() -> Optional[Path]:
@@ -241,65 +241,166 @@ def _allowed_exe_names() -> Set[str]:
     return set(_exe_basenames())
 
 
-def check_for_updates(callback: Optional[Callable[[bool, str, str], None]] = None) -> Tuple[bool, str, str]:
+def _reset_updater_check_state() -> None:
+    """Clear check cache / reused session (tests)."""
+    global _check_inflight, _check_cache, _check_session
+    with _check_lock:
+        _check_inflight = None
+        _check_cache = None
+    with _check_session_lock:
+        _check_session = None
+
+
+def _new_updater_session():
+    """HTTP session for GitHub API / assets. IPv4 avoids Windows IPv6 hangs."""
+    from core.parser import create_http_session
+    session = create_http_session(ipv4=True)
+    try:
+        session.headers.update({"User-Agent": UPDATER_USER_AGENT})
+    except Exception:
+        pass
+    return session
+
+
+def _check_http_session():
+    """Reuse one IPv4 session for app-update checks (TLS handshake once)."""
+    global _check_session
+    with _check_session_lock:
+        if _check_session is None:
+            _check_session = _new_updater_session()
+        return _check_session
+
+
+def _github_api_get(session, *, timeout):
+    """GET /releases/latest through the SSRF + GitHub-host pin."""
+    return safe_http_request(
+        session,
+        "GET",
+        GITHUB_API_URL,
+        allow_http=False,
+        resolve_dns=False,
+        extra_check=validate_github_asset_host,
+        timeout=timeout,
+        headers={"Accept": "application/vnd.github+json"},
+    )
+
+
+def _fetch_latest_release(session, *, timeout) -> Tuple[int, dict]:
+    """Return (status_code, release JSON). Does not download SHA256SUMS or zips."""
+    response = _github_api_get(session, timeout=timeout)
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status == 404:
+        return 404, {}
+    response.raise_for_status()
+    data = response.json() if hasattr(response, "json") else {}
+    if not isinstance(data, dict):
+        data = {}
+    return status, data
+
+
+def _parse_check_result(status_code: int, release_data: dict) -> Tuple[bool, str, str]:
+    if status_code == 404:
+        return (
+            False,
+            __version__,
+            "No releases found. You may be on the latest development version.",
+        )
+
+    latest_version = (release_data.get("tag_name") or "").lstrip("v")
+    release_notes = (release_data.get("body") or "").strip() or "No release notes available."
+
+    if not latest_version:
+        return (False, __version__, "Could not determine latest version.")
+
+    try:
+        from packaging import version
+        has_update = version.parse(latest_version) > version.parse(__version__)
+    except Exception:
+        has_update = latest_version != __version__
+
+    if has_update:
+        notes_preview = (
+            release_notes if len(release_notes) <= 500
+            else release_notes[:500] + "..."
+        )
+        message = f"New version {latest_version} available!\n\nRelease notes:\n{notes_preview}"
+        return (True, latest_version, message)
+
+    message = f"You're running the latest version ({__version__})."
+    return (False, latest_version, message)
+
+
+def _check_for_updates_uncached() -> Tuple[bool, str, str]:
+    try:
+        status, release_data = _fetch_latest_release(
+            _check_http_session(), timeout=CHECK_TIMEOUT
+        )
+        return _parse_check_result(status, release_data)
+    except Exception as e:
+        return (False, __version__, f"Failed to check for updates: {str(e)}")
+
+
+def _check_for_updates_coalesced(*, force: bool) -> Tuple[bool, str, str]:
+    """One GitHub GET at a time; cache successful checks briefly."""
+    global _check_inflight, _check_cache
+    wait_event: Optional[threading.Event] = None
+    is_leader = False
+    with _check_lock:
+        now = time.monotonic()
+        if (
+            not force
+            and _check_cache is not None
+            and (now - _check_cache[3]) < CHECK_CACHE_TTL
+        ):
+            return _check_cache[0], _check_cache[1], _check_cache[2]
+        if _check_inflight is not None:
+            wait_event = _check_inflight
+        else:
+            wait_event = threading.Event()
+            _check_inflight = wait_event
+            is_leader = True
+
+    if not is_leader:
+        assert wait_event is not None
+        wait_s = float(CHECK_TIMEOUT[0] + CHECK_TIMEOUT[1] + 5)
+        wait_event.wait(timeout=wait_s)
+        with _check_lock:
+            if _check_cache is not None:
+                return _check_cache[0], _check_cache[1], _check_cache[2]
+        return _check_for_updates_uncached()
+
+    try:
+        result = _check_for_updates_uncached()
+        with _check_lock:
+            if not result[2].startswith("Failed to check"):
+                _check_cache = (result[0], result[1], result[2], time.monotonic())
+        return result
+    finally:
+        with _check_lock:
+            if _check_inflight is wait_event:
+                _check_inflight = None
+        if wait_event is not None:
+            wait_event.set()
+
+
+def check_for_updates(
+    callback: Optional[Callable[[bool, str, str], None]] = None,
+    *,
+    force: bool = False,
+) -> Tuple[bool, str, str]:
     """
-    Check GitHub for updates.
+    Check GitHub for a newer app release (tag + notes only).
+
+    Does not download SHA256SUMS or zip assets — that stays on Install.
+    force=True skips the short success cache (Help → Check for updates).
 
     Returns:
         Tuple of (has_update: bool, latest_version: str, message: str)
     """
-    try:
-        try:
-            from curl_cffi.requests import Session
-            session = Session(impersonate="chrome120")
-        except ImportError:
-            import requests
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': UPDATER_USER_AGENT,
-                'Accept': 'application/vnd.github.v3+json'
-            })
-
-        response = session.get(GITHUB_API_URL, timeout=15)
-
-        if response.status_code == 404:
-            return (False, __version__, "No releases found. You may be on the latest development version.")
-
-        response.raise_for_status()
-        release_data = response.json()
-
-        latest_version = (release_data.get('tag_name') or '').lstrip('v')
-        release_notes = (release_data.get('body') or '').strip() or 'No release notes available.'
-
-        if not latest_version:
-            return (False, __version__, "Could not determine latest version.")
-
-        try:
-            from packaging import version
-            has_update = version.parse(latest_version) > version.parse(__version__)
-        except Exception:
-            has_update = latest_version != __version__
-
-        if has_update:
-            notes_preview = (
-                release_notes if len(release_notes) <= 500
-                else release_notes[:500] + '...'
-            )
-            message = f"New version {latest_version} available!\n\nRelease notes:\n{notes_preview}"
-            if callback:
-                callback(True, latest_version, message)
-            return (True, latest_version, message)
-
-        message = f"You're running the latest version ({__version__})."
-        if callback:
-            callback(False, latest_version, message)
-        return (False, latest_version, message)
-
-    except Exception as e:
-        message = f"Failed to check for updates: {str(e)}"
-        if callback:
-            callback(False, __version__, message)
-        return (False, __version__, message)
+    result = _check_for_updates_coalesced(force=force)
+    if callback:
+        callback(result[0], result[1], result[2])
+    return result
 
 
 def _create_replacement_helper(
@@ -861,15 +962,8 @@ def download_update(
         if progress_callback:
             progress_callback(0, 100, "Connecting to GitHub...")
 
-        try:
-            from curl_cffi.requests import Session
-            session = Session(impersonate="chrome120")
-        except ImportError:
-            import requests
-            session = requests.Session()
-            session.headers.update({'User-Agent': UPDATER_USER_AGENT})
-
-        api_response = session.get(GITHUB_API_URL, timeout=15)
+        session = _new_updater_session()
+        api_response = _github_api_get(session, timeout=DOWNLOAD_API_TIMEOUT)
         api_response.raise_for_status()
         release_data = api_response.json()
 
@@ -1523,9 +1617,16 @@ def _schedule_relaunch_after_exit() -> None:
     )
 
 
-def check_for_updates_async(callback: Callable[[bool, str, str], None]):
-    """Check for updates in a background thread."""
-    thread = threading.Thread(target=check_for_updates, args=(callback,))
+def check_for_updates_async(
+    callback: Callable[[bool, str, str], None],
+    *,
+    force: bool = False,
+) -> None:
+    """Check for updates in a background thread (not the GUI worker slot)."""
+    thread = threading.Thread(
+        target=check_for_updates,
+        kwargs={"callback": callback, "force": force},
+    )
     thread.daemon = True
     thread.start()
 
@@ -1533,7 +1634,7 @@ def check_for_updates_async(callback: Callable[[bool, str, str], None]):
 def download_update_async(
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     completion_callback: Optional[Callable[[bool, str], None]] = None
-):
+) -> None:
     """Download and install update in a background thread."""
     def _download():
         success, message = download_update(progress_callback)
@@ -1551,7 +1652,7 @@ def get_auto_check_updates() -> bool:
     return bool(get_setting('auto_check_updates'))
 
 
-def set_auto_check_updates(enabled: bool):
+def set_auto_check_updates(enabled: bool) -> None:
     """Set the auto-check updates preference."""
     from core.settings import set_setting
     set_setting('auto_check_updates', enabled)

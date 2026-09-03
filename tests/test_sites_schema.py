@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Dict, List, Set
 
-SITES_PATH = Path(__file__).resolve().parents[1] / "parsers" / "sites.json"
+from parsers.config import load_sites
 
 # Keys SiteConfigParser / GenericParser actually read, plus documented extras.
 ALLOWED_KEYS = frozenset({
@@ -41,7 +39,7 @@ ALLOWED_KEYS = frozenset({
 
 
 def _load_sites() -> List[dict]:
-    data = json.loads(SITES_PATH.read_text(encoding="utf-8"))
+    data = load_sites()
     assert isinstance(data, list), "sites.json must be a JSON array"
     return data
 

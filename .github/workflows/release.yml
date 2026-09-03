@@ -48,15 +48,12 @@ jobs:
           - os: windows-latest
             asset: HuaEPUB-windows.zip
             exe: HuaEPUB.exe
-            legacy_exe: NovelDownloader.exe
           - os: macos-latest
             asset: HuaEPUB-macos.zip
             exe: HuaEPUB
-            legacy_exe: NovelDownloader
           - os: ubuntu-latest
             asset: HuaEPUB-linux.zip
             exe: HuaEPUB
-            legacy_exe: NovelDownloader
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -78,14 +75,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item "dist/${{ matrix.exe }}" "dist/${{ matrix.legacy_exe }}"
-          Compress-Archive -Path "dist/${{ matrix.exe }}","dist/${{ matrix.legacy_exe }}" -DestinationPath "${{ matrix.asset }}"
+          Compress-Archive -Path "dist/${{ matrix.exe }}" -DestinationPath "${{ matrix.asset }}"
 
       - name: Zip executable (macOS / Linux)
         if: runner.os != 'Windows'
         run: |
-          cp "dist/${{ matrix.exe }}" "dist/${{ matrix.legacy_exe }}"
-          cd dist && zip "../${{ matrix.asset }}" "${{ matrix.exe }}" "${{ matrix.legacy_exe }}"
+          cd dist && zip "../${{ matrix.asset }}" "${{ matrix.exe }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,9 +103,7 @@ jobs:
           curl -fsSL \
             "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.zip" \
             -o HuaEPUB-source.zip
-          # Legacy alias so older source updaters still find a checksummed archive
-          cp HuaEPUB-source.zip novelDownloader-source.zip
-          sha256sum HuaEPUB-*.zip novelDownloader-source.zip > SHA256SUMS.txt
+          sha256sum HuaEPUB-*.zip > SHA256SUMS.txt
 
       - name: Attach assets to release
         uses: softprops/action-gh-release@v2
@@ -118,5 +111,4 @@ jobs:
           generate_release_notes: true
           files: |
             HuaEPUB-*.zip
-            novelDownloader-source.zip
             SHA256SUMS.txt

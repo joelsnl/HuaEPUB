@@ -59,6 +59,66 @@ class ReaderChapterFetchWorker(QObject):
             self.error.emit(self.index, str(exc))
 
 
+class ReaderTranslateWorker(QObject):
+    """Packed-translate one cache chapter for the reader (no site fetch)."""
+
+    finished = Signal(int, str, str)  # index, url, html
+    error = Signal(int, str)
+    status = Signal(str)
+
+    def __init__(
+        self,
+        index: int,
+        url: str,
+        html: str,
+        cache,
+        options: dict | None = None,
+        novel_title: str = "",
+        detect_text: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.index = index
+        self.url = url
+        self.html = html or ""
+        self.cache = cache
+        self.options = options or {}
+        self.novel_title = novel_title or ""
+        self.detect_text = detect_text or ""
+
+    @Slot()
+    def run(self):
+        try:
+            from types import SimpleNamespace
+
+            from core.cleaner import ContentCleaner
+            from core.download_runner import make_translator, translator_backend_kwargs
+            from core.reader import html_needs_live_translate
+
+            if not html_needs_live_translate(self.html):
+                self.finished.emit(self.index, self.url, self.html)
+                return
+            self.status.emit("Translating chapter…")
+            kw = translator_backend_kwargs({}, self.options)
+            translator = make_translator(
+                cache=self.cache,
+                max_workers=int(self.options.get("workers", 200) or 200),
+                **kw,
+            )
+            cfg = getattr(translator, "configure_glossary", None)
+            if callable(cfg):
+                cfg(
+                    SimpleNamespace(title=self.novel_title, description=""),
+                    mode=kw.get("glossary_mode", "auto"),
+                    detect_text=self.detect_text or self.novel_title,
+                )
+            cleaner = ContentCleaner() if self.options.get("clean", True) else None
+            out = translator.translate_and_apply_html(self.html, cleaner=cleaner)
+            self.finished.emit(self.index, self.url, out or self.html)
+        except Exception as exc:
+            self.error.emit(self.index, str(exc))
+
+
 class DriveEpubDownloadWorker(QObject):
     finished = Signal(str)
     error = Signal(str)

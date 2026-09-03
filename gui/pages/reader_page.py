@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QKeySequence, QShortcut, QTextOption
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
     QSlider, QSplitter, QTextBrowser, QVBoxLayout, QWidget,
@@ -87,23 +87,7 @@ class ReaderPage(QWidget):
         self.status_lbl.setStyleSheet("color:#aaa;")
         root.addWidget(self.status_lbl)
 
-        self._bind_keys()
         self._set_nav_enabled(False)
-
-    def _bind_keys(self):
-        def add(seq, slot):
-            sc = QShortcut(QKeySequence(seq), self)
-            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            sc.activated.connect(slot)
-
-        add(Qt.Key.Key_Left, self._prev)
-        add(Qt.Key.Key_Right, self._next)
-        add("J", self._next)
-        add("K", self._prev)
-        add(QKeySequence.StandardKey.ZoomIn, lambda: self._nudge_font(1))
-        add(QKeySequence.StandardKey.ZoomOut, lambda: self._nudge_font(-1))
-        add("+", lambda: self._nudge_font(1))
-        add("-", lambda: self._nudge_font(-1))
 
     def set_font_pt(self, pt: int):
         size = max(12, min(32, int(pt or 18)))
@@ -197,7 +181,6 @@ class ReaderPage(QWidget):
                 bar = self.view.verticalScrollBar()
                 bar.setValue(int(bar.maximum() * ratio))
 
-            from PySide6.QtCore import QTimer
             QTimer.singleShot(0, apply)
 
     def _set_nav_enabled(self, on: bool):

@@ -38,6 +38,7 @@ _REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 # Zip bomb guards
 _MAX_ZIP_MEMBER_BYTES = 512 * 1024 * 1024  # 512 MiB per entry
 _MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB uncompressed total
+_ARCHIVE_CHUNK = 1024 * 1024
 _MAX_ZIP_ENTRIES = 10_000
 
 # Cover preview / EPUB image cap (hostile pages can serve gigabyte "covers")
@@ -253,6 +254,9 @@ def huggingface_host_ok(host: str) -> bool:
     if h.endswith(".huggingface.co"):
         return True
     if h.endswith(".xethub.hf.co"):
+        return True
+    # Hugging Face LFS / resolve redirects (e.g. us.aws.cdn.hf.co).
+    if h == "cdn.hf.co" or h.endswith(".cdn.hf.co"):
         return True
     if h.endswith(".hf.co") and "cas-bridge" in h:
         return True
@@ -485,6 +489,61 @@ def fetch_cover_bytes(session: Any, url: str, *, timeout: float = 20) -> bytes:
     return data
 
 
+def _unsafe_archive_member_name(name: str) -> bool:
+    """True for absolute, drive, or parent-traversal archive member paths."""
+    if name.startswith("/") or name.startswith("../") or "/../" in f"/{name}/":
+        return True
+    if ":" in name.split("/")[0]:
+        return True
+    return False
+
+
+def _archive_member_target(
+    dest_dir: Path, name: str, *, kind: str, original: str
+) -> Path:
+    """Resolve member path under dest_dir, or raise on zip-slip."""
+    if _unsafe_archive_member_name(name):
+        raise ValueError(f"Unsafe {kind} entry path: {original!r}")
+    target = (dest_dir / name).resolve()
+    try:
+        target.relative_to(dest_dir)
+    except ValueError as e:
+        raise ValueError(
+            f"{kind.capitalize()} entry escapes destination: {original!r}"
+        ) from e
+    return target
+
+
+def _copy_bounded_stream(
+    src: Any,
+    target: Path,
+    *,
+    kind: str,
+    original: str,
+    max_member_bytes: int,
+    total_bytes: int = 0,
+    max_total_bytes: Optional[int] = None,
+) -> int:
+    """Copy src to target with per-member and optional total size caps."""
+    copied = 0
+    with open(target, "wb") as out:
+        while True:
+            chunk = src.read(_ARCHIVE_CHUNK)
+            if not chunk:
+                break
+            copied += len(chunk)
+            total_bytes += len(chunk)
+            if copied > max_member_bytes:
+                raise ValueError(f"{kind.capitalize()} entry too large: {original!r}")
+            if max_total_bytes is not None and total_bytes > max_total_bytes:
+                raise ValueError(
+                    f"{kind.capitalize()} uncompressed size exceeds limit "
+                    f"({max_total_bytes} bytes)"
+                )
+            out.write(chunk)
+    return total_bytes
+
+
 def safe_extract_zip(
     zip_path: Path,
     dest_dir: Path,
@@ -511,18 +570,9 @@ def safe_extract_zip(
             name = info.filename.replace("\\", "/")
             if not name or name.endswith("/"):
                 continue
-            # Reject absolute / drive / unc / parent traversal
-            if name.startswith("/") or name.startswith("../") or "/../" in f"/{name}/":
-                raise ValueError(f"Unsafe zip entry path: {info.filename!r}")
-            if ":" in name.split("/")[0]:  # Windows drive in entry
-                raise ValueError(f"Unsafe zip entry path: {info.filename!r}")
-
-            # Normalize and ensure stays under dest
-            target = (dest_dir / name).resolve()
-            try:
-                target.relative_to(dest_dir)
-            except ValueError as e:
-                raise ValueError(f"Zip entry escapes destination: {info.filename!r}") from e
+            target = _archive_member_target(
+                dest_dir, name, kind="zip", original=info.filename
+            )
 
             if allowed is not None and target.name not in allowed:
                 # Allow nested folders in source archives; only filter when
@@ -538,22 +588,16 @@ def safe_extract_zip(
                 )
 
             target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info, "r") as src, open(target, "wb") as out:
-                copied = 0
-                while True:
-                    chunk = src.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    total_bytes += len(chunk)
-                    if copied > max_member_bytes:
-                        raise ValueError(f"Zip entry too large: {info.filename!r}")
-                    if total_bytes > max_total_bytes:
-                        raise ValueError(
-                            f"Zip uncompressed size exceeds limit "
-                            f"({max_total_bytes} bytes)"
-                        )
-                    out.write(chunk)
+            with zf.open(info, "r") as src:
+                total_bytes = _copy_bounded_stream(
+                    src,
+                    target,
+                    kind="zip",
+                    original=info.filename,
+                    max_member_bytes=max_member_bytes,
+                    total_bytes=total_bytes,
+                    max_total_bytes=max_total_bytes,
+                )
             written.append(target)
 
     return written
@@ -581,15 +625,9 @@ def safe_extract_tar(
             name = (info.name or "").replace("\\", "/")
             if not name or name.endswith("/"):
                 continue
-            if name.startswith("/") or name.startswith("../") or "/../" in f"/{name}/":
-                raise ValueError(f"Unsafe tar entry path: {info.name!r}")
-            if ":" in name.split("/")[0]:
-                raise ValueError(f"Unsafe tar entry path: {info.name!r}")
-            target = (dest_dir / name).resolve()
-            try:
-                target.relative_to(dest_dir)
-            except ValueError as e:
-                raise ValueError(f"Tar entry escapes destination: {info.name!r}") from e
+            target = _archive_member_target(
+                dest_dir, name, kind="tar", original=info.name
+            )
 
             entry_count += 1
             if entry_count > max_entries:
@@ -606,16 +644,14 @@ def safe_extract_tar(
             src = tf.extractfile(info)
             if src is None:
                 continue
-            with src, open(target, "wb") as out:
-                copied = 0
-                while True:
-                    chunk = src.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    if copied > max_member_bytes:
-                        raise ValueError(f"Tar entry too large: {info.name!r}")
-                    out.write(chunk)
+            with src:
+                _copy_bounded_stream(
+                    src,
+                    target,
+                    kind="tar",
+                    original=info.name,
+                    max_member_bytes=max_member_bytes,
+                )
             written.append(target)
     return written
 

@@ -333,6 +333,29 @@ def resolve_reader_book(
     )
 
 
+def next_cache_prefetch_index(book: Optional[ReaderBook], current_index: int) -> Optional[int]:
+    """N+1 chapter index for KIND_CACHE when that chapter has no HTML yet."""
+    if book is None or book.kind != KIND_CACHE or not book.chapters:
+        return None
+    nxt = int(current_index) + 1
+    if nxt < 0 or nxt >= len(book.chapters):
+        return None
+    ch = book.chapters[nxt]
+    if (ch.html or "").strip() or not (ch.url or "").strip():
+        return None
+    return nxt
+
+
+def html_needs_live_translate(html: str) -> bool:
+    """True when cache HTML still has enough Chinese to bother translating."""
+    raw = html or ""
+    if not raw.strip():
+        return False
+    from core.cleaner import count_chinese_chars, is_chinese
+
+    return is_chinese(raw) and count_chinese_chars(raw) > 8
+
+
 def resume_index(book: ReaderBook, position: Optional[dict]) -> int:
     if not book.chapters:
         return 0

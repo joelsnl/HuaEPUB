@@ -19,12 +19,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
+from core.parser import CHROME_UA
+
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+USER_AGENT = CHROME_UA
 
 _gpu_lock = threading.Lock()
 _gpu_cached: Optional[bool] = None
@@ -32,17 +31,8 @@ _gpu_logged = False
 
 
 def _nvidia_smi_cmd() -> Optional[str]:
-    found = shutil.which("nvidia-smi")
-    if found:
-        return found
-    if sys.platform == "win32":
-        for path in (
-            r"C:\Windows\System32\nvidia-smi.exe",
-            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-        ):
-            if os.path.isfile(path):
-                return path
-    return None
+    from core.polish.hardware import nvidia_smi_executable
+    return nvidia_smi_executable()
 
 
 def ollama_gpu_available() -> bool:

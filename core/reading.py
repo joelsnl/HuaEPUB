@@ -9,7 +9,6 @@ cache.db and active_download.json.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -37,21 +36,9 @@ def _load_unlocked(path: Path) -> Dict[str, Any]:
 
 
 def _write_unlocked(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps(data, indent=2, ensure_ascii=False)
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except OSError:
-            pass
-    tmp.replace(path)
-    try:
-        tmp.unlink(missing_ok=True)
-    except OSError:
-        pass
+    from core.atomic_io import atomic_write_json
+
+    atomic_write_json(path, data, fsync=True, ensure_ascii=False)
 
 
 def get_position(source_url: str, *, data_dir: Optional[Path] = None) -> Optional[dict]:

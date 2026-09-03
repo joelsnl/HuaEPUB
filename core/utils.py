@@ -60,6 +60,11 @@ def sanitize_runtime_env() -> list:
     return cleared
 
 
+def in_pytest() -> bool:
+    """True while a pytest test is running (not merely because pytest is imported)."""
+    return "pytest" in sys.modules and bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
 def format_eta(seconds: float) -> str:
     """Format a duration like '3m 20s' or '1h 12m'."""
     seconds = max(0, int(seconds))

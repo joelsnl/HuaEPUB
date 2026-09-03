@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.settings import get_data_dir, get_default_books_dir, get_setting, set_setting
-from gui.dialogs import ask_yes_no, bind_letter_shortcuts, show_warning
+from gui.dialogs import ask_yes_no, show_warning
 
 
 class OptionsBar(QWidget):
@@ -27,9 +27,13 @@ class OptionsBar(QWidget):
         row1 = QHBoxLayout()
         row2 = QHBoxLayout()
 
-        self.clean_cb = QCheckBox("Remove watermarks & ads")
+        self.clean_cb = QCheckBox("Remove watermarks and ads")
         self.clean_cb.setChecked(bool(s.get("clean", True)))
-        self.clean_cb.setToolTip("Strip site ads and watermarks from chapter HTML.")
+        self.clean_cb.setToolTip(
+            "Strip site ads and watermarks from chapter HTML. Learns repeating "
+            "junk from the first chapters of this book. Independent of Polish "
+            "English — does not start llama.cpp."
+        )
         self.translate_cb = QCheckBox("Translate to English")
         self.translate_cb.setChecked(bool(s.get("translate", True)))
         self.translate_cb.setToolTip(
@@ -60,21 +64,56 @@ class OptionsBar(QWidget):
 
         row2.addWidget(QLabel("Translator:"))
         self.backend = QComboBox()
-        self.backend.addItems(["Google", "LibreTranslate", "Ollama"])
+        self.backend.addItems([
+            "Google (New)",
+            "Google (HTML)",
+            "Google (Old)",
+            "Microsoft Edge",
+            "LibreTranslate",
+            "Ollama",
+            "Offline NMT",
+        ])
         self.backend.setToolTip(
-            "Google is fast and online (default). LibreTranslate uses your own "
-            "server. Ollama translates fully on this PC and is much slower."
+            "Google (New) is the same translate-pa engine as Calibre Ebook Translator "
+            "v2.4+. Old is the walled gtx endpoint. HTML is Google's widget HTML API. "
+            "Microsoft Edge is another free unofficial engine. LibreTranslate is your "
+            "server. Ollama / Offline NMT stay on this PC."
         )
         _backend = s.get("translation_backend", "google")
-        self.backend.setCurrentText(
-            "LibreTranslate" if _backend == "libretranslate"
-            else "Ollama" if _backend == "ollama"
-            else "Google"
-        )
+        self.backend.setCurrentText(self._backend_label(_backend))
         self.backend.currentTextChanged.connect(self._on_backend_changed)
         row2.addWidget(self.backend)
+
+        row2.addWidget(QLabel("Glossary:"))
+        self.glossary = QComboBox()
+        self.glossary.addItems([
+            "Auto",
+            "Cultivation pack",
+            "Names only",
+            "Off",
+        ])
+        self.glossary.setToolTip(
+            "Auto (default) uses the built-in xianxia/wuxia list only when the "
+            "title or chapter list looks like cultivation. Cultivation pack "
+            "always applies it. Names only uses ~/.huaepub/glossary.json and "
+            "per-novel files (including names learned from this book). Off "
+            "disables protect/restore. "
+            "公子 / 凡人 alone do not trigger Auto. "
+            "This is not a general Chinese dictionary."
+        )
+        self.glossary.setCurrentText(
+            self._glossary_label(s.get("translation_glossary", "auto"))
+        )
+        self.glossary.currentTextChanged.connect(self._emit_options)
+        row2.addWidget(self.glossary)
+
         self._last_non_ollama = (
-            "libretranslate" if _backend == "libretranslate" else "google"
+            "libretranslate" if _backend == "libretranslate"
+            else "ctranslate2" if _backend == "ctranslate2"
+            else _backend if _backend in (
+                "google", "google_html", "google_gtx", "microsoft"
+            )
+            else "google"
         )
 
         row2.addWidget(QLabel("Workers:"))
@@ -84,7 +123,13 @@ class OptionsBar(QWidget):
         self.workers.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.workers.setMinimumWidth(64)
         self.workers.setAlignment(Qt.AlignCenter)
-        self.workers.setValue(int(s.get("workers", 200) or 200))
+        from core.translator import DEFAULT_GOOGLE_WORKERS
+
+        saved_workers = int(s.get("workers", DEFAULT_GOOGLE_WORKERS) or DEFAULT_GOOGLE_WORKERS)
+        # 32 was the brief packed-only default; put Google back on the old 200.
+        if _backend in ("google", "google_html", "google_gtx", "microsoft") and saved_workers == 32:
+            saved_workers = DEFAULT_GOOGLE_WORKERS
+        self.workers.setValue(saved_workers)
         self.workers.valueChanged.connect(self._emit_options)
 
         minus = QPushButton("−")
@@ -164,7 +209,6 @@ class OptionsBar(QWidget):
         self._ollama_pull_model = ""
         self._ollama_pull_url = ""
         self._ollama_pull_result = None
-        self._ollama_pull_purpose = "translator"
         self.translate_cb.stateChanged.connect(self._sync_polish_enabled)
         self._sync_polish_enabled()
 
@@ -174,9 +218,13 @@ class OptionsBar(QWidget):
             # inside currentTextChanged can hard-crash Qt on Windows.
             QTimer.singleShot(0, self._finish_switch_to_ollama)
             return
+        if text == "Offline NMT":
+            QTimer.singleShot(0, self._finish_switch_to_nmt)
+            return
         self._last_non_ollama = self._backend_value()
         if self.workers.value() <= 4:
-            self.workers.setValue(200)
+            from core.translator import DEFAULT_GOOGLE_WORKERS
+            self.workers.setValue(DEFAULT_GOOGLE_WORKERS)
         self._sync_polish_enabled()
         self._sync_ollama_row()
         self._emit_options()
@@ -211,10 +259,70 @@ class OptionsBar(QWidget):
         ):
             self._revert_from_ollama()
             return
-        self._ollama_pull_purpose = "translator"
         self._ollama_pull_model = recommended
         self._ollama_pull_url = url
         QTimer.singleShot(0, self._start_ollama_pull)
+
+    @Slot()
+    def _finish_switch_to_nmt(self):
+        if self.backend.currentText() != "Offline NMT":
+            return
+        from core.translation.nmt import nmt_runtime_available
+
+        if not nmt_runtime_available():
+            show_warning(
+                self.window(),
+                "Offline NMT is not installed",
+                "Offline NMT needs extra packages (not bundled in the exe).\n\n"
+                "In the same Python you use to run the app:\n\n"
+                "    pip install -r requirements-nmt.txt\n\n"
+                "That installs CTranslate2 plus CUDA 12 libraries so an NVIDIA "
+                "GPU can be used (the display driver is not enough; do not "
+                "install CUDA 13).\n\n"
+                f"Translator will stay on {self._backend_label(self._last_non_ollama)}.",
+            )
+            self._revert_from_ollama()
+            return
+        if not self._maybe_confirm_nmt_notice():
+            self._revert_from_ollama()
+            return
+        if self.workers.value() >= 50:
+            self.workers.setValue(4)
+        self._last_non_ollama = "ctranslate2"
+        self._sync_polish_enabled()
+        self._sync_ollama_row()
+        self._emit_options()
+
+    def _maybe_confirm_nmt_notice(self) -> bool:
+        if self.session.settings.get("nmt_notice_shown") or get_setting(
+            "nmt_notice_shown"
+        ):
+            return True
+        from core.translation.nmt import nmt_cache_dir
+
+        nmt_dir = nmt_cache_dir()
+        if not ask_yes_no(
+            self.window(),
+            "Offline NMT",
+            "Offline NMT runs CTranslate2 on this PC (Helsinki-NLP opus-mt-zh-en).\n\n"
+            "The first translation downloads about 320 MB into:\n"
+            f"{nmt_dir}\n\n"
+            "NVIDIA GPU: CTranslate2 needs CUDA 12 libraries (cublas64_12.dll), "
+            "not only the Game Ready driver. `pip install -r requirements-nmt.txt` "
+            "includes them. CUDA 13 will not work. If CUDA 12 is missing, this "
+            "PC falls back to CPU (not Google).\n\n"
+            "A built-in xianxia/wuxia glossary (plus ~/.huaepub/glossary.json) "
+            "protects names and ranks so they are not translated literally — "
+            "but only when Glossary is Auto and the book looks like cultivation, "
+            "or you pick Cultivation pack. "
+            "This folder is never synced to Google Drive.\n\n"
+            "Quality is below Google + Polish, but it is free and works offline.\n\n"
+            "Use Offline NMT?",
+        ):
+            return False
+        self.session.settings["nmt_notice_shown"] = True
+        set_setting("nmt_notice_shown", True)
+        return True
 
     def _apply_ollama_selected(self):
         if self.workers.value() >= 50:
@@ -237,6 +345,8 @@ class OptionsBar(QWidget):
         ollama = self.backend.currentText() == "Ollama"
         can_polish = self.translate_cb.isChecked() and not ollama
         self.polish_cb.setEnabled(can_polish)
+        if hasattr(self, "glossary"):
+            self.glossary.setEnabled(self.translate_cb.isChecked())
         # Remember polish when Translate is toggled off. Only clear it when
         # Ollama is already the translator (extra polish would be redundant).
         if ollama and self.polish_cb.isChecked():
@@ -280,13 +390,6 @@ class OptionsBar(QWidget):
         set_setting("polish_notice_shown", True)
         return True
 
-    def _uncheck_polish(self):
-        self.polish_cb.blockSignals(True)
-        self.polish_cb.setChecked(False)
-        self.polish_cb.blockSignals(False)
-        self._sync_ollama_row()
-        self._emit_options()
-
     def _revert_from_ollama(self):
         self.backend.setEnabled(True)
         self.backend.blockSignals(True)
@@ -295,16 +398,12 @@ class OptionsBar(QWidget):
         self._sync_ollama_row()
         self._emit_options()
 
-    def _warn_ollama_unavailable(self, for_polish: bool = False):
+    def _warn_ollama_unavailable(self):
         from PySide6.QtCore import QUrl
         from core.translator import ollama_is_installed
 
         prev = self._backend_label(self._last_non_ollama)
-        stay = (
-            "Polish English will stay off."
-            if for_polish
-            else f"Translator will stay on {prev}."
-        )
+        stay = f"Translator will stay on {prev}."
         parent = self.window()
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Warning)
@@ -317,7 +416,6 @@ class OptionsBar(QWidget):
                 f"{stay}"
             )
             box.addButton("OK", QMessageBox.ButtonRole.AcceptRole)
-            bind_letter_shortcuts(box)
             box.exec()
             return
 
@@ -332,7 +430,6 @@ class OptionsBar(QWidget):
             "Open ollama.com", QMessageBox.ButtonRole.AcceptRole
         )
         box.addButton("OK", QMessageBox.ButtonRole.RejectRole)
-        bind_letter_shortcuts(box)
         box.exec()
         if box.clickedButton() is open_btn:
             QDesktopServices.openUrl(QUrl("https://ollama.com"))
@@ -346,10 +443,7 @@ class OptionsBar(QWidget):
         model = self._ollama_pull_model
         url = self._ollama_pull_url
         if not model:
-            if self._ollama_pull_purpose == "polish":
-                self._uncheck_polish()
-            else:
-                self._revert_from_ollama()
+            self._revert_from_ollama()
             return
 
         print(f"Starting Ollama pull of {model} from {url}")
@@ -430,27 +524,19 @@ class OptionsBar(QWidget):
         ok = bool(result.get("ok"))
         error = result.get("error") or ""
         model = self._ollama_pull_model
-        purpose = self._ollama_pull_purpose or "translator"
         if not ok:
             err = error or "Download failed"
             print(f"Ollama pull failed: {err}")
             stay = (
-                "Polish English will stay off."
-                if purpose == "polish"
-                else (
-                    "Translator will stay on "
-                    f"{self._backend_label(self._last_non_ollama)}."
-                )
+                "Translator will stay on "
+                f"{self._backend_label(self._last_non_ollama)}."
             )
             show_warning(
                 self.window(),
                 "Ollama download failed",
                 f"{err}\n\n{stay}",
             )
-            if purpose == "polish":
-                self._uncheck_polish()
-            else:
-                self._revert_from_ollama()
+            self._revert_from_ollama()
             return
         print(f"Ollama pull finished: {model}")
         self.ollama_model.blockSignals(True)
@@ -458,13 +544,6 @@ class OptionsBar(QWidget):
             self.ollama_model.addItem(model)
         self.ollama_model.setCurrentText(model)
         self.ollama_model.blockSignals(False)
-        if purpose == "polish":
-            self.polish_cb.blockSignals(True)
-            self.polish_cb.setChecked(True)
-            self.polish_cb.blockSignals(False)
-            self._sync_ollama_row()
-            self._emit_options()
-            return
         self.backend.blockSignals(True)
         self.backend.setCurrentText("Ollama")
         self.backend.blockSignals(False)
@@ -484,6 +563,7 @@ class OptionsBar(QWidget):
 
     def _sync_option_hints(self):
         ollama = self.backend.currentText() == "Ollama"
+        offline = self.backend.currentText() == "Offline NMT"
         translate_on = self.translate_cb.isChecked()
         polish_on = self._polish_active()
         if ollama:
@@ -493,14 +573,23 @@ class OptionsBar(QWidget):
             self.workers.setToolTip(
                 "Ollama can only handle a few requests at once. 1–4 is typical."
             )
+        elif offline:
+            self.polish_cb.setToolTip(
+                "After Offline NMT, copy-edit awkward English on this PC. "
+                "Same llama.cpp polish as after Google."
+            )
+            self.workers.setToolTip(
+                "Offline NMT batches locally. 1–4 is typical; extra workers "
+                "do not speed CTranslate2 much."
+            )
         elif not translate_on:
             self.polish_cb.setToolTip(
                 "Turn on Translate to English first, then you can polish "
                 "the English with a local model."
             )
             self.workers.setToolTip(
-                "How many Google/LibreTranslate requests to run at once. "
-                "200 is the default."
+                "How many Google paragraph requests to run at once. "
+                "200 is the default (same as the old fast path)."
             )
         else:
             self.polish_cb.setToolTip(
@@ -511,13 +600,15 @@ class OptionsBar(QWidget):
             )
             if polish_on:
                 self.workers.setToolTip(
-                    "Workers are for Google/LibreTranslate only. Polish runs "
-                    "separately and is not affected. Leave this at 200."
+                    "Workers are the Google in-flight ceiling. Polish runs "
+                    "separately and is not affected."
                 )
             else:
                 self.workers.setToolTip(
-                    "How many Google/LibreTranslate requests to run at once. "
-                    "200 is the default."
+                    "Ceiling for Google paragraph requests (default 200). "
+                    "The app starts at 8 in flight and only climbs if Google "
+                    "is succeeding. A 429 pauses *new* requests so this IP "
+                    "can recover — 200 at once just 429s until nothing translates."
                 )
         if hasattr(self, "ollama_hint"):
             if polish_on:
@@ -531,14 +622,40 @@ class OptionsBar(QWidget):
                     "Ollama translates the whole book on this PC. This is much slower than Google."
                 )
                 self.ollama_hint.setVisible(True)
+            elif offline:
+                from core.translation.nmt import cublas_present
+
+                gpu = ""
+                try:
+                    gpu = (
+                        " NVIDIA GPU is ready (CUDA 12 libraries found)."
+                        if cublas_present()
+                        else " NVIDIA GPU needs CUDA 12 "
+                        "(pip install -r requirements-nmt.txt)."
+                    )
+                except Exception:
+                    gpu = ""
+                self.ollama_hint.setText(
+                    "Offline NMT uses CTranslate2 on this PC."
+                    f"{gpu} "
+                    "Glossary is Auto by default (cultivation pack only for "
+                    "xianxia-like books). Edit ~/.huaepub/glossary.json for names."
+                )
+                self.ollama_hint.setVisible(True)
             else:
                 self.ollama_hint.setVisible(False)
 
     def _sync_ollama_row(self):
-        visible = self.backend.currentText() == "Ollama"
-        self.ollama_wrap.setVisible(visible)
+        ollama = self.backend.currentText() == "Ollama"
+        offline = self.backend.currentText() == "Offline NMT"
+        self.ollama_wrap.setVisible(ollama or offline)
+        for i in range(self.ollama_row.count()):
+            item = self.ollama_row.itemAt(i)
+            widget = item.widget() if item else None
+            if widget is not None:
+                widget.setVisible(ollama)
         self._sync_option_hints()
-        if visible:
+        if ollama:
             self._refresh_ollama_models()
 
     def _refresh_ollama_models(self):
@@ -576,6 +693,14 @@ class OptionsBar(QWidget):
             return "libretranslate"
         if t == "Ollama":
             return "ollama"
+        if t == "Offline NMT":
+            return "ctranslate2"
+        if t == "Google (HTML)":
+            return "google_html"
+        if t == "Google (Old)":
+            return "google_gtx"
+        if t == "Microsoft Edge":
+            return "microsoft"
         return "google"
 
     def _backend_label(self, value: str) -> str:
@@ -583,7 +708,34 @@ class OptionsBar(QWidget):
             return "LibreTranslate"
         if value == "ollama":
             return "Ollama"
-        return "Google"
+        if value == "ctranslate2":
+            return "Offline NMT"
+        if value == "google_html":
+            return "Google (HTML)"
+        if value == "google_gtx":
+            return "Google (Old)"
+        if value == "microsoft":
+            return "Microsoft Edge"
+        return "Google (New)"
+
+    def _glossary_value(self) -> str:
+        t = self.glossary.currentText()
+        if t == "Cultivation pack":
+            return "xianxia"
+        if t == "Names only":
+            return "user"
+        if t == "Off":
+            return "off"
+        return "auto"
+
+    def _glossary_label(self, value: str) -> str:
+        if value in ("xianxia", "cultivation", "wuxia", "always", "on", "builtin"):
+            return "Cultivation pack"
+        if value in ("user", "names", "custom"):
+            return "Names only"
+        if value in ("off", "none", "false", "0", "disabled"):
+            return "Off"
+        return "Auto"
 
     def _emit_options(self, *_args):
         self.options_changed.emit()
@@ -615,6 +767,7 @@ class OptionsBar(QWidget):
             "clipboard": self.clipboard_cb.isChecked(),
             "workers": self.workers.value(),
             "backend": self._backend_value(),
+            "glossary": self._glossary_value(),
             "ollama_model": self.ollama_model.currentText().strip(),
             "ollama_url": self.ollama_url.text().strip() or "http://127.0.0.1:11434",
             "ollama_polish": self.polish_cb.isChecked(),
@@ -637,6 +790,11 @@ class OptionsBar(QWidget):
             self.backend.blockSignals(True)
             self.backend.setCurrentText(self._backend_label(b))
             self.backend.blockSignals(False)
+        if "glossary" in options or "translation_glossary" in options:
+            g = options.get("glossary") or options.get("translation_glossary")
+            self.glossary.blockSignals(True)
+            self.glossary.setCurrentText(self._glossary_label(g))
+            self.glossary.blockSignals(False)
         if "ollama_model" in options and options["ollama_model"]:
             self.ollama_model.setCurrentText(str(options["ollama_model"]))
         if "ollama_url" in options and options["ollama_url"]:

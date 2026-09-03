@@ -22,11 +22,36 @@ never raise - a broken cache degrades to "no cache", not a crash.
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+
+_WS = re.compile(r"\s+")
+_CHAPTER_FP_PREFIX = "\x01ch\x01"
+_IN_BATCH = 400
+
+
+def _in_clause_batches(
+    items: Sequence[Any], batch_size: int = _IN_BATCH
+) -> Iterator[Tuple[List[Any], str]]:
+    """Yield (batch, placeholders) for SQLite IN clauses (max ~999 variables)."""
+    for i in range(0, len(items), batch_size):
+        batch = list(items[i : i + batch_size])
+        if batch:
+            yield batch, ",".join("?" * len(batch))
+
+
+def normalize_cache_source(text: str) -> str:
+    """Collapse whitespace so equivalent paragraphs share a cache key."""
+    return _WS.sub(" ", (text or "").strip())
+
+
+def chapter_fingerprint(html: str) -> str:
+    """Stable hash of cleaned chapter HTML for a chapter-level cache row."""
+    return hashlib.sha256((html or "").encode("utf-8")).hexdigest()
 
 
 class NovelCache:
@@ -119,6 +144,45 @@ class NovelCache:
         except Exception:
             pass
 
+    def sample_chapter_contents(
+        self,
+        book_key: str,
+        limit: int = 8,
+        max_chars: int = 20000,
+    ) -> List[str]:
+        """First/last cached chapter HTML for a book. Does not load the whole novel."""
+        if not self._conn or not book_key:
+            return []
+        take = max(1, min(int(limit or 8), 16))
+        first_n = max(1, take // 2)
+        last_n = max(1, take - first_n)
+        try:
+            with self._lock:
+                head = self._conn.execute(
+                    "SELECT content FROM chapters WHERE book_key = ? AND content != '' "
+                    "ORDER BY rowid ASC LIMIT ?",
+                    (book_key, first_n),
+                ).fetchall()
+                tail = self._conn.execute(
+                    "SELECT content FROM chapters WHERE book_key = ? AND content != '' "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (book_key, last_n),
+                ).fetchall()
+        except Exception:
+            return []
+        out: List[str] = []
+        seen: set[str] = set()
+        for row in list(head) + list(reversed(list(tail))):
+            blob = (row[0] if row else "") or ""
+            if not blob:
+                continue
+            key = blob[:200]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(blob[:max_chars])
+        return out
+
     def count_chapters(self, book_key: str) -> int:
         """Number of cached chapters for a book."""
         if not self._conn:
@@ -140,11 +204,9 @@ class NovelCache:
             total = 0
             # SQLite default variable limit is 999 — batch conservatively
             with self._lock:
-                for i in range(0, len(urls), 400):
-                    batch = [u for u in urls[i:i + 400] if u]
-                    if not batch:
-                        continue
-                    placeholders = ",".join("?" * len(batch))
+                for batch, placeholders in _in_clause_batches(
+                    [u for u in urls if u]
+                ):
                     row = self._conn.execute(
                         f"SELECT COUNT(*) FROM chapters WHERE url IN ({placeholders})",
                         batch,
@@ -205,22 +267,88 @@ class NovelCache:
 
     @staticmethod
     def _translation_key(source: str, backend: str) -> str:
+        payload = f"{backend}\x00{normalize_cache_source(source)}".encode('utf-8')
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _legacy_translation_key(source: str, backend: str) -> str:
         payload = f"{backend}\x00{source.strip()}".encode('utf-8')
         return hashlib.sha256(payload).hexdigest()
+
+    def _lookup_keys(self, source: str, backend: str) -> List[str]:
+        keys = [self._translation_key(source, backend)]
+        legacy = self._legacy_translation_key(source, backend)
+        if legacy != keys[0]:
+            keys.append(legacy)
+        return keys
 
     def get_translation(self, source: str, backend: str) -> Optional[str]:
         """Return cached translation for a source text, or None."""
         if not self._conn or not source:
             return None
         try:
-            key = self._translation_key(source, backend)
+            keys = self._lookup_keys(source, backend)
             with self._lock:
-                row = self._conn.execute(
-                    "SELECT translated FROM translations WHERE key = ?", (key,)
-                ).fetchone()
-            return row[0] if row else None
+                for key in keys:
+                    row = self._conn.execute(
+                        "SELECT translated FROM translations WHERE key = ?", (key,)
+                    ).fetchone()
+                    if row:
+                        return row[0]
+            return None
         except Exception:
             return None
+
+    def get_translations_bulk(
+        self,
+        sources: Sequence[str],
+        backends: Sequence[str],
+    ) -> Dict[str, str]:
+        """
+        Map stripped source → first matching translation.
+
+        ``backends`` is priority order (primary, then legacy aliases).
+        Tries the normalized key, then the older strip-only key.
+        """
+        if not self._conn or not sources or not backends:
+            return {}
+        key_to_source: Dict[str, str] = {}
+        ordered_keys: List[str] = []
+        for raw in sources:
+            if not raw or not str(raw).strip():
+                continue
+            src = str(raw)
+            stripped = src.strip()
+            for backend in backends:
+                if not backend:
+                    continue
+                for key in self._lookup_keys(src, backend):
+                    if key in key_to_source:
+                        continue
+                    key_to_source[key] = stripped
+                    ordered_keys.append(key)
+        if not ordered_keys:
+            return {}
+        found: Dict[str, str] = {}
+        try:
+            with self._lock:
+                for batch, placeholders in _in_clause_batches(ordered_keys):
+                    rows = self._conn.execute(
+                        f"SELECT key, translated FROM translations "
+                        f"WHERE key IN ({placeholders})",
+                        batch,
+                    ).fetchall()
+                    by_key = {row[0]: row[1] for row in rows if row and row[1]}
+                    for key in batch:
+                        src = key_to_source.get(key)
+                        if not src or src in found:
+                            continue
+                        hit = by_key.get(key)
+                        if hit:
+                            found[src] = hit
+            return found
+        except Exception:
+            return {}
 
     def put_translation(self, source: str, translated: str, backend: str, commit: bool = True):
         """Store a successful translation. Pass commit=False to batch, then flush()."""
@@ -258,15 +386,80 @@ class NovelCache:
 
     def delete_translation(self, source: str, backend: str):
         """Drop a cached translation (used before retrying failed segments)."""
-        if not self._conn or not source:
+        self.delete_translations([(source, backend)])
+
+    def delete_translations(self, items: Sequence[Tuple[str, str]]) -> None:
+        """Drop many (source, backend) rows in one commit."""
+        if not self._conn or not items:
+            return
+        keys: List[str] = []
+        seen = set()
+        for source, backend in items:
+            if not source or not backend:
+                continue
+            for key in self._lookup_keys(str(source), str(backend)):
+                if key in seen:
+                    continue
+                seen.add(key)
+                keys.append(key)
+        if not keys:
             return
         try:
-            key = self._translation_key(source, backend)
             with self._lock:
-                self._conn.execute("DELETE FROM translations WHERE key = ?", (key,))
+                for batch, placeholders in _in_clause_batches(keys):
+                    self._conn.execute(
+                        f"DELETE FROM translations WHERE key IN ({placeholders})",
+                        batch,
+                    )
                 self._conn.commit()
         except Exception:
             pass
+
+    def get_chapter_translation(
+        self, fingerprint: str, backend: str
+    ) -> Optional[List[str]]:
+        """Translated node list for a cleaned-HTML fingerprint, or None."""
+        if not fingerprint or not backend:
+            return None
+        raw = self.get_translation(
+            f"{_CHAPTER_FP_PREFIX}{fingerprint}", f"chapter:{backend}"
+        )
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+            return None
+        return data
+
+    def put_chapter_translation(
+        self,
+        fingerprint: str,
+        backend: str,
+        texts: Sequence[str],
+        commit: bool = False,
+    ) -> None:
+        if not fingerprint or not backend or not texts:
+            return
+        try:
+            payload = json.dumps(list(texts), ensure_ascii=False)
+        except Exception:
+            return
+        self.put_translation(
+            f"{_CHAPTER_FP_PREFIX}{fingerprint}",
+            payload,
+            f"chapter:{backend}",
+            commit=commit,
+        )
+
+    def delete_chapter_translation(self, fingerprint: str, backend: str) -> None:
+        if not fingerprint or not backend:
+            return
+        self.delete_translation(
+            f"{_CHAPTER_FP_PREFIX}{fingerprint}", f"chapter:{backend}"
+        )
 
     # ------------------------------------------------------------------
     # Covers (local only — never Drive-synced)
@@ -329,14 +522,16 @@ class NovelCache:
     # Chapter lists / TOC snapshots (local only)
     # ------------------------------------------------------------------
 
-    def get_chapter_list(self, source_url: str) -> Optional[List[Dict[str, str]]]:
-        """Return cached TOC as list of {url, title}, or None."""
+    def get_chapter_list_meta(
+        self, source_url: str
+    ) -> Optional[Tuple[List[Dict[str, str]], float]]:
+        """Return (TOC rows, fetched_at) or None."""
         if not self._conn or not source_url:
             return None
         try:
             with self._lock:
                 row = self._conn.execute(
-                    "SELECT payload FROM chapter_lists WHERE source_url = ?",
+                    "SELECT payload, fetched_at FROM chapter_lists WHERE source_url = ?",
                     (source_url.strip(),),
                 ).fetchone()
             if not row or not row[0]:
@@ -352,11 +547,39 @@ class NovelCache:
                 if not url:
                     continue
                 out.append({"url": url, "title": (item.get("title") or "")})
-            return out or None
+            if not out:
+                return None
+            try:
+                fetched_at = float(row[1] or 0)
+            except (TypeError, ValueError):
+                fetched_at = 0.0
+            return out, fetched_at
         except Exception:
             return None
 
-    def put_chapter_list(self, source_url: str, chapters: List[Any]):
+    def get_chapter_list(
+        self, source_url: str, *, max_age: Optional[float] = None
+    ) -> Optional[List[Dict[str, str]]]:
+        """Return cached TOC as list of {url, title}, or None.
+
+        If ``max_age`` is set, ignore snapshots older than that many seconds.
+        """
+        meta = self.get_chapter_list_meta(source_url)
+        if not meta:
+            return None
+        rows, fetched_at = meta
+        if max_age is not None:
+            try:
+                age = time.time() - float(fetched_at or 0)
+            except (TypeError, ValueError):
+                return None
+            if age < 0 or age > float(max_age):
+                return None
+        return rows
+
+    def put_chapter_list(
+        self, source_url: str, chapters: List[Any], *, fetched_at: Optional[float] = None
+    ):
         """
         Store a TOC snapshot. Accepts Chapter-like objects or {url, title} dicts.
         """
@@ -375,11 +598,12 @@ class NovelCache:
                     payload.append({"url": url, "title": title})
             if not payload:
                 return
+            stored_at = time.time() if fetched_at is None else float(fetched_at)
             with self._lock:
                 self._conn.execute(
                     "INSERT OR REPLACE INTO chapter_lists (source_url, payload, fetched_at) "
                     "VALUES (?, ?, ?)",
-                    (source_url.strip(), json.dumps(payload, ensure_ascii=False), time.time()),
+                    (source_url.strip(), json.dumps(payload, ensure_ascii=False), stored_at),
                 )
                 self._conn.commit()
                 self._pending = 0

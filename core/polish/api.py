@@ -40,6 +40,8 @@ def connect_engine(
     *,
     auto_serve: bool = True,
     log: LogFn | None = None,
+    download: bool = True,
+    temperature: float | None = None,
 ) -> tuple[LLMEngine, object]:
     emit = log or (lambda _msg: None)
     profile = detect_device()
@@ -54,10 +56,13 @@ def connect_engine(
         from core.polish.serve import start_llama_server
 
         try:
-            emit("Starting llama.cpp (downloads llama-server + Qwen GGUF if needed)…")
+            if download:
+                emit("Starting llama.cpp (downloads llama-server + Qwen GGUF if needed)…")
+            else:
+                emit("Starting llama.cpp (using GGUF already on disk)…")
             handle = start_llama_server(
                 profile,
-                download=True,
+                download=download,
                 detach=False,
                 log=emit,
             )
@@ -84,7 +89,7 @@ def connect_engine(
     client = LLMEngine(
         info,
         model=model,
-        temperature=0.25,
+        temperature=0.25 if temperature is None else float(temperature),
         num_ctx=profile.num_ctx,
         timeout=600.0,
     )

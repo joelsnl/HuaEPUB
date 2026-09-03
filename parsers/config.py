@@ -23,7 +23,12 @@ from bs4 import BeautifulSoup
 
 from core.parser import Chapter, NovelInfo
 from parsers.generic import GenericParser
-from parsers.pagination import next_from_selector, walk_content_pages, walk_list_pages
+from parsers.pagination import (
+    links_to_chapters,
+    next_from_selector,
+    walk_content_pages,
+    walk_list_pages,
+)
 
 _SITES: Optional[List[dict]] = None
 _LOCK = threading.Lock()
@@ -147,7 +152,6 @@ class SiteConfigParser(GenericParser):
     def for_url(cls, url: str) -> "SiteConfigParser":
         inst = cls(spec_for_url(url))
         if inst.spec.get("referer"):
-            from urllib.parse import urlparse
             parsed = urlparse(url)
             if parsed.scheme and parsed.netloc:
                 inst._referer = f"{parsed.scheme}://{parsed.netloc}"
@@ -275,20 +279,7 @@ class SiteConfigParser(GenericParser):
             elif hasattr(node, "find_all"):
                 links.extend(node.find_all("a", href=True))
         must = (self.spec.get("chapter_href_contains") or "").strip()
-        chapters: List[Chapter] = []
-        seen = set()
-        for link in links:
-            href = (link.get("href") or "").strip()
-            title = link.get_text(strip=True)
-            if not href or not title or href.startswith(("javascript:", "#", "mailto:")):
-                continue
-            if must and must not in href:
-                continue
-            absolute = urljoin(base_url, href)
-            if absolute in seen:
-                continue
-            seen.add(absolute)
-            chapters.append(Chapter(title=title, url=absolute, index=len(chapters)))
+        chapters = links_to_chapters(links, base_url, href_contains=must)
         if self.spec.get("reverse"):
             chapters.reverse()
             for i, ch in enumerate(chapters):

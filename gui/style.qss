@@ -44,8 +44,9 @@ QPushButton#dangerBtn { background-color: #a83232; }
 QPushButton#dangerBtn:hover { background-color: #c0392b; }
 QPushButton#successBtn { background-color: #2B7A3E; }
 QPushButton#successBtn:hover { background-color: #236332; }
-QPushButton#secondaryBtn { background-color: #555; }
-QPushButton#secondaryBtn:hover { background-color: #666; }
+QPushButton#secondaryBtn { background-color: #5a5a5a; color: #eee; }
+QPushButton#secondaryBtn:hover { background-color: #6a6a6a; }
+QPushButton#secondaryBtn:disabled { background-color: #3a3a3a; color: #777; }
 QProgressBar {
     border: 1px solid #555;
     border-radius: 4px;

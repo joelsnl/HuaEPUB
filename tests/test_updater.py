@@ -1,11 +1,13 @@
 """Tests for core.updater."""
 
 import hashlib
-import sys
-import types
 from pathlib import Path
 
+import pytest
+
 from core import updater
+from core.branding import UPDATER_USER_AGENT
+from core.security import validate_github_asset_host
 from core.updater import SOURCE_UPDATE_ITEMS
 
 _GITHUB_SUMS = (
@@ -13,51 +15,219 @@ _GITHUB_SUMS = (
 )
 
 
-class FakeResponse:
-    status_code = 200
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return {
-            'tag_name': 'v9.9.9',
-            'body': None,
-            'html_url': 'https://example.com/release',
-        }
-
-
-class FakeSession:
-    def __init__(self, *args, **kwargs):
-        self.headers = {}
-
-    def get(self, *args, **kwargs):
-        return FakeResponse()
+@pytest.fixture
+def reset_updater_check():
+    updater._reset_updater_check_state()
+    yield
+    updater._reset_updater_check_state()
 
 
 class TestCheckForUpdatesNullBody:
-    def test_null_release_body_does_not_crash(self, monkeypatch):
+    def test_null_release_body_does_not_crash(self, monkeypatch, reset_updater_check):
         monkeypatch.setattr(updater, '__version__', '1.0.0')
 
-        # Force the requests fallback so we can inject a fake Session.
-        curl_cffi = types.ModuleType('curl_cffi')
-        curl_cffi_requests = types.ModuleType('curl_cffi.requests')
+        def fake_fetch(session, *, timeout):
+            return 200, {
+                'tag_name': 'v9.9.9',
+                'body': None,
+                'html_url': 'https://example.com/release',
+            }
 
-        def _boom(*args, **kwargs):
-            raise ImportError('forced')
-
-        curl_cffi_requests.Session = _boom
-        monkeypatch.setitem(sys.modules, 'curl_cffi', curl_cffi)
-        monkeypatch.setitem(sys.modules, 'curl_cffi.requests', curl_cffi_requests)
-
-        fake_requests = types.ModuleType('requests')
-        fake_requests.Session = FakeSession
-        monkeypatch.setitem(sys.modules, 'requests', fake_requests)
-
-        has_update, latest, message = updater.check_for_updates()
+        monkeypatch.setattr(updater, '_fetch_latest_release', fake_fetch)
+        has_update, latest, message = updater.check_for_updates(force=True)
         assert has_update is True
         assert latest == '9.9.9'
         assert 'No release notes available.' in message
+
+
+class TestCheckForUpdatesFastPath:
+    def test_uses_short_timeout_and_github_host_pin(
+        self, monkeypatch, reset_updater_check
+    ):
+        captured = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"tag_name": "v1.0.0", "body": ""}
+
+        def fake_safe(session, method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["timeout"] = kwargs.get("timeout")
+            captured["extra_check"] = kwargs.get("extra_check")
+            captured["allow_http"] = kwargs.get("allow_http")
+            captured["resolve_dns"] = kwargs.get("resolve_dns")
+            return Resp()
+
+        monkeypatch.setattr(updater, "__version__", "1.0.0")
+        monkeypatch.setattr(updater, "safe_http_request", fake_safe)
+        monkeypatch.setattr(updater, "_check_http_session", lambda: object())
+        has_update, latest, message = updater.check_for_updates(force=True)
+        assert has_update is False
+        assert latest == "1.0.0"
+        assert "latest version" in message
+        assert captured["method"] == "GET"
+        assert captured["url"] == updater.GITHUB_API_URL
+        assert captured["timeout"] == updater.CHECK_TIMEOUT
+        assert captured["timeout"][0] < 15
+        assert captured["extra_check"] is validate_github_asset_host
+        assert captured["allow_http"] is False
+        assert captured["resolve_dns"] is False
+
+    def test_does_not_download_sha256sums(self, monkeypatch, reset_updater_check):
+        monkeypatch.setattr(updater, "__version__", "1.0.0")
+
+        def fake_fetch(session, *, timeout):
+            return 200, {
+                "tag_name": "v1.0.0",
+                "body": "",
+                "assets": [
+                    {
+                        "name": "SHA256SUMS.txt",
+                        "browser_download_url": _GITHUB_SUMS,
+                    }
+                ],
+            }
+
+        def boom(*a, **k):
+            raise AssertionError("check must not download SHA256SUMS")
+
+        monkeypatch.setattr(updater, "_fetch_latest_release", fake_fetch)
+        monkeypatch.setattr(updater, "_get_expected_checksum", boom)
+        monkeypatch.setattr(updater, "_require_checksum", boom)
+        has_update, latest, _message = updater.check_for_updates(force=True)
+        assert has_update is False
+        assert latest == "1.0.0"
+
+    def test_coalesces_parallel_checks(self, monkeypatch, reset_updater_check):
+        import threading
+
+        calls = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_fetch(session, *, timeout):
+            calls.append(timeout)
+            started.set()
+            release.wait(timeout=2)
+            return 200, {"tag_name": "v9.9.9", "body": "notes"}
+
+        monkeypatch.setattr(updater, "__version__", "1.0.0")
+        monkeypatch.setattr(updater, "_fetch_latest_release", slow_fetch)
+
+        results = [None, None]
+
+        def run(idx):
+            results[idx] = updater.check_for_updates(force=True)
+
+        t1 = threading.Thread(target=run, args=(0,))
+        t2 = threading.Thread(target=run, args=(1,))
+        t1.start()
+        assert started.wait(timeout=2)
+        t2.start()
+        release.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)
+        assert calls == [updater.CHECK_TIMEOUT]
+        assert results[0] is not None and results[1] is not None
+        assert results[0][0] is True and results[1][0] is True
+        assert results[0][1] == "9.9.9"
+
+    def test_cache_skips_second_get(self, monkeypatch, reset_updater_check):
+        calls = []
+
+        def fake_fetch(session, *, timeout):
+            calls.append(1)
+            return 200, {"tag_name": "v1.0.0", "body": ""}
+
+        monkeypatch.setattr(updater, "__version__", "1.0.0")
+        monkeypatch.setattr(updater, "_fetch_latest_release", fake_fetch)
+        first = updater.check_for_updates(force=False)
+        second = updater.check_for_updates(force=False)
+        assert first == second
+        assert calls == [1]
+
+    def test_force_bypasses_cache(self, monkeypatch, reset_updater_check):
+        calls = []
+
+        def fake_fetch(session, *, timeout):
+            calls.append(1)
+            return 200, {"tag_name": "v1.0.0", "body": ""}
+
+        monkeypatch.setattr(updater, "__version__", "1.0.0")
+        monkeypatch.setattr(updater, "_fetch_latest_release", fake_fetch)
+        updater.check_for_updates(force=False)
+        updater.check_for_updates(force=True)
+        assert calls == [1, 1]
+
+    def test_does_not_cache_failures(self, monkeypatch, reset_updater_check):
+        calls = []
+
+        def boom_fetch(session, *, timeout):
+            calls.append(1)
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(updater, "_fetch_latest_release", boom_fetch)
+        first = updater.check_for_updates(force=False)
+        second = updater.check_for_updates(force=False)
+        assert first[0] is False
+        assert "Failed to check" in first[2]
+        assert second[0] is False
+        assert calls == [1, 1]
+
+    def test_new_session_prefers_ipv4(self, monkeypatch):
+        seen = {}
+
+        class Sess:
+            headers = {}
+
+        def fake_create(*, ipv4=False, pool_size=None):
+            seen["ipv4"] = ipv4
+            return Sess()
+
+        monkeypatch.setattr("core.parser.create_http_session", fake_create)
+        session = updater._new_updater_session()
+        assert seen["ipv4"] is True
+        assert session.headers.get("User-Agent") == UPDATER_USER_AGENT
+
+    def test_download_api_uses_safe_http_and_not_check_timeout(
+        self, monkeypatch, reset_updater_check, tmp_path
+    ):
+        captured = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "tag_name": "v9.9.9",
+                    "assets": [],
+                }
+
+        def fake_safe(session, method, url, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            captured["url"] = url
+            captured["extra_check"] = kwargs.get("extra_check")
+            return Resp()
+
+        monkeypatch.setattr(updater, "safe_http_request", fake_safe)
+        monkeypatch.setattr(updater, "_new_updater_session", lambda: object())
+        monkeypatch.setattr(updater, "get_app_dir", lambda: tmp_path)
+        monkeypatch.setattr(updater, "is_frozen", lambda: True)
+        ok, msg = updater.download_update()
+        assert ok is False
+        assert "No prebuilt asset" in msg
+        assert captured["url"] == updater.GITHUB_API_URL
+        assert captured["timeout"] == updater.DOWNLOAD_API_TIMEOUT
+        assert captured["extra_check"] is validate_github_asset_host
 
 
 class TestRequireChecksum:

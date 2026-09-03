@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 
 from core.parser import BaseParser, Chapter, NovelInfo
 from parsers.pagination import (
+    links_to_chapters,
     next_content_page_url,
     next_from_rel,
     walk_content_pages,
@@ -145,7 +146,7 @@ class GenericParser(BaseParser):
             except Exception:
                 links = []
             if len(links) >= 5:
-                chapters = self._links_to_chapters(links, base_url)
+                chapters = links_to_chapters(links, base_url)
                 if len(chapters) >= 5:
                     return chapters
 
@@ -153,25 +154,9 @@ class GenericParser(BaseParser):
         if best_container is None:
             return []
 
-        return self._links_to_chapters(
+        return links_to_chapters(
             best_container.find_all('a', href=True), base_url
         )
-
-    @staticmethod
-    def _links_to_chapters(links, base_url: str) -> List[Chapter]:
-        chapters = []
-        seen = set()
-        for link in links:
-            href = (link.get('href') or '').strip()
-            title = link.get_text(strip=True)
-            if not href or not title or href.startswith(('javascript:', '#', 'mailto:')):
-                continue
-            absolute = urljoin(base_url, href)
-            if absolute in seen:
-                continue
-            seen.add(absolute)
-            chapters.append(Chapter(title=title, url=absolute, index=len(chapters)))
-        return chapters
 
     @staticmethod
     def _find_chapter_container(soup: BeautifulSoup):

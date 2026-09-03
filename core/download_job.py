@@ -58,11 +58,9 @@ def save_job(job: Dict[str, Any], data_dir: Optional[Path] = None) -> None:
         job["updated_at"] = time.time()
         data_dir = path.parent
         data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
+        from core.atomic_io import atomic_write_json
         with _lock:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(job, f, ensure_ascii=False, indent=2)
-            tmp.replace(path)
+            atomic_write_json(path, job, fsync=False, tmp_suffix=".tmp")
     except Exception as e:
         print(f"Warning: could not save download job: {e}")
 

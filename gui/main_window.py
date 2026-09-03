@@ -10,12 +10,9 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import (
-    QAction, QDesktopServices, QGuiApplication, QKeySequence, QPixmap, QShortcut,
-)
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
-    QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox, QPushButton,
+    QApplication, QMainWindow, QProgressDialog,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -29,42 +26,48 @@ from core.download_job import (
 )
 from core.download_runner import (
     completion_dialog_title, downloads_folder, epub_path, format_completion_notes,
+    translator_backend_kwargs,
 )
 from core.logger import setup_logging
-from core.reader import KIND_CACHE, resolve_reader_book, resume_index
-from core.reading import get_position, set_position
-from core.settings import get_default_books_dir, save_settings, set_setting
-from core.notify import notify
+from core.settings import save_settings, set_setting
 from core.parser import cleanup_browser, create_http_session, get_parser_for_url
 from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
 )
 from core.utils import extract_urls, looks_like_url, sanitize_runtime_env
-from core.drive_sync import oauth_setup_instructions
 
-from gui.dialogs import ask_yes_no, exec_box, show_error, show_info, show_warning
+from gui.dialogs import (
+    ask_accept_glossary_proposals, ask_yes_no, ask_yes_not_now_dont_ask,
+    pick_recent_download, show_cache_dialog, show_error, show_info,
+    show_info_with_preview, show_rich_info, show_warning,
+)
 from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
 from gui.pages.reader_page import ReaderPage
 from gui.pages.single_page import SinglePage
 from gui.session import AppSession
-from core.download_runner import translator_backend_kwargs
 from gui.widgets.options_bar import OptionsBar
 from gui.widgets.progress_panel import ProgressPanel
 from gui.widgets.resume_banner import ResumeBanner
-from gui.workers.download_worker import (
-    LibraryCheckWorker, LibraryUpdateAllWorker, LibraryUpdateWorker,
-    MultiDownloadWorker, SingleDownloadWorker,
-)
-from gui.workers.drive_workers import DriveConnectWorker, DriveSyncWorker
+from gui.workers.download_worker import MultiDownloadWorker, SingleDownloadWorker
 from gui.workers.fetch_worker import FetchWorker
-from gui.workers.reader_worker import DriveEpubDownloadWorker, ReaderChapterFetchWorker
+from gui.workers.glossary_worker import GlossaryQwenWorker
+from gui.window.drive_actions import DriveActionsMixin
+from gui.window.library_actions import LibraryActionsMixin
+from gui.window.reader_actions import ReaderActionsMixin
+from gui.window.worker_host import WorkerHostMixin
 
 import parsers  # noqa: F401 — register site parsers
 
 
-class MainWindow(QMainWindow):
+class MainWindow(
+    WorkerHostMixin,
+    ReaderActionsMixin,
+    DriveActionsMixin,
+    LibraryActionsMixin,
+    QMainWindow,
+):
     # Cross-thread marshaling for plain threading.Thread callbacks (updater, etc.)
     _sig_update_check = Signal(bool, str, str)
     _sig_update_done = Signal(bool, str)
@@ -82,9 +85,16 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker = None
         self._worker_busy = False
+        self._worker_epoch = 0
+        self._check_thread: QThread | None = None
+        self._check_worker = None
+        self._check_busy = False
         self._pending_drive_sync = False
         self._drive_sync_silent = True
         self._exiting_for_update = False
+        self._app_update_checking = False
+        self._update_check_notify = False
+        self._last_app_update_check = None
         self._clipboard_last = ""
         self._clipboard_seen = set()
         self._http = create_http_session()
@@ -92,6 +102,7 @@ class MainWindow(QMainWindow):
         self._pending_reader_entry = None
         self._reader_last_fetch = 0.0
         self._reader_open_gen = 0
+        self._glossary_qwen_dlg = None
 
         self._sig_update_check.connect(
             self._on_update_check_ready, Qt.ConnectionType.QueuedConnection
@@ -131,7 +142,6 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._wire()
-        self._install_shortcuts()
         self._restore_window_geometry()
 
         QTimer.singleShot(400, self._check_resume_job)
@@ -144,6 +154,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(2500, self._start_drive_sync_silent)
         if self.session.library_store.get_library():
             QTimer.singleShot(4000, self.library.refresh)
+        QTimer.singleShot(3500, self._maybe_offer_glossary_qwen)
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -166,6 +177,7 @@ class MainWindow(QMainWindow):
         act.toggled.connect(set_auto_check_updates)
         help_m.addAction(act)
         help_m.addAction("How translation works…", self._translation_help)
+        help_m.addAction("Polish glossaries with Qwen…", self._menu_glossary_qwen)
         help_m.addAction("Cache…", self._cache_dialog)
         help_m.addAction("About", self._about)
         help_m.addAction("Drive OAuth setup…", self._drive_setup_help)
@@ -214,6 +226,7 @@ class MainWindow(QMainWindow):
             clipboard=o["clipboard"],
             workers=o["workers"],
             backend=o["backend"],
+            translation_glossary=o.get("glossary", "auto"),
             ollama_model=o.get("ollama_model", "qwen2.5:3b"),
             ollama_url=o.get("ollama_url", "http://127.0.0.1:11434"),
             ollama_polish=bool(o.get("ollama_polish", False)),
@@ -225,38 +238,168 @@ class MainWindow(QMainWindow):
             drive_panel_expanded=True,
         )
 
-    def _install_shortcuts(self):
-        for seq in ("Ctrl+Return", "Ctrl+Enter"):
-            go = QShortcut(QKeySequence(seq), self)
-            go.setContext(Qt.ShortcutContext.WindowShortcut)
-            go.activated.connect(self._shortcut_ctrl_enter)
-        esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        esc.setContext(Qt.ShortcutContext.WindowShortcut)
-        esc.activated.connect(self._shortcut_escape)
+    _GLOSSARY_QWEN_PROMPT = (
+        "Use the local Qwen model (same llama.cpp GGUF as Polish English) to "
+        "classify names and domain terms found in your books.\n\n"
+        "This dialog stays in front until the pass finishes — you will not be "
+        "able to download while it runs. The polish GGUF must already be on "
+        "disk (this will not start a 2–9 GB download).\n\n"
+        "You will get a list to Accept all or Discard. "
+        "Everyday Chinese is not added (this is not a general dictionary)."
+    )
 
-    @Slot()
-    def _shortcut_ctrl_enter(self):
+    def _library_glossary_books(self) -> list[dict]:
+        books = []
+        for entry in self.session.library_store.get_library():
+            name = (entry.title or entry.translated_title or "").strip()
+            if not name:
+                continue
+            books.append({
+                "title": name,
+                "source_url": entry.source_url or "",
+                "description": getattr(entry, "description", "") or "",
+            })
+        return books
+
+    def _maybe_offer_glossary_qwen(self):
         if self._worker_busy or self.session.control.is_downloading:
             return
-        tab = self.tabs.currentWidget()
-        if tab is self.single:
-            if self.single.chapters and self.progress.download_btn.isEnabled():
-                self._start_single_download()
-            else:
-                self.single._on_fetch()
-        elif tab is self.multi:
-            if self.multi.download_btn.isEnabled() and self.multi.fetched_novels():
-                self._start_multi_download()
-            else:
-                self._start_multi_fetch()
-
-    @Slot()
-    def _shortcut_escape(self):
-        if self.session.control.is_downloading or self.progress.cancel_btn.isEnabled():
-            self._cancel_download()
+        if load_job(self.session.data_dir):
             return
-        if self.tabs.currentWidget() is self.reader:
-            self._close_reader()
+        from core.translation.qwen_glossary import (
+            has_harvested_terms,
+            polish_gguf_on_disk,
+            qwen_glossary_capable,
+            should_offer_glossary_qwen,
+        )
+
+        if not should_offer_glossary_qwen(
+            self.session.settings,
+            has_library=bool(self.session.library_store.get_library()),
+            has_harvested=has_harvested_terms(),
+            model_ready=polish_gguf_on_disk(),
+            qwen_capable=qwen_glossary_capable(),
+        ):
+            return
+        choice = ask_yes_not_now_dont_ask(
+            self,
+            "Polish glossaries with Qwen?",
+            self._GLOSSARY_QWEN_PROMPT,
+        )
+        if choice == "later":
+            return
+        if choice == "never":
+            self.session.settings["glossary_qwen_ask"] = False
+            set_setting("glossary_qwen_ask", False)
+            return
+        self._run_glossary_qwen_modal()
+
+    def _menu_glossary_qwen(self):
+        if self._worker_busy or self.session.control.is_downloading:
+            show_warning(self, "Busy", "Wait for the current job to finish.")
+            return
+        from core.translation.qwen_glossary import (
+            polish_gguf_on_disk,
+            qwen_glossary_capable,
+        )
+
+        if not polish_gguf_on_disk():
+            show_warning(
+                self,
+                "Glossary · Qwen",
+                "The polish GGUF is not on disk yet. Tick Polish English once "
+                "so llama.cpp can download it, then run this again. "
+                "Glossary Qwen will not start a 2–9 GB download by itself.",
+            )
+            return
+        if not qwen_glossary_capable():
+            show_warning(
+                self,
+                "Glossary · Qwen",
+                "This PC is on a 3B polish profile. Glossary classification "
+                "needs the 7B or 14B Qwen GGUF. Names are still romanized "
+                "with pinyin during translate.",
+            )
+            return
+        if not ask_yes_no(self, "Polish glossaries with Qwen?", self._GLOSSARY_QWEN_PROMPT):
+            return
+        self._run_glossary_qwen_modal()
+
+    def _run_glossary_qwen_modal(self):
+        dlg = QProgressDialog(
+            "Starting local Qwen…", "Cancel", 0, 0, self
+        )
+        dlg.setWindowTitle("Glossary · Qwen")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        self._glossary_qwen_dlg = dlg
+        worker = GlossaryQwenWorker(
+            self._library_glossary_books(),
+            cache=self.session.cache,
+        )
+        dlg.canceled.connect(worker.request_cancel)
+        if not self._bind_and_run(
+            worker,
+            (worker.progress, self._on_glossary_qwen_progress),
+            (worker.finished_ok, self._on_glossary_qwen_ok),
+            (worker.finished_error, self._on_glossary_qwen_error),
+        ):
+            dlg.close()
+            self._glossary_qwen_dlg = None
+            show_warning(self, "Busy", "Wait for the current job to finish.")
+            return
+        dlg.show()
+
+    @Slot(str)
+    def _on_glossary_qwen_progress(self, status: str):
+        dlg = self._glossary_qwen_dlg
+        if dlg is not None and status:
+            dlg.setLabelText(status)
+
+    def _close_glossary_qwen_dlg(self):
+        dlg = self._glossary_qwen_dlg
+        self._glossary_qwen_dlg = None
+        if dlg is not None:
+            dlg.close()
+
+    @Slot(object)
+    def _on_glossary_qwen_ok(self, payload):
+        self._close_glossary_qwen_dlg()
+        self._finish_worker_later()
+        now = time.time()
+        self.session.settings["glossary_qwen_last_at"] = now
+        set_setting("glossary_qwen_last_at", now)
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or "Done.")
+            proposals = list(payload.get("proposals") or [])
+        else:
+            message = str(payload or "Done.")
+            proposals = []
+        if proposals:
+            from core.translation.qwen_glossary import apply_glossary_proposals
+
+            if ask_accept_glossary_proposals(self, proposals):
+                added, updated = apply_glossary_proposals(proposals)
+                show_info(
+                    self,
+                    "Glossaries updated",
+                    f"Accepted {added + updated} term(s). {message}",
+                )
+                return
+            show_info(self, "Glossary polish", "Discarded. Nothing was written.")
+            return
+        show_info(self, "Glossaries updated", message)
+
+    @Slot(str)
+    def _on_glossary_qwen_error(self, message: str):
+        self._close_glossary_qwen_dlg()
+        self._finish_worker_later()
+        if "cancel" in (message or "").casefold():
+            show_info(self, "Glossary polish", message)
+            return
+        show_error(self, "Glossary polish failed", message)
 
     def _restore_window_geometry(self):
         s = self.session.settings
@@ -289,6 +432,12 @@ class MainWindow(QMainWindow):
         self._save_reader_position()
         self._persist_settings()
         self._save_window_geometry()
+        worker = self._worker
+        if worker is not None and hasattr(worker, "request_cancel"):
+            try:
+                worker.request_cancel()
+            except Exception:
+                pass
         downloading = bool(self.session.control.is_downloading)
         update_exit = bool(getattr(self, "_exiting_for_update", False))
         if downloading and not update_exit:
@@ -308,106 +457,8 @@ class MainWindow(QMainWindow):
         self.session.close()
         self._pending_drive_sync = False
         self._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+        self._stop_check_thread(wait_ms=min(wait_ms, 5000), drain_pending_sync=False)
         event.accept()
-
-    def _stop_thread(self, drain_pending_sync: bool = True, wait_ms: int = 5000):
-        """Stop background worker. Must only be called from the GUI thread."""
-        if QThread.currentThread() is not QApplication.instance().thread():
-            # Never wait() from inside the worker thread
-            QTimer.singleShot(0, self._stop_thread)
-            return
-        thread = self._thread
-        worker = self._worker
-        self._thread = None
-        self._worker = None
-        self._worker_busy = False
-        if thread is not None:
-            if thread.isRunning():
-                thread.quit()
-                if not thread.wait(max(0, int(wait_ms))):
-                    thread.terminate()
-                    thread.wait(min(1000, max(0, int(wait_ms))))
-            if worker is not None:
-                worker.deleteLater()
-            thread.deleteLater()
-        if drain_pending_sync and self._pending_drive_sync:
-            QTimer.singleShot(0, self._start_drive_sync_silent)
-
-    def _run_worker(self, worker) -> bool:
-        """
-        Start a QObject worker on a QThread. Returns False if another job is busy
-        (caller should show a message). Always invoke from the GUI thread.
-
-        Connect worker signals to @Slot methods on this window *before* calling
-        this. Bare lambdas/partials have no QObject receiver, so Qt may invoke
-        them on the worker thread (cross-thread UI = crash).
-        """
-        if QThread.currentThread() is not QApplication.instance().thread():
-            return False
-        if self._worker_busy and self._thread and self._thread.isRunning():
-            return False
-        self._stop_thread(drain_pending_sync=False)
-        self._thread = QThread()  # no parent — avoids cross-thread parenting issues
-        self._worker = worker
-        self._worker_busy = True
-        worker.moveToThread(self._thread)
-        self._thread.started.connect(worker.run)
-        self._thread.start()
-        return True
-
-    def _bind_and_run(self, worker, *pairs) -> bool:
-        """Connect (signal, slot) pairs on the GUI thread, then start the worker."""
-        for signal, slot in pairs:
-            signal.connect(slot, Qt.ConnectionType.QueuedConnection)
-        return self._run_worker(worker)
-
-    def _finish_worker_later(self):
-        """Cleanup after a worker finished signal (always on GUI thread)."""
-        QTimer.singleShot(0, self._stop_thread)
-
-    # ------------------------------------------------------------------
-    # Progress / pause
-    # ------------------------------------------------------------------
-
-    @Slot(float, str)
-    def _on_progress(self, fraction: float, status: str):
-        if fraction >= 0:
-            self.progress.set_progress(fraction, status or None)
-        elif status:
-            self.progress.set_status(status)
-
-    def _toggle_pause(self):
-        ctrl = self.session.control
-        if not ctrl.is_downloading:
-            return
-        paused = ctrl.toggle_pause()
-        ctrl.persist_job(force=True)
-        self.progress.set_controls_active(True, paused=paused)
-        if paused:
-            self.progress.set_status("Paused — click Resume to continue (safe to close the app)")
-        else:
-            self.progress.set_status("Resuming…")
-
-    def _cancel_download(self):
-        self.session.control.request_cancel()
-        clear_job(self.session.data_dir)
-        self.session.control.active_job = None
-        self.resume_banner.hide_banner()
-        self.progress.set_status("Cancelling...")
-
-    def _set_downloading(self, on: bool):
-        self.session.control.is_downloading = on
-        self.session.control.cancel_requested = False
-        if on:
-            self.session.control.is_paused = False
-        self.progress.set_controls_active(on, paused=False)
-        self.single.set_fetch_enabled(not on)
-        self.multi.set_busy(on)
-        self.progress.set_download_enabled(bool(self.single.chapters) and not on)
-
-    # ------------------------------------------------------------------
-    # Resume banner
-    # ------------------------------------------------------------------
 
     def _check_resume_job(self):
         if self.session.control.is_downloading:
@@ -530,6 +581,7 @@ class MainWindow(QMainWindow):
     # Single
     # ------------------------------------------------------------------
 
+    @Slot(str)
     def _start_fetch(self, url: str):
         if self.session.control.is_downloading:
             return
@@ -544,7 +596,7 @@ class MainWindow(QMainWindow):
         )
         if not self._bind_and_run(
             worker,
-            (worker.status, self.progress.set_status),
+            (worker.status, self._set_status_safe),
             (worker.error, self._fetch_error),
             (worker.finished, self._fetch_done),
         ):
@@ -583,8 +635,10 @@ class MainWindow(QMainWindow):
         self.progress.set_download_enabled(True)
         self.progress.set_status(f"Ready — {len(chapters)} chapters")
         self._finish_worker_later()
+
     def _start_single_download(self):
         if self._worker_busy or self.session.control.is_downloading:
+            self.progress.set_status("Busy — wait for the current job to finish")
             return
         if not self.single.novel_info or not self.single.chapters:
             return
@@ -621,6 +675,56 @@ class MainWindow(QMainWindow):
             self.single.translated_title, job,
         )
 
+    @Slot(float, str)
+    @Slot(int, str)
+    def _on_progress(self, fraction: float, status: str):
+        """On MainWindow so QueuedConnection is a real QObject slot, not a mixin."""
+        WorkerHostMixin._on_progress(self, fraction, status)
+
+    @Slot()
+    def _start_drive_sync_silent(self):
+        DriveActionsMixin._start_drive_sync_silent(self)
+
+    @Slot()
+    def _drive_sync_now(self):
+        DriveActionsMixin._drive_sync_now(self)
+
+    @Slot(bool, str, str)
+    def _drive_connect_done(self, ok: bool, email: str, err: str):
+        DriveActionsMixin._drive_connect_done(self, ok, email, err)
+
+    @Slot(str)
+    def _on_drive_sync_progress(self, msg: str):
+        DriveActionsMixin._on_drive_sync_progress(self, msg)
+
+    @Slot(str, str)
+    def _on_drive_sync_finished(self, summary: str, err: str):
+        DriveActionsMixin._on_drive_sync_finished(self, summary, err)
+
+    @Slot(int, int, str)
+    def _on_library_check_progress(self, idx: int, total: int, name: str):
+        LibraryActionsMixin._on_library_check_progress(self, idx, total, name)
+
+    @Slot(str, object)
+    def _on_library_entry_status(self, url: str, st: object):
+        LibraryActionsMixin._on_library_entry_status(self, url, st)
+
+    @Slot(int, int)
+    def _library_check_done(self, with_updates: int, total: int):
+        LibraryActionsMixin._library_check_done(self, with_updates, total)
+
+    @Slot(str)
+    def _lib_update_ok(self, msg: str):
+        LibraryActionsMixin._lib_update_ok(self, msg)
+
+    @Slot(str)
+    def _lib_up_to_date(self, display: str):
+        LibraryActionsMixin._lib_up_to_date(self, display)
+
+    @Slot(str)
+    def _lib_update_all_done(self, summary: str):
+        LibraryActionsMixin._lib_update_all_done(self, summary)
+
     def _begin_single_download(self, parser, info, chapters, out, translated_title, job):
         self.resume_banner.hide_banner()
         self.session.control.active_job = job
@@ -651,10 +755,21 @@ class MainWindow(QMainWindow):
         if notes:
             msg += "\n\n" + notes
         title = "Saved with warnings" if notes else "Success"
-        show_info(self, title, msg)
+        want_preview = False
+        if path and Path(path).is_file():
+            want_preview = show_info_with_preview(self, title, msg)
+        else:
+            show_info(self, title, msg)
         self.library.refresh()
-        self._queue_drive_sync()
         self._finish_worker_later()
+        if want_preview:
+            info = self.single.novel_info
+            self._preview_downloaded_epub(
+                path=path,
+                source_url=(info.source_url if info else "") or "",
+                title=self.single.translated_title or ((info.title if info else "") or ""),
+                extra_chapters=self.single.chapters,
+            )
 
     @Slot()
     def _download_cancelled(self):
@@ -670,6 +785,7 @@ class MainWindow(QMainWindow):
             self.resume_banner.show_job(job, self.session.cache)
         show_error(self, "Download failed", msg)
         self._finish_worker_later()
+
     # ------------------------------------------------------------------
     # Multi
     # ------------------------------------------------------------------
@@ -702,6 +818,7 @@ class MainWindow(QMainWindow):
         )
         if not self._bind_and_run(
             worker,
+            (worker.status, self._set_status_safe),
             (worker.finished, self._multi_fetch_ok),
             (worker.error, self._multi_fetch_err),
         ):
@@ -737,6 +854,7 @@ class MainWindow(QMainWindow):
 
     def _start_multi_download(self):
         if self._worker_busy or self.session.control.is_downloading:
+            self.progress.set_status("Busy — wait for the current job to finish")
             return
         novels = self.multi.fetched_novels()
         if not novels:
@@ -766,6 +884,8 @@ class MainWindow(QMainWindow):
     def _start_multi_download_with(self, novels):
         self.resume_banner.hide_banner()
         self._set_downloading(True)
+        for i in range(len(novels)):
+            self.multi.set_status(i, "Queued")
         o = self.options.snapshot()
         worker = MultiDownloadWorker(self.session, novels, o)
         if not self._bind_and_run(
@@ -782,727 +902,39 @@ class MainWindow(QMainWindow):
     def _on_multi_novel_status(self, idx: int, status: str, _color: str = ""):
         self.multi.set_status(idx, status)
 
-    @Slot(str)
-    def _multi_done(self, summary: str):
+    @Slot(str, list)
+    def _multi_done(self, summary: str, previews: list = None):
         self._set_downloading(False)
         self.progress.set_progress(1.0, "Multi-download complete")
-        show_info(
-            self, completion_dialog_title(summary, "Multi-download complete"), summary
-        )
+        books = [
+            p for p in (previews or [])
+            if isinstance(p, dict) and p.get("path") and Path(p["path"]).is_file()
+        ]
+        title = completion_dialog_title(summary, "Multi-download complete")
+        want_preview = False
+        if books:
+            want_preview = show_info_with_preview(self, title, summary)
+        else:
+            show_info(self, title, summary)
         self.library.refresh()
         job = self.session.control.active_job
         if job and job.get("kind") == "multi":
             pending = [n for n in job.get("novels") or [] if not n.get("done")]
             if pending:
                 self.resume_banner.show_job(job, self.session.cache)
-        self._queue_drive_sync()
         self._finish_worker_later()
+        if want_preview:
+            self._preview_multi_epubs(books)
 
     # ------------------------------------------------------------------
     # Library
     # ------------------------------------------------------------------
 
-    def _start_library_check(self):
-        entries = self.session.library_store.get_library()
-        if not entries:
-            show_info(self, "Library", "No tracked novels yet.")
-            return
-        self.library.set_check_busy(True)
-        for e in entries:
-            self.library.check_status[e.source_url] = {"state": "checking"}
-        self.library.refresh()
-        worker = LibraryCheckWorker(self.session, entries)
-        if not self._bind_and_run(
-            worker,
-            (worker.entry_done, self.library.apply_entry_status),
-            (worker.progress, self._on_library_check_progress),
-            (worker.finished, self._library_check_done),
-        ):
-            self.library.set_check_busy(False)
-            self.progress.set_status("Busy — wait for the current job to finish")
-            return
-
-    @Slot(int, int, str)
-    def _on_library_check_progress(self, idx: int, total: int, name: str):
-        self.progress.set_status(f"Check [{idx + 1}/{total}]: {name[:40]}")
-
-    @Slot(int, int)
-    def _library_check_done(self, with_updates: int, total: int):
-        self.library.set_check_busy(False)
-        if with_updates:
-            msg = f"{with_updates}/{total} novel(s) have new chapters"
-            self.library.status_label.setText(msg)
-            self.progress.set_status(msg)
-            notify("Library updates available", msg)
-        else:
-            msg = f"All {total} novel(s) up to date"
-            self.library.status_label.setText(msg)
-            self.progress.set_status(msg)
-        self.library.refresh()
-        self._finish_worker_later()
-
-    def _start_library_update(self, entry):
-        if self.session.control.is_downloading or self._worker_busy:
-            return
-        self._persist_settings()
-        self._set_downloading(True)
-        self.tabs.setCurrentWidget(self.library)
-        o = self.options.snapshot()
-        worker = LibraryUpdateWorker(self.session, entry, o)
-        if not self._bind_and_run(
-            worker,
-            (worker.progress, self._on_progress),
-            (worker.finished_ok, self._lib_update_ok),
-            (worker.finished_cancel, self._download_cancelled),
-            (worker.finished_error, self._download_error),
-            (worker.up_to_date, self._lib_up_to_date),
-        ):
-            self._set_downloading(False)
-            return
-
-    @Slot(str)
-    def _lib_update_ok(self, msg: str):
-        self._set_downloading(False)
-        self.progress.set_progress(1.0, "Library updated")
-        show_info(self, completion_dialog_title(msg, "Library updated"), msg)
-        self.library.refresh()
-        self._queue_drive_sync()
-        self._finish_worker_later()
-
-    @Slot(str)
-    def _lib_up_to_date(self, display: str):
-        self._set_downloading(False)
-        show_info(self, "Up to date", f"No new chapters for:\n{display}")
-        self._finish_worker_later()
-
-    def _start_library_update_all(self):
-        if self._worker_busy or self.session.control.is_downloading:
-            return
-        entries = [
-            e for e in self.session.library_store.get_library()
-            if (self.library.check_status.get(e.source_url) or {}).get("state") == "update"
-        ]
-        if not entries:
-            show_info(self, "Update All", "No novels with updates. Run Check updates first.")
-            return
-        if not ask_yes_no(
-            self, "Update All",
-            f"Update {len(entries)} novel(s)?",
-        ):
-            return
-        self._persist_settings()
-        o = self.options.snapshot()
-        job = {
-            "kind": "library_update_all",
-            "status": "running",
-            "options": o,
-            "entries": [
-                {
-                    "source_url": e.source_url,
-                    "title": e.title or "",
-                    "translated_title": e.translated_title or "",
-                    "done": False,
-                }
-                for e in entries
-            ],
-        }
-        self.session.control.active_job = job
-        save_job(job, self.session.data_dir)
-        self._run_library_update_all(entries)
-
-    def _run_library_update_all(self, entries):
-        self.resume_banner.hide_banner()
-        self._set_downloading(True)
-        o = self.options.snapshot()
-        worker = LibraryUpdateAllWorker(self.session, entries, o)
-        if not self._bind_and_run(
-            worker,
-            (worker.progress, self._on_progress),
-            (worker.finished_ok, self._lib_update_all_done),
-        ):
-            self._set_downloading(False)
-            return
-
-    @Slot(str)
-    def _lib_update_all_done(self, summary: str):
-        self._set_downloading(False)
-        self.progress.set_progress(1.0, summary)
-        show_info(self, completion_dialog_title(summary, "Update All"), summary)
-        self.library.refresh()
-        job = self.session.control.active_job
-        if job and job.get("kind") == "library_update_all":
-            pending = [e for e in job.get("entries") or [] if not e.get("done")]
-            if pending:
-                self.resume_banner.show_job(job, self.session.cache)
-        self._queue_drive_sync()
-        self._finish_worker_later()
-
-    # ------------------------------------------------------------------
-    # In-app reader
-    # ------------------------------------------------------------------
-
-    @Slot(object)
-    def _open_reader_from_library(self, entry):
-        if entry is None:
-            return
-        self._open_reader(
-            source_url=entry.source_url,
-            title=entry.translated_title or entry.title or "",
-            output_path=entry.output_path or "",
-            epub_filename=entry.epub_filename or "",
-            drive_file_id=entry.drive_file_id or "",
-        )
-
-    @Slot()
-    def _open_reader_from_single(self):
-        info = self.single.novel_info
-        if info is None:
-            show_info(self, "Read", "Fetch a novel first.")
-            return
-        entry = self.session.library_store.get_library_entry(info.source_url or "")
-        self._open_reader(
-            source_url=info.source_url or "",
-            title=self.single.translated_title or info.title or "",
-            output_path=(entry.output_path if entry else "") or "",
-            epub_filename=(entry.epub_filename if entry else "") or "",
-            drive_file_id=(entry.drive_file_id if entry else "") or "",
-            extra_chapters=self.single.chapters,
-        )
-
-    def _open_reader(
-        self,
-        *,
-        source_url: str,
-        title: str,
-        output_path: str = "",
-        epub_filename: str = "",
-        drive_file_id: str = "",
-        extra_chapters=None,
-        extra_epub_path: str = "",
-        allow_drive: bool = True,
-    ):
-        self._save_reader_position()
-        self._reader_open_gen += 1
-        result = resolve_reader_book(
-            source_url=source_url,
-            title=title,
-            output_path=output_path,
-            epub_filename=epub_filename,
-            drive_file_id=drive_file_id if allow_drive else "",
-            output_dir=self.session.output_dir,
-            cache=self.session.cache,
-            extra_chapters=extra_chapters,
-            extra_epub_path=extra_epub_path,
-        )
-        if result.need_drive:
-            if self._worker_busy or self.session.control.is_downloading:
-                show_warning(
-                    self, "Read", "Busy — wait for the current job to finish."
-                )
-                return
-            if self.session.drive_sync.is_connected() and drive_file_id:
-                self._start_drive_epub_for_reader(
-                    source_url=source_url,
-                    title=title,
-                    output_path=output_path,
-                    epub_filename=epub_filename,
-                    drive_file_id=drive_file_id,
-                    extra_chapters=extra_chapters,
-                )
-                return
-            result = resolve_reader_book(
-                source_url=source_url,
-                title=title,
-                output_path=output_path,
-                epub_filename=epub_filename,
-                drive_file_id="",
-                output_dir=self.session.output_dir,
-                cache=self.session.cache,
-                extra_chapters=extra_chapters,
-            )
-        if result.error or result.book is None:
-            show_info(self, "Read", result.error or "Nothing to read yet.")
-            return
-        self._present_reader(result.book)
-
-    def _start_drive_epub_for_reader(
-        self,
-        *,
-        source_url: str,
-        title: str,
-        output_path: str,
-        epub_filename: str,
-        drive_file_id: str,
-        extra_chapters=None,
-    ):
-        folder = downloads_folder(self.session.output_dir)
-        dest = epub_path(
-            folder,
-            title or "book",
-            preferred_name=epub_filename,
-            preferred_path=output_path,
-        )
-        self._pending_reader_entry = {
-            "source_url": source_url,
-            "title": title,
-            "output_path": output_path,
-            "epub_filename": epub_filename,
-            "drive_file_id": drive_file_id,
-            "extra_chapters": extra_chapters,
-            "gen": self._reader_open_gen,
-        }
-        worker = DriveEpubDownloadWorker(
-            self.session.drive_sync, drive_file_id, dest, folder
-        )
-        self.progress.set_status("Downloading EPUB from Drive…")
-        if not self._bind_and_run(
-            worker,
-            (worker.status, self._set_status_safe),
-            (worker.finished, self._drive_epub_for_reader_done),
-            (worker.error, self._drive_epub_for_reader_error),
-        ):
-            self._pending_reader_entry = None
-            show_warning(self, "Read", "Busy — wait for the current job to finish.")
-
-    @Slot(str)
-    def _drive_epub_for_reader_done(self, dest: str):
-        pending = self._pending_reader_entry or {}
-        self._pending_reader_entry = None
-        self._stop_thread(drain_pending_sync=False)
-        if pending.get("gen") != self._reader_open_gen:
-            return
-        self._open_reader(
-            source_url=pending.get("source_url") or "",
-            title=pending.get("title") or "",
-            output_path=pending.get("output_path") or "",
-            epub_filename=pending.get("epub_filename") or "",
-            drive_file_id=pending.get("drive_file_id") or "",
-            extra_chapters=pending.get("extra_chapters"),
-            extra_epub_path=dest,
-            allow_drive=False,
-        )
-
-    @Slot(str)
-    def _drive_epub_for_reader_error(self, msg: str):
-        pending = self._pending_reader_entry or {}
-        self._pending_reader_entry = None
-        self._stop_thread(drain_pending_sync=False)
-        if pending.get("gen") != self._reader_open_gen:
-            return
-        show_warning(self, "Read", f"Could not download the Drive EPUB.\n{msg}")
-        self._open_reader(
-            source_url=pending.get("source_url") or "",
-            title=pending.get("title") or "",
-            output_path=pending.get("output_path") or "",
-            epub_filename=pending.get("epub_filename") or "",
-            drive_file_id="",
-            extra_chapters=pending.get("extra_chapters"),
-            allow_drive=False,
-        )
-
-    def _present_reader(self, book):
-        pos = get_position(book.source_url, data_dir=self.session.data_dir)
-        idx = resume_index(book, pos)
-        scroll = float((pos or {}).get("scroll") or 0.0)
-        try:
-            font_pt = int(self.session.settings.get("reader_font_pt") or 18)
-        except (TypeError, ValueError):
-            font_pt = 18
-        current = self.tabs.currentWidget()
-        if current is not self.reader:
-            self._reader_return = current
-        self.reader.load_book(book, index=idx, scroll=scroll, font_pt=font_pt)
-        self.tabs.setCurrentWidget(self.reader)
-        self._ensure_chapter_loaded(idx)
-
-    def _ensure_chapter_loaded(self, index: int):
-        book = self.reader.book
-        if book is None or not (0 <= index < len(book.chapters)):
-            return
-        ch = book.chapters[index]
-        if (ch.html or "").strip():
-            self.reader.set_status("")
-            return
-        if book.kind != KIND_CACHE or not ch.url:
-            self.reader.set_status("This chapter is not in the EPUB.")
-            return
-        if self._worker_busy or self.session.control.is_downloading:
-            self.reader.set_status("Busy — wait for the current job to finish")
-            self.progress.set_status("Busy — wait for the current job to finish")
-            return
-        delay = 0.0
-        parser = get_parser_for_url(ch.url) or get_parser_for_url(book.source_url)
-        try:
-            site_delay = float(getattr(parser, "request_delay", 2.0) or 2.0)
-        except (TypeError, ValueError):
-            site_delay = 2.0
-        if self._reader_last_fetch:
-            elapsed = time.monotonic() - self._reader_last_fetch
-            if elapsed < site_delay:
-                delay = site_delay - elapsed
-        worker = ReaderChapterFetchWorker(
-            index,
-            ch.url,
-            ch.title,
-            book.source_url,
-            self.session.cache,
-            delay=delay,
-        )
-        self.reader.set_status("Fetching chapter…")
-        if not self._bind_and_run(
-            worker,
-            (worker.status, self._on_reader_fetch_status),
-            (worker.finished, self._reader_chapter_fetched),
-            (worker.error, self._reader_chapter_fetch_error),
-        ):
-            self.reader.set_status("Busy — wait for the current job to finish")
-
-    @Slot(str)
-    def _on_reader_fetch_status(self, text: str):
-        self.reader.set_status(text)
-        self.progress.set_status(text)
-
-    @Slot(int, str, str)
-    def _reader_chapter_fetched(self, index: int, url: str, html: str):
-        self._reader_last_fetch = time.monotonic()
-        self._finish_worker_later()
-        book = self.reader.book
-        if book is None or not (0 <= index < len(book.chapters)):
-            return
-        ch = book.chapters[index]
-        if url and ch.url and ch.url != url:
-            return
-        self.reader.update_chapter_html(index, html)
-        ch.html = html
-        self.reader.set_status("")
-        self.progress.set_status("Ready")
-
-    @Slot(int, str)
-    def _reader_chapter_fetch_error(self, index: int, msg: str):
-        self._finish_worker_later()
-        self.reader.set_status(msg)
-        show_warning(self, "Read", msg)
-
-    @Slot(int)
-    def _on_reader_chapter(self, index: int):
-        self._save_reader_position()
-        self._ensure_chapter_loaded(index)
-
-    @Slot(int)
-    def _on_reader_font(self, pt: int):
-        self.session.settings["reader_font_pt"] = int(pt)
-        set_setting("reader_font_pt", int(pt))
-
-    def _save_reader_position(self):
-        book = self.reader.book
-        if book is None or not book.source_url:
-            return
-        idx = self.reader.current_index()
-        ch = book.chapters[idx] if 0 <= idx < len(book.chapters) else None
-        set_position(
-            book.source_url,
-            chapter_url=(ch.url or ch.key) if ch else "",
-            chapter_index=idx,
-            scroll=self.reader.scroll_ratio(),
-            data_dir=self.session.data_dir,
-        )
-
-    @Slot()
-    def _close_reader(self):
-        self._save_reader_position()
-        target = self._reader_return or self.library
-        self.tabs.setCurrentWidget(target)
-
-    def _open_library_url(self, url: str):
-        self.tabs.setCurrentWidget(self.single)
-        self.single.set_url(url)
-
-    def _remove_library(self, url: str):
-        entry = self.session.library_store.get_library_entry(url)
-        title = ""
-        if entry:
-            title = entry.translated_title or entry.title or url
-        drive_on = bool(self.library.drive_enabled.isChecked())
-        extra = (
-            "\n• the Google Drive EPUB and library.json entry "
-            "(it will not come back on the next sync)"
-            if drive_on
-            else "\n• a sync marker so Google Drive cannot restore it later"
-        )
-        msg = (
-            f'Remove “{title}” from your library?\n\n'
-            "This deletes:\n"
-            "• the local EPUB in your books folder\n"
-            "• chapter, cover, and table-of-contents cache for this novel\n"
-            "• the reading position on this PC"
-            f"{extra}"
-        )
-        if not ask_yes_no(self, "Remove", msg):
-            return
-        from core.library import purge_novel_artifacts
-
-        extra_dirs = [get_default_books_dir()]
-        custom = (self.session.output_dir or "").strip()
-        if custom:
-            extra_dirs.append(Path(custom))
-        removed = self.session.library_store.remove_library(url)
-        target = removed or entry
-        if target:
-            purge_novel_artifacts(
-                target, cache=self.session.cache, extra_dirs=extra_dirs,
-                data_dir=self.session.data_dir,
-            )
-        self.library.refresh()
-        if drive_on and self.session.drive_sync.is_connected():
-            self._start_drive_sync(silent=True)
-
-    def _download_library_epub(self, entry):
-        # Prefer Drive download if remote id known
-        from core.security import is_allowed_epub_path
-
-        folder = downloads_folder(self.options.snapshot().get("output_dir", ""))
-        roots = [get_default_books_dir(), folder]
-        path = entry.output_path
-        if path and Path(path).is_file() and is_allowed_epub_path(Path(path), roots):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
-            return
-        if entry.drive_file_id:
-            dest = epub_path(
-                folder,
-                entry.title or "book",
-                preferred_name=entry.epub_filename or "",
-            )
-            try:
-                self.session.drive_sync.download_epub(
-                    entry.drive_file_id, dest, allowed_root=folder
-                )
-                show_info(self, "Download", f"Saved to:\n{dest}")
-            except Exception as e:
-                show_warning(self, "Download EPUB", str(e))
-        else:
-            show_info(self, "Download EPUB", "No local or Drive EPUB found for this entry.")
-
-    def _reset_library(self):
-        if not ask_yes_no(
-            self, "Reset library",
-            "Clear all tracked novels from your local library?\n\n"
-            "They will not come back on Drive sync. Local EPUB files are kept.",
-        ):
-            return
-        self.session.library_store.clear(clear_library=True, clear_history=False)
-        self.library.check_status.clear()
-        self.library.refresh()
-        if self.library.drive_enabled.isChecked() and self.session.drive_sync.is_connected():
-            self._start_drive_sync(silent=True)
-
-    # ------------------------------------------------------------------
-    # Drive
-    # ------------------------------------------------------------------
-
-    def _drive_connect(self):
-        if not self.session.drive_sync.client_configured():
-            show_info(self, "Drive setup", oauth_setup_instructions())
-            return
-        self.progress.set_status("Connecting to Google Drive…")
-        worker = DriveConnectWorker(self.session.drive_sync)
-        if not self._bind_and_run(worker, (worker.finished, self._drive_connect_done)):
-            self.progress.set_status("Busy — wait for the current job to finish")
-            return
-
-    @Slot(bool, str, str)
-    def _drive_connect_done(self, ok: bool, email: str, err: str):
-        if ok:
-            self.library.drive_status.setText(f"Connected: {email}")
-            self.progress.set_status(f"Drive connected: {email}")
-            # Finish connect thread first, then start sync (don't kill sync with stop)
-            self._queue_drive_sync()
-            self._finish_worker_later()
-        else:
-            show_error(self, "Drive", err or "Connect failed")
-            self._finish_worker_later()
-
-    def _drive_disconnect(self):
-        try:
-            self.session.drive_sync.logout()
-        except Exception:
-            pass
-        self.library.drive_status.setText("Disconnected")
-
-    def _start_drive_sync(self, silent: bool = True):
-        if not self.library.drive_enabled.isChecked():
-            self._pending_drive_sync = False
-            return
-        self._drive_sync_silent = silent
-        if self._worker_busy and self._thread and self._thread.isRunning():
-            self._pending_drive_sync = True
-            self.progress.set_status("Drive sync queued…")
-            return
-        self._pending_drive_sync = False
-        self._persist_settings()
-        self.library.set_drive_busy(True)
-        self.progress.set_status("Syncing with Google Drive…")
-        self.library.drive_status.setText("Syncing…")
-        worker = DriveSyncWorker(self.session, silent=silent)
-        if not self._bind_and_run(
-            worker,
-            (worker.progress, self._on_drive_sync_progress),
-            (worker.finished, self._on_drive_sync_finished),
-        ):
-            self.library.set_drive_busy(False)
-            self._pending_drive_sync = True
-            self.progress.set_status("Drive sync queued…")
-            return
-
-    @Slot()
-    def _start_drive_sync_silent(self):
-        self._start_drive_sync(silent=getattr(self, "_drive_sync_silent", True))
-
-    @Slot()
-    def _drive_sync_now(self):
-        self._start_drive_sync(silent=False)
-
-    def _queue_drive_sync(self):
-        """Silent Drive push after a successful download/update (no tab switch)."""
-        if self.library.drive_enabled.isChecked():
-            self._pending_drive_sync = True
-            self._drive_sync_silent = True
-
-    @Slot(str)
-    def _on_drive_sync_progress(self, msg: str):
-        self.progress.set_status(msg)
-        self.library.drive_status.setText(msg)
-
-    @Slot(str, str)
-    def _on_drive_sync_finished(self, summary: str, err: str):
-        silent = getattr(self, "_drive_sync_silent", True)
-        self.library.set_drive_busy(False)
-        if err:
-            self.library.drive_status.setText(f"Sync error: {err[:80]}")
-            self.progress.set_status(f"Drive sync error: {err[:60]}")
-            if not silent:
-                show_warning(self, "Drive sync", err)
-        else:
-            self.library.drive_status.setText(summary)
-            # Drive pull only needs library.json — show All so Updates filter
-            # doesn't hide every novel before Check updates has been run.
-            try:
-                self.session.library_store.reload()
-            except Exception:
-                pass
-            n = len(self.session.library_store.get_library())
-            self.library.show_all()
-            if not silent:
-                self.tabs.setCurrentWidget(self.library)
-            else:
-                self.library.refresh()
-            self.progress.set_status(summary or f"Drive sync done — {n} novel(s)")
-            if not silent:
-                extra = ""
-                if n == 0:
-                    extra = (
-                        "\n\nLibrary UI is still empty. Confirm ~/.huaepub/library.json "
-                        "was written, or click Refresh."
-                    )
-                else:
-                    extra = (
-                        f"\n\n{n} novel(s) are in your library list now "
-                        "(covers/EPUBs stay optional — no full download required)."
-                    )
-                show_info(self, "Drive sync", (summary or "Sync done") + extra)
-        self._finish_worker_later()
-
-    def _drive_change_folder(self):
-        from core.drive_sync import DriveSync
-
-        text, ok = QInputDialog.getText(
-            self, "Drive folder",
-            "Paste the Drive folder URL from your other PC\n"
-            "(Library → Open folder), or type a folder name:",
-            text=self.session.settings.get("drive_folder_name") or "HuaEPUB",
-        )
-        if not ok:
-            return
-        text = (text or "").strip()
-        if not text:
-            return
-        try:
-            parsed = DriveSync.parse_folder_id(text)
-            if parsed:
-                self.session.drive_sync.set_custom_folder(folder_url_or_id=text)
-            else:
-                self.session.drive_sync.set_custom_folder(folder_name=text)
-            info = self.session.drive_sync.inspect_sync_folder()
-            label = info.get("name") or self.session.drive_sync.location_description()
-            novels = int(info.get("library_novels") or 0)
-            epubs = int(info.get("epub_count") or 0)
-            detail = (
-                f"Using: {label}\n"
-                f"library.json novels: {novels}\n"
-                f"EPUB files in books/: {epubs}\n"
-                f"{info.get('web_link') or ''}"
-            )
-            if info.get("error"):
-                show_warning(
-                    self, "Drive folder",
-                    detail + f"\n\nWarning: {info['error']}",
-                )
-            else:
-                show_info(self, "Drive folder", detail)
-            self.library.drive_status.setText(
-                f"{label} — {novels} novel(s), {epubs} EPUB(s) on Drive"
-            )
-            # Pull immediately so Library fills from this folder
-            QTimer.singleShot(100, self._drive_sync_now)
-        except Exception as e:
-            show_error(self, "Drive folder", str(e))
-
-    def _drive_open_folder(self):
-        link = ""
-        try:
-            link = self.session.drive_sync.folder_web_link() or ""
-        except Exception:
-            pass
-        if link:
-            QDesktopServices.openUrl(QUrl(link))
-        else:
-            show_info(self, "Open folder", "Connect to Drive first.")
-
-    def _drive_setup_help(self):
-        show_info(self, "Drive OAuth setup", oauth_setup_instructions())
-
-    # ------------------------------------------------------------------
-    # Misc
-    # ------------------------------------------------------------------
-
     def _show_recent(self):
-        history = self.session.library_store.get_history()
-        if not history:
-            show_info(self, "Recent", "No download history yet.")
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Recent downloads")
-        dlg.resize(520, 400)
-        lay = QVBoxLayout(dlg)
-        lst = QListWidget()
-        for h in history:
-            title = h.translated_title or h.title or h.source_url
-            lst.addItem(f"{title}\n{h.source_url}")
-        lay.addWidget(lst)
-        buttons = QDialogButtonBox(QDialogButtonBox.Open | QDialogButtonBox.Cancel)
-        lay.addWidget(buttons)
-        buttons.rejected.connect(dlg.reject)
-
-        def accept():
-            row = lst.currentRow()
-            if row < 0:
-                return
-            self.single.set_url(history[row].source_url)
+        url = pick_recent_download(self, self.session.library_store.get_history())
+        if url:
+            self.single.set_url(url)
             self.tabs.setCurrentWidget(self.single)
-            dlg.accept()
-
-        buttons.accepted.connect(accept)
-        lst.itemDoubleClicked.connect(lambda _: accept())
-        dlg.exec()
 
     def _poll_clipboard(self):
         if not self.options.clipboard_cb.isChecked():
@@ -1541,120 +973,52 @@ class MainWindow(QMainWindow):
         else:
             show_info(self, "Log", f"No log yet at:\n{log}")
 
-    def _cache_size_text(self) -> str:
-        n = self.session.cache.file_size_bytes()
-        if n < 1024 * 1024:
-            shown = f"{n / 1024:.0f} KB"
-        elif n < 1024 * 1024 * 1024:
-            shown = f"{n / (1024 * 1024):.1f} MB"
-        else:
-            shown = f"{n / (1024 * 1024 * 1024):.2f} GB"
-        return f"Current size: {shown}"
-
     def _cache_dialog(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Cache")
-        dlg.setMinimumWidth(460)
-        layout = QVBoxLayout(dlg)
-        size_lbl = QLabel(self._cache_size_text())
-        layout.addWidget(size_lbl)
-        explain = QLabel(
-            "Chapter HTML, translations (including polished spans), covers, and "
-            "tables of contents live in ~/.huaepub/cache.db. This is not Drive-synced. "
-            "When the file grows past the limit, the oldest cached chapters are "
-            "deleted first (least recently stored). Translations are kept unless "
-            "the cache is still over the limit.\n\n"
-            "Nothing is cleared on a timer — only when over the cap, or when you "
-            "clear it here. llama.cpp models live separately in ~/.huaepub/polish/."
+        show_cache_dialog(
+            self,
+            self.session.cache,
+            self.session.settings,
+            self.progress.set_status,
         )
-        explain.setWordWrap(True)
-        layout.addWidget(explain)
-
-        cap_row = QHBoxLayout()
-        cap_row.addWidget(QLabel("Maximum size:"))
-        combo = QComboBox()
-        choices = [
-            (512, "512 MB"),
-            (1024, "1 GB"),
-            (2048, "2 GB"),
-            (4096, "4 GB"),
-            (0, "Unlimited"),
-        ]
-        for mb, label in choices:
-            combo.addItem(label, mb)
-        current = int(self.session.settings.get("cache_max_mb", 2048) or 0)
-        idx = next((i for i, (mb, _) in enumerate(choices) if mb == current), 2)
-        combo.setCurrentIndex(idx)
-
-        def on_cap_changed(_index: int):
-            mb = int(combo.currentData())
-            self.session.settings["cache_max_mb"] = mb
-            set_setting("cache_max_mb", mb)
-            removed = self.session.cache.maybe_evict()
-            size_lbl.setText(self._cache_size_text())
-            if removed:
-                self.progress.set_status(
-                    f"Cache trimmed ({removed} oldest entries removed)"
-                )
-
-        combo.currentIndexChanged.connect(on_cap_changed)
-        cap_row.addWidget(combo)
-        cap_row.addStretch(1)
-        layout.addLayout(cap_row)
-
-        btn_row = QHBoxLayout()
-        clear_ch = QPushButton("Clear chapter cache")
-        clear_ch.setToolTip("Delete chapter HTML, covers, and TOCs. Keep translations.")
-        clear_all = QPushButton("Clear all cache")
-        clear_all.setToolTip("Delete chapters, covers, TOCs, and translations.")
-
-        def refresh_size():
-            size_lbl.setText(self._cache_size_text())
-
-        def on_clear_chapters():
-            if not ask_yes_no(
-                dlg, "Clear chapter cache",
-                "Delete cached chapter HTML, covers, and tables of contents?\n\n"
-                "Translations stay. The next download will re-fetch chapter text.",
-            ):
-                return
-            self.session.cache.clear_chapter_data()
-            refresh_size()
-            self.progress.set_status("Chapter cache cleared")
-
-        def on_clear_all():
-            if not ask_yes_no(
-                dlg, "Clear all cache",
-                "Delete the entire cache, including translations?\n\n"
-                "The next download and translate will redo all network work.",
-            ):
-                return
-            self.session.cache.clear_all()
-            refresh_size()
-            self.progress.set_status("All cache cleared")
-
-        clear_ch.clicked.connect(on_clear_chapters)
-        clear_all.clicked.connect(on_clear_all)
-        btn_row.addWidget(clear_ch)
-        btn_row.addWidget(clear_all)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-        dlg.exec()
 
     def _translation_help(self):
-        box = QMessageBox(self)
-        box.setWindowTitle("How translation works")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(
-            "<p><b>Google</b> (default) — fast, free, online. Best for most novels.</p>"
+        show_rich_info(
+            self,
+            "How translation works",
+            "<p><b>Google (New)</b> (default) — the same <code>translate-pa</code> "
+            "engine as Calibre Ebook Translator 2.4+ <i>Google (Free) - New</i>. "
+            "Use this first. <b>Google (HTML)</b> is the widget HTML API. "
+            "<b>Google (Old)</b> is <code>client=gtx</code>, which Google walled "
+            "for many IPs in 2026.</p>"
+            "<p><b>Microsoft Edge</b> — another free unofficial engine "
+            "(same as the Calibre plugin). No API key.</p>"
             "<p><b>LibreTranslate</b> — your own server. More private, usually slower.</p>"
             "<p><b>Ollama</b> — full local translation. Slow (hours for a long novel). "
             "Needs <a href='https://ollama.com'>Ollama</a> installed and running.</p>"
+            "<p><b>Offline NMT</b> — local CTranslate2 (opus-mt-zh-en). Free and offline. "
+            "Needs <code>pip install -r requirements-nmt.txt</code> (not in the exe). "
+            "First run downloads ~320&nbsp;MB into ~/.huaepub/nmt. "
+            "Glossary is <b>Auto</b> by default: the built-in xianxia/wuxia list "
+            "is used only when the title or chapter list looks like cultivation "
+            "(not for urban/romance). That list is a curated web-novel pack, "
+            "not a general Chinese dictionary. "
+            "While translating, HuaEPUB also learns character names from this book "
+            "into <code>~/.huaepub/glossaries/&lt;title&gt;.json</code> (pinyin, not Google). "
+            "If the polish Qwen GGUF is already on disk (7B+), a classify pass can "
+            "fix those names and lock sects/techniques that appear in the text. "
+            "Help → Polish glossaries with Qwen… runs it anytime and shows Accept all / Discard. "
+            "It will not download a GGUF by itself. "
+            "Your names in <code>~/.huaepub/glossary.json</code> always apply unless "
+            "Glossary is Off. Force the pack with <b>Cultivation pack</b>.</p>"
+            "<p><b>Offline NMT GPU</b> — your NVIDIA GPU is used only when "
+            "<b>CUDA 12</b> libraries are visible (<code>cublas64_12.dll</code>). "
+            "The Game Ready driver is not enough. "
+            "<code>nvidia-cublas-cu12</code> and <code>nvidia-cuda-runtime-cu12</code> "
+            "are in requirements-nmt.txt. "
+            "Do <b>not</b> install CUDA 13 for this. cuDNN is not required. "
+            "Then fully quit and reopen the app. "
+            "If CUDA 12 still cannot load, Offline NMT stays on CPU (not Google) "
+            "and the log prints the same install steps.</p>"
             "<p><b>Polish English</b> — keep Google (or LibreTranslate) as the translator, "
             "then copy-edit awkward English on this PC. <b>Ollama is not required.</b> "
             "The first run downloads llama.cpp and a Qwen2.5 GGUF that fits this GPU "
@@ -1662,24 +1026,23 @@ class MainWindow(QMainWindow):
             "only dirty spans hit the GPU. The same EPUB is written. "
             "Progress is in File → Open log file. If llama.cpp cannot start because Ollama "
             "is using the GPU, quit Ollama from the tray and retry.</p>"
-            "<p>Workers apply to Google/LibreTranslate only. Polish runs separately.</p>"
+            "<p>Workers are the Google in-flight <b>ceiling</b> (default 200). "
+            "Unofficial Translate rate-limits by IP: the app starts at 8 GETs "
+            "and only climbs when requests succeed. A 429 pauses new requests "
+            "instead of letting the other 199 keep hammering. "
+            "Offline NMT batches locally. Polish runs separately. "
+            "The Read tab prefetches the next cached chapter and can live-translate "
+            "Chinese cache HTML when Translate is on.</p>"
         )
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        for lbl in box.findChildren(QLabel):
-            lbl.setOpenExternalLinks(True)
-            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        exec_box(box)
 
     def _about(self):
         version = get_current_version()
-        box = QMessageBox(self)
-        box.setWindowTitle(f"About {APP_TITLE}")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(
+        show_rich_info(
+            self,
+            f"About {APP_TITLE}",
             f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
             f"<p>{APP_DESCRIPTION}</p>"
-            "<p>Optional: Google / LibreTranslate / Ollama translation, then local "
+            "<p>Optional: Google (New/HTML/Old) / Microsoft Edge / LibreTranslate / Ollama / Offline NMT translation, then local "
             "llama.cpp polish (auto-installed Qwen GGUF). Ollama is not required for polish. "
             "Help → How translation works. Cache size is Help → Cache…</p>"
             "<p>"
@@ -1698,18 +1061,16 @@ class MainWindow(QMainWindow):
             "Not affiliated with novel sites or Google."
             "</p>"
         )
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        for lbl in box.findChildren(QLabel):
-            lbl.setOpenExternalLinks(True)
-            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        exec_box(box)
 
     def _auto_check_updates(self):
-        check_for_updates_async(callback=self._update_check_cb)
+        self._app_update_checking = True
+        check_for_updates_async(callback=self._update_check_cb, force=False)
 
     def _manual_check_updates(self):
+        self._update_check_notify = True
+        self._app_update_checking = True
         self.progress.set_status("Checking for app updates…")
-        check_for_updates_async(callback=self._update_check_cb)
+        check_for_updates_async(callback=self._update_check_cb, force=True)
 
     def _update_check_cb(self, has_update, latest, message):
         # Runs on a plain threading.Thread — never touch Qt widgets here.
@@ -1721,10 +1082,24 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _set_status_safe(self, text: str):
+        if QThread.currentThread() != self.thread():
+            self._call_on_gui(lambda t=text: self._set_status_safe(t))
+            return
         self.progress.set_status(text)
 
     @Slot(bool, str, str)
     def _on_update_check_ready(self, has_update: bool, latest: str, message: str):
+        now = time.monotonic()
+        key = (bool(has_update), str(latest), str(message))
+        prev = getattr(self, "_last_app_update_check", None)
+        if prev is not None and prev[0] == key and (now - prev[1]) < 2.0:
+            return
+        self._last_app_update_check = (key, now)
+        notify = bool(getattr(self, "_update_check_notify", False))
+        self._update_check_notify = False
+        self._app_update_checking = False
+
+        failed = (message or "").startswith("Failed to check")
         if has_update:
             self.progress.set_status(f"Update available: {latest}")
             if ask_yes_no(
@@ -1740,8 +1115,17 @@ class MainWindow(QMainWindow):
                         bool(ok), str(msg or "")
                     ),
                 )
+            return
+        self.progress.set_status(message or "App is up to date")
+        if not notify:
+            return
+        if failed:
+            show_warning(self, "Updates", message or "Failed to check for updates.")
         else:
-            self.progress.set_status(message or "App is up to date")
+            show_info(
+                self, "Updates",
+                message or f"You're running the latest version ({get_current_version()}).",
+            )
 
     @Slot(bool, str)
     def _on_update_download_done(self, ok: bool, message: str):
