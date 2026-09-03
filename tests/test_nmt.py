@@ -147,11 +147,25 @@ def test_cuda_library_dirs_from_cuda_path(tmp_path, monkeypatch):
     assert nmtmod.cublas_present()
 
 
-def test_install_instructions_name_cuda12_packages():
-    text = nmtmod.nmt_cuda_install_instructions()
-    assert "nvidia-cublas-cu12" in text
-    assert "cublas64_12" in text
-    assert "13" in text
+def test_install_instructions_name_cuda12_packages(monkeypatch):
+    """Copy is platform-aware; CUDA 12 package names still required off Darwin."""
+    monkeypatch.setattr(nmtmod.platform, "system", lambda: "Darwin")
+    darwin = nmtmod.nmt_cuda_install_instructions()
+    assert "Apple GPU" in darwin
+    assert "CPU" in darwin
+    assert "nvidia-cublas-cu12" not in darwin
+
+    monkeypatch.setattr(nmtmod.platform, "system", lambda: "Windows")
+    windows = nmtmod.nmt_cuda_install_instructions()
+    assert "nvidia-cublas-cu12" in windows
+    assert "cublas64_12" in windows
+    assert "13" in windows
+
+    monkeypatch.setattr(nmtmod.platform, "system", lambda: "Linux")
+    linux = nmtmod.nmt_cuda_install_instructions()
+    assert "nvidia-cublas-cu12" in linux
+    assert "cublas64_12" in linux
+    assert "13" in linux
 
 
 def test_prepare_cuda_does_not_pip_under_pytest(monkeypatch):

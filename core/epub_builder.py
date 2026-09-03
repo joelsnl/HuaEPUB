@@ -29,8 +29,17 @@ from ebooklib import epub
 from core.parser import Chapter, NovelInfo, create_http_session
 from core.cleaner import ContentCleaner, count_chinese_chars
 
-# Shared session for image downloads (curl_cffi impersonation when available)
-_http_session = create_http_session()
+# Shared session for image downloads (curl_cffi impersonation when available).
+# Lazy: importing this module must not leave an impersonated session open
+# until interpreter exit (curl_cffi can SIGSEGV during pytest teardown).
+_http_session = None
+
+
+def _image_http_session():
+    global _http_session
+    if _http_session is None:
+        _http_session = create_http_session()
+    return _http_session
 
 # Volume prefix detection for TOC grouping (Chinese and translated forms)
 def write_epub_atomic(output_path: str, book) -> None:
@@ -262,7 +271,7 @@ class EPUBBuilder:
             if cached:
                 return cached
         try:
-            data = fetch_cover_bytes(_http_session, url, timeout=30)
+            data = fetch_cover_bytes(_image_http_session(), url, timeout=30)
             if data and self.image_cache is not None:
                 self.image_cache.put_cover(data, cover_url=url)
             return data

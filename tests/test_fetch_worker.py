@@ -68,6 +68,18 @@ class _Host(WorkerHostMixin, QMainWindow):
         self.statuses.append(msg)
 
 
+def _cleanup_host(qapp, host, wait_ms=1000):
+    try:
+        host._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+    except Exception:
+        pass
+    try:
+        host.deleteLater()
+    except RuntimeError:
+        pass
+    qapp.processEvents()
+
+
 def _pump(qapp, host, ticks=40):
     for _ in range(ticks):
         qapp.processEvents()
@@ -93,9 +105,13 @@ def test_fetch_worker_emits_parallel_status(qapp, monkeypatch):
     )
     statuses = []
     worker = FetchWorker("https://example.com/book", _Cache())
-    worker.status.connect(statuses.append)
-    worker.run()
-    assert statuses == ["Fetching novel info & chapters (parallel)..."]
+    try:
+        worker.status.connect(statuses.append)
+        worker.run()
+        assert statuses == ["Fetching novel info & chapters (parallel)..."]
+    finally:
+        worker.deleteLater()
+        qapp.processEvents()
 
 
 def test_fetch_worker_emits_two_step_status(qapp, monkeypatch):
@@ -104,9 +120,13 @@ def test_fetch_worker_emits_two_step_status(qapp, monkeypatch):
     )
     statuses = []
     worker = FetchWorker("https://example.com/book", _Cache())
-    worker.status.connect(statuses.append)
-    worker.run()
-    assert statuses == ["Fetching novel info...", "Fetching chapter list..."]
+    try:
+        worker.status.connect(statuses.append)
+        worker.run()
+        assert statuses == ["Fetching novel info...", "Fetching chapter list..."]
+    finally:
+        worker.deleteLater()
+        qapp.processEvents()
 
 
 def test_worker_busy_clears_after_finish(qapp, monkeypatch):
@@ -138,7 +158,7 @@ def test_worker_busy_clears_after_finish(qapp, monkeypatch):
         _pump(qapp, host)
         assert host._worker_busy is False
     finally:
-        host._stop_thread(drain_pending_sync=False, wait_ms=1000)
+        _cleanup_host(qapp, host)
 
 
 def test_finish_from_background_thread_clears_busy(qapp):
@@ -158,8 +178,12 @@ def test_finish_from_background_thread_clears_busy(qapp):
 
     t = threading.Thread(target=go)
     t.start()
-    assert started.wait(2)
-    t.join(2)
-    _pump(qapp, host, ticks=80)
-    assert _is_gui_thread()
-    assert host._worker_busy is False
+    try:
+        assert started.wait(2)
+        t.join(2)
+        _pump(qapp, host, ticks=80)
+        assert _is_gui_thread()
+        assert host._worker_busy is False
+    finally:
+        t.join(2)
+        _cleanup_host(qapp, host)

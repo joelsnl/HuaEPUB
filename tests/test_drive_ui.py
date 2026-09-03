@@ -110,6 +110,31 @@ class _MixinOnlyHost(WorkerHostMixin, DriveActionsMixin, QMainWindow):
         pass
 
 
+def _quit_qthread(thread, wait_ms=1000):
+    if thread is None:
+        return
+    try:
+        if thread.isRunning():
+            thread.quit()
+            thread.wait(wait_ms)
+    except RuntimeError:
+        pass
+
+
+def _cleanup_host(qapp, host, extra_threads=(), wait_ms=1000):
+    try:
+        host._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+    except Exception:
+        pass
+    for th in extra_threads:
+        _quit_qthread(th, wait_ms=wait_ms)
+    try:
+        host.deleteLater()
+    except RuntimeError:
+        pass
+    qapp.processEvents()
+
+
 def _pump(qapp, host=None, ticks=80):
     for _ in range(ticks):
         qapp.processEvents()
@@ -158,7 +183,7 @@ def test_drive_finished_parents_library_items_on_gui(qapp, tmp_path, monkeypatch
         assert not any("Cannot set parent" in m for m in warnings)
     finally:
         qInstallMessageHandler(prev)
-        host._stop_thread(drain_pending_sync=False, wait_ms=1000)
+        _cleanup_host(qapp, host)
 
 
 def test_drive_finished_direct_from_qthread_marshals_refresh(
@@ -201,10 +226,9 @@ def test_drive_finished_direct_from_qthread_marshals_refresh(
         assert not any("Cannot set parent" in m for m in warnings)
         assert host._worker_busy is False
     finally:
-        thread.quit()
-        thread.wait(1000)
+        _quit_qthread(thread)
         qInstallMessageHandler(prev)
-        host._stop_thread(drain_pending_sync=False, wait_ms=1000)
+        _cleanup_host(qapp, host, extra_threads=(thread,))
 
 
 def test_stop_thread_from_qthread_starts_drive_on_gui(qapp, tmp_path):
@@ -241,7 +265,6 @@ def test_stop_thread_from_qthread_starts_drive_on_gui(qapp, tmp_path):
         assert not any("Cannot set parent" in m for m in warnings)
         assert host._worker_busy is False
     finally:
-        thread.quit()
-        thread.wait(1000)
+        _quit_qthread(thread)
         qInstallMessageHandler(prev)
-        host._stop_thread(drain_pending_sync=False, wait_ms=1000)
+        _cleanup_host(qapp, host, extra_threads=(thread,))

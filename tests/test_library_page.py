@@ -48,7 +48,12 @@ def page(qapp, tmp_path):
     widget = LibraryPage(_session(tmp_path))
     widget.refresh()
     qapp.processEvents()
-    return widget
+    yield widget
+    try:
+        widget.deleteLater()
+    except RuntimeError:
+        pass
+    qapp.processEvents()
 
 
 def test_select_all_and_none(page, qapp):

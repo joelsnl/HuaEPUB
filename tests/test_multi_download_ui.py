@@ -62,6 +62,31 @@ class _Host(WorkerHostMixin, QMainWindow):
         self.multi.set_status(idx, status)
 
 
+def _quit_qthread(thread, wait_ms=2000):
+    if thread is None:
+        return
+    try:
+        if thread.isRunning():
+            thread.quit()
+            thread.wait(wait_ms)
+    except RuntimeError:
+        pass
+
+
+def _cleanup_host(qapp, host, extra_threads=(), wait_ms=2000):
+    try:
+        host._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+    except Exception:
+        pass
+    for th in extra_threads:
+        _quit_qthread(th, wait_ms=wait_ms)
+    try:
+        host.deleteLater()
+    except RuntimeError:
+        pass
+    qapp.processEvents()
+
+
 def _pump(qapp, ticks=80):
     for _ in range(ticks):
         qapp.processEvents()
@@ -119,17 +144,21 @@ def test_on_progress_from_pool_thread_updates_footer(qapp, tmp_path):
 
     t = threading.Thread(target=go)
     t.start()
-    assert started.wait(2)
-    t.join(2)
-    for _ in range(80):
+    try:
+        assert started.wait(2)
+        t.join(2)
+        for _ in range(80):
+            qapp.processEvents()
+            if "Google · Translating:" in host.progress.status.text():
+                break
+            QThread.msleep(15)
         qapp.processEvents()
-        if "Google · Translating:" in host.progress.status.text():
-            break
-        QThread.msleep(15)
-    qapp.processEvents()
-    assert "Starting download" not in host.progress.status.text()
-    assert "Google · Translating:" in host.progress.status.text()
-    assert host.progress.bar.value() > 0
+        assert "Starting download" not in host.progress.status.text()
+        assert "Google · Translating:" in host.progress.status.text()
+        assert host.progress.bar.value() > 0
+    finally:
+        t.join(2)
+        _cleanup_host(qapp, host)
 
 
 def test_live_status_keeps_novel_prefix():
@@ -156,6 +185,7 @@ def test_set_downloading_enables_pause_and_replaces_fetch_status(qapp, tmp_path)
         assert not host.multi.download_btn.isEnabled()
     finally:
         host._set_downloading(False)
+        _cleanup_host(qapp, host)
 
 
 def test_pause_looks_distinct_from_disabled(qapp):
@@ -262,7 +292,7 @@ def test_multi_worker_emits_progress_before_slow_prepare(qapp, tmp_path, monkeyp
     finally:
         release.set()
         _pump(qapp, ticks=40)
-        host._stop_thread(drain_pending_sync=False, wait_ms=2000)
+        _cleanup_host(qapp, host, wait_ms=2000)
 
 
 def test_stale_finish_does_not_kill_new_download_worker(qapp, tmp_path, monkeypatch):
@@ -293,56 +323,61 @@ def test_stale_finish_does_not_kill_new_download_worker(qapp, tmp_path, monkeypa
 
     host = _Host(tmp_path)
     dummy = QThread()
-    dummy.start()
-    host._thread = dummy
-    host._worker = QObject()
-    host._worker_busy = True
-    host._worker_epoch = 1
-
-    posted = threading.Event()
-
-    def from_worker():
-        host._finish_worker_later()
-        posted.set()
-
-    t = threading.Thread(target=from_worker)
-    t.start()
-    assert posted.wait(2)
-    t.join(2)
-    # Cleanup is queued; a new Download All is allowed (busy already false
-    # after Fetch All's UI, or `_run_worker` will reap the leftover thread).
-    host._worker_busy = False
-
-    novels = [_novel(1, object())]
-    host.multi.begin_fetch([novels[0]["url"]])
-    host.multi.set_row(0, "Book 1", 3, "Ready", novels[0])
-    host._set_downloading(True)
-    worker = MultiDownloadWorker(
-        host.session, novels, {"output_dir": str(tmp_path)}
-    )
-    assert host._bind_and_run(
-        worker,
-        (worker.progress, host._on_progress),
-        (worker.novel_status, host._on_multi_novel_status),
-    )
+    t = None
     try:
-        for _ in range(160):
+        dummy.start()
+        host._thread = dummy
+        host._worker = QObject()
+        host._worker_busy = True
+        host._worker_epoch = 1
+
+        posted = threading.Event()
+
+        def from_worker():
+            host._finish_worker_later()
+            posted.set()
+
+        t = threading.Thread(target=from_worker)
+        t.start()
+        assert posted.wait(2)
+        t.join(2)
+        # Cleanup is queued; a new Download All is allowed (busy already false
+        # after Fetch All's UI, or `_run_worker` will reap the leftover thread).
+        host._worker_busy = False
+
+        novels = [_novel(1, object())]
+        host.multi.begin_fetch([novels[0]["url"]])
+        host.multi.set_row(0, "Book 1", 3, "Ready", novels[0])
+        host._set_downloading(True)
+        worker = MultiDownloadWorker(
+            host.session, novels, {"output_dir": str(tmp_path)}
+        )
+        assert host._bind_and_run(
+            worker,
+            (worker.progress, host._on_progress),
+            (worker.novel_status, host._on_multi_novel_status),
+        )
+        try:
+            for _ in range(160):
+                qapp.processEvents()
+                if started.is_set() and host.got_progress:
+                    break
+                QThread.msleep(25)
             qapp.processEvents()
-            if started.is_set() and host.got_progress:
-                break
-            QThread.msleep(25)
-        qapp.processEvents()
-        assert started.is_set(), "download worker.run() never ran"
-        texts = [s for _f, s in host.got_progress if s]
-        assert any("Preparing" in s for s in texts)
-        assert host.progress.status.text() != "Starting download…"
-        assert host._thread is not None
-        assert host._thread.isRunning()
-        assert host._worker_busy is True
+            assert started.is_set(), "download worker.run() never ran"
+            texts = [s for _f, s in host.got_progress if s]
+            assert any("Preparing" in s for s in texts)
+            assert host.progress.status.text() != "Starting download…"
+            assert host._thread is not None
+            assert host._thread.isRunning()
+            assert host._worker_busy is True
+        finally:
+            release.set()
+            _pump(qapp, ticks=40)
     finally:
-        release.set()
-        _pump(qapp, ticks=40)
-        host._stop_thread(drain_pending_sync=False, wait_ms=2000)
+        if t is not None:
+            t.join(2)
+        _cleanup_host(qapp, host, extra_threads=(dummy,), wait_ms=2000)
 
 
 def test_multi_worker_streams_live_fetch_and_translate_status(
@@ -408,7 +443,7 @@ def test_multi_worker_streams_live_fetch_and_translate_status(
     finally:
         release.set()
         _pump(qapp, ticks=40)
-        host._stop_thread(drain_pending_sync=False, wait_ms=2000)
+        _cleanup_host(qapp, host, wait_ms=2000)
 
 
 def test_multi_footer_shows_translate_before_first_http(
@@ -470,4 +505,4 @@ def test_multi_footer_shows_translate_before_first_http(
     finally:
         release.set()
         _pump(qapp, ticks=40)
-        host._stop_thread(drain_pending_sync=False, wait_ms=2000)
+        _cleanup_host(qapp, host, wait_ms=2000)
