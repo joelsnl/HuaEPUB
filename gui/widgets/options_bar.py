@@ -31,8 +31,8 @@ class OptionsBar(QWidget):
         self.clean_cb.setChecked(bool(s.get("clean", True)))
         self.clean_cb.setToolTip(
             "Strip site ads and watermarks from chapter HTML. Learns repeating "
-            "junk from the first chapters of this book. Independent of Polish "
-            "English — does not start llama.cpp."
+            "junk from about a dozen chapters of this book (not just the first "
+            "two). Independent of Polish English — does not start llama.cpp."
         )
         self.translate_cb = QCheckBox("Translate to English")
         self.translate_cb.setChecked(bool(s.get("translate", True)))

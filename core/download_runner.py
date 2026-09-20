@@ -34,16 +34,45 @@ from core.utils import format_eta, safe_filename
 from core.security import safe_epub_basename
 
 
-def _learn_site_junk(cleaner, chapters, set_status=None) -> None:
-    """Repeating ads from the first chapters. Independent of Polish / llama.cpp."""
+def _learn_site_junk(cleaner, chapters, set_status=None, *, finalize: bool = False) -> None:
+    """Repeating ads from many chapters. Independent of Polish / llama.cpp."""
     if cleaner is None:
         return
     try:
         from core.ad_detect import learn_site_junk
 
-        learn_site_junk(cleaner, chapters, set_status=set_status)
+        learn_site_junk(
+            cleaner, chapters, set_status=set_status, finalize=finalize
+        )
     except Exception as exc:
         print(f"  Site-ad learning skipped: {exc}")
+
+
+def _junk_ready(cleaner) -> bool:
+    return cleaner is None or bool(getattr(cleaner, "_site_junk_learned", False))
+
+
+def _prefetch_ready_chapters(translator, cleaner, chapters, control=None) -> None:
+    """Queue translation prefetch only after ad learning has a real sample."""
+    if not _junk_ready(cleaner):
+        return
+    for chapter in chapters or []:
+        if getattr(chapter, "content", None):
+            _prefetch_chapter(translator, cleaner, chapter, control)
+
+
+def _learn_then_prefetch(
+    cleaner, chapters, translator, control, set_status, current=None
+) -> None:
+    was_ready = _junk_ready(cleaner)
+    _learn_site_junk(cleaner, chapters, set_status)
+    if not _junk_ready(cleaner):
+        return
+    if not was_ready:
+        _prefetch_ready_chapters(translator, cleaner, chapters, control)
+        return
+    if current is not None:
+        _prefetch_chapter(translator, cleaner, current, control)
 
 
 class DownloadCancelled(Exception):
@@ -207,30 +236,64 @@ def _chapter_note_for_slot(
     return ""
 
 
-def _planned_in_flight(translator) -> int:
-    """In-flight for the footer: live gate, else start cap, else _in_flight."""
+def _pass_request_bound(translator) -> int:
+    """How many unique GETs this pass can still send (0 if unknown)."""
     try:
+        unique = int(getattr(translator, "_unique_requests", 0) or 0)
+        if unique > 0:
+            return unique
+        return int(getattr(translator, "total", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _planned_in_flight(translator) -> int:
+    """In-flight for the footer: live gate, else this pass's planned GETs.
+
+    Never report the first-pass ceiling (200) as "in flight" on a 1–2
+    leftover retry. Cap by unique requests / pass size.
+    """
+    try:
+        bound = _pass_request_bound(translator)
         gate = getattr(translator, "_gtx", None)
         if gate is not None:
             cur = int(getattr(gate, "current", 0) or 0)
             if cur > 0:
-                return cur
+                return min(cur, bound) if bound > 0 else cur
             planned = int(getattr(translator, "_in_flight", 0) or 0)
             if planned > 0:
-                return planned
-            return int(getattr(gate, "limit", 0) or GtxThrottle.START_LIMIT)
-        return int(getattr(translator, "_in_flight", 0) or 0)
+                return min(planned, bound) if bound > 0 else planned
+            if bound > 0:
+                return min(int(getattr(gate, "limit", 0) or 0), bound)
+            return 0
+        planned = int(getattr(translator, "_in_flight", 0) or 0)
+        if bound > 0 and planned > 0:
+            return min(planned, bound)
+        return planned
     except Exception:
         return 0
 
 
 def _zero_n_in_flight(translator) -> int:
-    """8 in flight for unofficial Google/Microsoft before the first GET returns."""
+    """Planned in-flight before the first GET of a pass returns."""
+    planned = _planned_in_flight(translator)
+    if planned > 0:
+        return planned
+    bound = _pass_request_bound(translator)
     backend = (getattr(translator, "backend", "") or "").strip().lower()
+    if bound > 0:
+        if backend in THROTTLED_BACKENDS:
+            gate = getattr(translator, "_gtx", None)
+            cap = (
+                int(getattr(gate, "limit", 0) or GtxThrottle.START_LIMIT)
+                if gate is not None
+                else bound
+            )
+            return max(1, min(cap, bound))
+        return bound
     if backend in THROTTLED_BACKENDS:
-        planned = _planned_in_flight(translator)
-        return planned if planned > 0 else GtxThrottle.START_LIMIT
-    return _planned_in_flight(translator)
+        return GtxThrottle.START_LIMIT
+    return 0
 
 
 def _translation_status_line(
@@ -525,8 +588,9 @@ def download_chapters_with_cache(
                     f"Cached {cached_done}/{total}{extra}{eta_text}",
                 )
                 time.sleep(0)
-            _learn_site_junk(cleaner, chapters, set_status)
-            _prefetch_chapter(translator, cleaner, chapter, control)
+            _learn_then_prefetch(
+                cleaner, chapters, translator, control, set_status, chapter
+            )
             control.persist_job()
             continue
 
@@ -545,8 +609,9 @@ def download_chapters_with_cache(
             chapter.content = parser.get_chapter_content(chapter)
             if use_cache:
                 cache.put_chapter(book_key, chapter.url, chapter.title, chapter.content)
-            _learn_site_junk(cleaner, chapters, set_status)
-            _prefetch_chapter(translator, cleaner, chapter, control)
+            _learn_then_prefetch(
+                cleaner, chapters, translator, control, set_status, chapter
+            )
         except Exception as e:
             print(f"  Chapter [{idx + 1}/{total}] failed: {chapter.title}: {e}")
             failed.append(chapter)
@@ -571,14 +636,17 @@ def download_chapters_with_cache(
                 chapter.content = parser.get_chapter_content(chapter)
                 if use_cache:
                     cache.put_chapter(book_key, chapter.url, chapter.title, chapter.content)
-                _learn_site_junk(cleaner, chapters, set_status)
-                _prefetch_chapter(translator, cleaner, chapter, control)
+                _learn_then_prefetch(
+                    cleaner, chapters, translator, control, set_status, chapter
+                )
                 print(f"  Retry succeeded: {chapter.title}")
             except Exception as e:
                 print(f"  Retry failed: {chapter.title}: {e}")
                 chapter.content = "<p>[Chapter could not be downloaded from the source site.]</p>"
                 still_failed.append(chapter.title)
 
+    _learn_site_junk(cleaner, chapters, set_status, finalize=True)
+    _prefetch_ready_chapters(translator, cleaner, chapters, control)
     return still_failed
 
 
@@ -667,6 +735,7 @@ def translate_then_build(
         set_status=(
             (lambda s: progress_callback(0, total_steps, s)) if progress_callback else None
         ),
+        finalize=True,
     )
 
     all_texts: List[Tuple[str, int, str]] = []
@@ -702,10 +771,12 @@ def translate_then_build(
             )
             time.sleep(0)
         cleaned = getattr(chapter, "cleaned_html", "") or ""
-        if cleaned:
-            chapter.content = cleaned
-        elif builder.cleaner:
+        if builder.cleaner:
+            # Re-clean from the original HTML so literals learned after
+            # prefetch (later chapters / spread sample) still get stripped.
             chapter.content = builder.cleaner.clean_html(chapter.content)
+        elif cleaned:
+            chapter.content = cleaned
         for text in builder._extract_text_segments(chapter.content):
             if is_chinese(text) and len(text.strip()) > 0:
                 all_texts.append(("content", idx, text))
@@ -938,6 +1009,7 @@ def translate_then_build(
     return builder.build(
         novel_info, chapters, output_path, progress_callback,
         skip_html_clean=True,
+        language="en",
     )
 
 
@@ -1072,6 +1144,9 @@ def _prefetch_chapter(translator, cleaner, chapter, control=None) -> None:
     html = getattr(chapter, "content", "") if chapter is not None else ""
     if translator is None or not html or not callable(prefetch):
         return
+    if getattr(chapter, "_prefetch_queued", False):
+        return
+    chapter._prefetch_queued = True
 
     def on_applied(ch):
         if control is not None:
@@ -1101,7 +1176,7 @@ def speculative_prefetch_cached_chapters(
     """
     if translator is None or cache is None or not chapters:
         return 0
-    warmed = 0
+    warmed_chapters = []
     for chapter in chapters:
         html = ""
         try:
@@ -1111,8 +1186,11 @@ def speculative_prefetch_cached_chapters(
         if not html:
             continue
         chapter.content = html
+        warmed_chapters.append(chapter)
+    _learn_site_junk(cleaner, warmed_chapters, finalize=True)
+    for chapter in warmed_chapters:
         _prefetch_chapter(translator, cleaner, chapter)
-        warmed += 1
+    warmed = len(warmed_chapters)
     wait = getattr(translator, "wait_prefetch", None)
     if callable(wait):
         try:
@@ -1155,7 +1233,7 @@ def build_epub(
         set_status("Writing EPUB…")
     if cleaner is None:
         cleaner = ContentCleaner() if clean else None
-    _learn_site_junk(cleaner, chapters, set_status=set_status)
+    _learn_site_junk(cleaner, chapters, set_status=set_status, finalize=True)
     if translate:
         translator = translator or make_translator(
             cache=cache,

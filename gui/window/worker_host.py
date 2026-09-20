@@ -200,6 +200,25 @@ class WorkerHostMixin:
             return False
         return isinstance(worker, (DriveSyncWorker, DriveConnectWorker))
 
+    def _drive_sync_running(self) -> bool:
+        """True while a DriveSyncWorker QThread is still in flight."""
+        try:
+            from gui.workers.drive_workers import DriveSyncWorker
+        except Exception:
+            return False
+        worker = getattr(self, "_worker", None)
+        if not isinstance(worker, DriveSyncWorker):
+            return False
+        thread = getattr(self, "_thread", None)
+        try:
+            return bool(
+                getattr(self, "_worker_busy", False)
+                and thread is not None
+                and thread.isRunning()
+            )
+        except RuntimeError:
+            return False
+
     def _is_check_running(self) -> bool:
         thread = getattr(self, "_check_thread", None)
         if not getattr(self, "_check_busy", False) or thread is None:

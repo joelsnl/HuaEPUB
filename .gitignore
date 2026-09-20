@@ -16,6 +16,9 @@ dist/
 .pytest_cache/
 .pytest_deps/
 
+# Local Cursor canvas copies (live canvases stay under ~/.cursor/projects)
+canvases/
+
 # Runtime-generated files
 .update_backup/
 updater_settings.json

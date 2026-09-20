@@ -65,6 +65,8 @@ class _DriveHost(WorkerHostMixin, DriveActionsMixin, QMainWindow):
         self._worker_epoch = 0
         self._pending_drive_sync = False
         self._drive_sync_silent = True
+        self._force_close = False
+        self._close_sync_dialog = None
         self.session = _Session(tmp_path)
         self.library = LibraryPage(self.session)
         self.progress = ProgressPanel()
@@ -268,3 +270,61 @@ def test_stop_thread_from_qthread_starts_drive_on_gui(qapp, tmp_path):
         _quit_qthread(thread)
         qInstallMessageHandler(prev)
         _cleanup_host(qapp, host, extra_threads=(thread,))
+
+
+def test_drive_sync_running_requires_live_worker(qapp, tmp_path):
+    from gui.workers.drive_workers import DriveSyncWorker
+
+    host = _DriveHost(tmp_path)
+    try:
+        assert host._drive_sync_running() is False
+        host._worker = DriveSyncWorker(host.session)
+        host._worker_busy = True
+        host._thread = QThread()
+        host._thread.start()
+        assert host._thread.isRunning()
+        assert host._drive_sync_running() is True
+    finally:
+        _cleanup_host(qapp, host)
+
+
+def test_drive_progress_updates_close_dialog(qapp, tmp_path):
+    from gui.dialogs import CloseWhileSyncingDialog
+
+    host = _DriveHost(tmp_path)
+    dlg = CloseWhileSyncingDialog(host, "Syncing with Google Drive…")
+    host._close_sync_dialog = dlg
+    try:
+        host._on_drive_sync_progress("Uploading EPUB 4/9: book.epub")
+        assert "4/9" in dlg.status.text()
+        assert dlg.bar.value() == 4
+        assert dlg.bar.maximum() == 9
+        host._on_drive_sync_finished("Synced 3 novel(s)", "")
+        assert dlg._done
+        assert host._pending_drive_sync is False
+    finally:
+        host._close_sync_dialog = None
+        _cleanup_host(qapp, host)
+
+
+def test_drive_sync_worker_honors_cancel_before_network(qapp):
+    from gui.workers.drive_workers import DRIVE_SYNC_CANCELLED, DriveSyncWorker
+
+    class _Drive:
+        def is_connected(self):
+            return True
+
+        def inspect_sync_folder(self):
+            raise AssertionError("cancelled sync must not inspect Drive")
+
+    class _Session:
+        def __init__(self):
+            self.drive_sync = _Drive()
+            self.settings = {"drive_sync_library": True, "drive_sync_epubs": True}
+
+    worker = DriveSyncWorker(_Session())
+    got = []
+    worker.finished.connect(lambda summary, err: got.append((summary, err)))
+    worker.request_cancel()
+    worker.run()
+    assert got == [(DRIVE_SYNC_CANCELLED, "")]

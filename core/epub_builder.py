@@ -28,6 +28,16 @@ from ebooklib import epub
 
 from core.parser import Chapter, NovelInfo, create_http_session
 from core.cleaner import ContentCleaner, count_chinese_chars
+from core.read_aloud import (
+    ACTIVE_CLASS,
+    NARRATOR_LABEL,
+    build_smil,
+    epub_language_code,
+    estimate_narration_seconds,
+    mark_narration_fragments,
+    overlay_css,
+    smil_clock,
+)
 
 # Shared session for image downloads (curl_cffi impersonation when available).
 # Lazy: importing this module must not leave an impersonated session open
@@ -86,6 +96,7 @@ class EPUBBuilder:
         output_path: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         skip_html_clean: bool = False,
+        language: Optional[str] = None,
     ) -> str:
         """
         Build an EPUB file from chapters.
@@ -97,6 +108,8 @@ class EPUBBuilder:
             progress_callback: Optional callback(current, total, status)
             skip_html_clean: If True, do not run ContentCleaner again
                 (translated builds already cleaned before applying translations).
+            language: Override BCP-47 language. Default: English after
+                translation, otherwise novel_info.language (for Play Books TTS).
             
         Returns:
             Path to the created EPUB file
@@ -106,9 +119,15 @@ class EPUBBuilder:
         if not valid_chapters:
             raise ValueError("No chapters with content to build EPUB")
         
+        lang = epub_language_code(
+            language or novel_info.language,
+            translated=language is None and skip_html_clean,
+        )
+        
         print(f"Building EPUB with {len(valid_chapters)} chapters (from {len(chapters)} total)")
         print(f"  Title: {novel_info.title}")
         print(f"  Author: {novel_info.author}")
+        print(f"  Language: {lang} (Play Books Read Aloud)")
         
         book = epub.EpubBook()
         
@@ -117,7 +136,7 @@ class EPUBBuilder:
         id_source = novel_info.source_url or novel_info.title
         book.set_identifier(f"novel-{hashlib.md5(id_source.encode('utf-8')).hexdigest()[:16]}")
         book.set_title(novel_info.title)
-        book.set_language('en')  # Set to English since we're translating
+        book.set_language(lang)
         book.add_author(novel_info.author)
         
         if novel_info.description:
@@ -128,6 +147,20 @@ class EPUBBuilder:
         
         for tag in novel_info.tags:
             book.add_metadata('DC', 'subject', tag)
+
+        # Flowing-text + TTS overlays so Google Play Books can Read Aloud.
+        book.add_metadata(None, "meta", "reflowable", {"property": "rendition:layout"})
+        book.add_metadata(None, "meta", ACTIVE_CLASS, {"property": "media:active-class"})
+        book.add_metadata(None, "meta", NARRATOR_LABEL, {"property": "media:narrator"})
+        book.add_metadata(None, "meta", "textual", {"property": "schema:accessMode"})
+        book.add_metadata(None, "meta", "auditory", {"property": "schema:accessMode"})
+        book.add_metadata(
+            None, "meta", "readingOrder", {"property": "schema:accessibilityFeature"}
+        )
+        book.add_metadata(
+            None, "meta", "synchronizedAudioText",
+            {"property": "schema:accessibilityFeature"},
+        )
         
         # Add cover image if available
         if novel_info.cover_url:
@@ -153,6 +186,7 @@ class EPUBBuilder:
         # Create chapter items
         epub_chapters = []
         spine = ['nav']
+        overlay_durations = []
         
         total = len(valid_chapters)
         for idx, chapter in enumerate(valid_chapters):
@@ -168,22 +202,38 @@ class EPUBBuilder:
             if not content or len(content.strip()) < 10:
                 print(f"Warning: Chapter {idx} '{chapter.title}' has empty content, using placeholder")
                 content = f"<p>Chapter content not available.</p>"
-            
-            # Create EPUB chapter
+
+            id_prefix = f"s{idx:04d}"
+            marked, fragments = mark_narration_fragments(content, id_prefix)
             chapter_filename = f"chapter_{idx:04d}.xhtml"
+            overlay_id = f"overlay_{idx:04d}"
+            spoken = " ".join(text for _sid, text in fragments)
+            duration = smil_clock(estimate_narration_seconds(spoken or marked, lang))
+            
             epub_chapter = epub.EpubHtml(
                 title=chapter.title,
                 file_name=chapter_filename,
-                lang='en'  # Set to English
+                lang=lang,
+                media_overlay=overlay_id if fragments else None,
             )
-            
-            # Wrap content in proper XHTML
-            xhtml_content = self._wrap_xhtml(chapter.title, content)
+            epub_chapter.add_link(
+                href="style/nav.css", rel="stylesheet", type="text/css"
+            )
+            xhtml_content = self._wrap_xhtml(chapter.title, marked, lang=lang)
             epub_chapter.content = xhtml_content.encode('utf-8')
             
             book.add_item(epub_chapter)
             epub_chapters.append(epub_chapter)
             spine.append(epub_chapter)
+
+            if fragments:
+                smil_item = epub.EpubSMIL(
+                    uid=overlay_id,
+                    file_name=f"chapter_{idx:04d}.smil",
+                    content=build_smil(chapter_filename, fragments).encode("utf-8"),
+                )
+                book.add_item(smil_item)
+                overlay_durations.append((overlay_id, duration, spoken or marked))
         
         # Validate we have chapters
         if not epub_chapters:
@@ -206,6 +256,22 @@ class EPUBBuilder:
             content=css.encode('utf-8')
         )
         book.add_item(nav_css)
+
+        if overlay_durations:
+            total_seconds = sum(
+                estimate_narration_seconds(text, lang)
+                for _oid, _clock, text in overlay_durations
+            )
+            book.add_metadata(
+                None, "meta", smil_clock(total_seconds),
+                {"property": "media:duration"},
+            )
+            for overlay_id, duration, _text in overlay_durations:
+                book.add_metadata(
+                    None, "meta", duration,
+                    {"property": "media:duration", "refines": f"#{overlay_id}"},
+                )
+            print(f"  Read Aloud overlays: {len(overlay_durations)} chapters")
         
         # Write EPUB
         if progress_callback:
@@ -282,14 +348,15 @@ class EPUBBuilder:
             print(f"  Image download error: {e}")
             return None
     
-    def _wrap_xhtml(self, title: str, content: str) -> str:
+    def _wrap_xhtml(self, title: str, content: str, lang: str = "en") -> str:
         """Wrap content in proper XHTML structure."""
         # Escape title for XML
         title = title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        lang = (lang or "en").replace('&', '&amp;').replace('"', '&quot;')
         
         return f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="{lang}" xml:lang="{lang}">
 <head>
     <meta charset="UTF-8"/>
     <title>{title}</title>
@@ -333,7 +400,7 @@ p {
     font-weight: bold;
     margin-bottom: 1em;
 }
-'''
+''' + overlay_css()
 
 
 class TranslatedEPUBBuilder(EPUBBuilder):

@@ -232,3 +232,186 @@ def test_chapters_from_toc_rows():
     assert len(ch) == 1
     assert ch[0].url == "https://x/1"
     assert ch[0].title == "One"
+
+
+def test_check_paginated_newest_first_stops_at_cursor(tmp_path):
+    from bs4 import BeautifulSoup
+    from parsers.config import SiteConfigParser
+
+    fetched = []
+    spec = {
+        "name": "demo.test",
+        "domains": ["demo.test"],
+        "chapter_list": "ul.toc a",
+        "chapter_list_next": "a.next-list",
+        "reverse": True,
+        "content": ["div.body"],
+    }
+    parser = SiteConfigParser(spec=spec)
+    parser.request_delay = 0
+    pages = {
+        "https://demo.test/book": (
+            "<ul class='toc'>"
+            '<a href="/c/5">5</a><a href="/c/4">4</a><a href="/c/3">3</a>'
+            "</ul><a class='next-list' href='/book?p=2'>next</a>"
+        ),
+        "https://demo.test/book?p=2": (
+            "<ul class='toc'>"
+            '<a href="/c/2">2</a><a href="/c/1">1</a>'
+            "</ul>"
+        ),
+    }
+
+    def fetch_page(url, retries=None):
+        fetched.append(url)
+        return BeautifulSoup(pages[url], "lxml")
+
+    parser.fetch_page = fetch_page
+    cache = NovelCache(tmp_path / "cache.db")
+    pool = HostSessionPool(lambda _u: parser)
+    entry = LibraryEntry(
+        source_url="https://demo.test/book",
+        title="t",
+        chapter_count=3,
+        last_chapter_url="https://demo.test/c/3",
+    )
+    try:
+        st = check_library_entry(entry, cache, pool, force=True)
+        assert fetched == ["https://demo.test/book"]
+        assert "https://demo.test/book?p=2" not in fetched
+        assert st["state"] == "update"
+        assert st["new_count"] == 2
+        # Partial TOC must not overwrite the reader snapshot.
+        assert cache.get_chapter_list("https://demo.test/book") is None
+
+        fetched.clear()
+        parser.get_chapter_list("https://demo.test/book")
+        assert "https://demo.test/book?p=2" in fetched
+    finally:
+        cache.close()
+
+
+def test_check_skips_info_page_when_chapter_list_url(tmp_path):
+    from bs4 import BeautifulSoup
+    from parsers.config import SiteConfigParser
+
+    fetched = []
+    spec = {
+        "name": "demo.test",
+        "domains": ["demo.test"],
+        "visit_toc_first": True,
+        "chapter_list_url": "https://demo.test/ajax/{book_id}.html",
+        "book_id": "/book/(\\d+)",
+        "chapter_list": "ul li a",
+        "chapter_href_contains": "/c/",
+        "content": ["div.body"],
+    }
+    parser = SiteConfigParser(spec=spec)
+    parser.request_delay = 0
+    ajax = (
+        "<ul>"
+        '<li><a href="/c/1">1</a></li>'
+        '<li><a href="/c/2">2</a></li>'
+        '<li><a href="/c/3">3</a></li>'
+        "</ul>"
+    )
+
+    def fetch_html(url, retries=None):
+        fetched.append(url)
+        return ajax if "ajax" in url else "<html>info</html>"
+
+    def fetch_page(url, retries=None):
+        fetched.append(url)
+        return BeautifulSoup("<html>info</html>", "lxml")
+
+    parser.fetch_html = fetch_html
+    parser.fetch_page = fetch_page
+    cache = NovelCache(tmp_path / "cache.db")
+    pool = HostSessionPool(lambda _u: parser)
+    entry = LibraryEntry(
+        source_url="https://demo.test/book/9",
+        title="t",
+        chapter_count=2,
+        last_chapter_url="https://demo.test/c/2",
+    )
+    try:
+        st = check_library_entry(entry, cache, pool, force=True)
+        assert st["state"] == "update"
+        assert st["new_count"] == 1
+        assert fetched == ["https://demo.test/ajax/9.html"]
+
+        fetched.clear()
+        parser.get_chapter_list("https://demo.test/book/9")
+        assert "https://demo.test/book/9" in fetched
+        assert "https://demo.test/ajax/9.html" in fetched
+    finally:
+        cache.close()
+
+
+def test_check_oldest_first_pagination_still_walks(tmp_path):
+    from bs4 import BeautifulSoup
+    from parsers.config import SiteConfigParser
+
+    fetched = []
+    spec = {
+        "name": "demo.test",
+        "domains": ["demo.test"],
+        "chapter_list": "ul.toc a",
+        "chapter_list_next": "a.next-list",
+        "content": ["div.body"],
+    }
+    parser = SiteConfigParser(spec=spec)
+    parser.request_delay = 0
+    pages = {
+        "https://demo.test/book": (
+            "<ul class='toc'>"
+            '<a href="/c/1">1</a><a href="/c/2">2</a>'
+            "</ul><a class='next-list' href='/book?p=2'>next</a>"
+        ),
+        "https://demo.test/book?p=2": (
+            "<ul class='toc'>"
+            '<a href="/c/3">3</a>'
+            "</ul>"
+        ),
+    }
+
+    def fetch_page(url, retries=None):
+        fetched.append(url)
+        return BeautifulSoup(pages[url], "lxml")
+
+    parser.fetch_page = fetch_page
+    cache = NovelCache(tmp_path / "cache.db")
+    pool = HostSessionPool(lambda _u: parser)
+    entry = LibraryEntry(
+        source_url="https://demo.test/book",
+        title="t",
+        chapter_count=2,
+        last_chapter_url="https://demo.test/c/2",
+    )
+    try:
+        st = check_library_entry(entry, cache, pool, force=True)
+        assert "https://demo.test/book?p=2" in fetched
+        assert st["state"] == "update"
+        assert st["new_count"] == 1
+    finally:
+        cache.close()
+
+
+def test_check_sets_short_timeout_on_parser(tmp_path):
+    from core.library_check import CHECK_RETRIES, CHECK_TIMEOUT
+
+    cache = NovelCache(tmp_path / "cache.db")
+    rec = _Rec([])
+    pool = HostSessionPool(lambda _u: rec)
+    try:
+        check_library_entry(
+            _entry("https://a.test/a", count=2, last="https://a.test/a/c2"),
+            cache,
+            pool,
+            force=True,
+        )
+        assert rec.request_timeout == CHECK_TIMEOUT
+        assert rec.fetch_retries == CHECK_RETRIES
+        assert rec._check_fetch is True
+    finally:
+        cache.close()

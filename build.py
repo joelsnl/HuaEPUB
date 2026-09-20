@@ -121,6 +121,12 @@ def build():
         # Main script
         str(script_dir / 'app.py'),
     ]
+    icon_ico = script_dir / "gui" / "assets" / "huaepub.ico"
+    icon_png = script_dir / "gui" / "assets" / "huaepub.png"
+    if sys.platform == "win32" and icon_ico.is_file():
+        args.insert(3, f"--icon={icon_ico}")
+    elif icon_png.is_file():
+        args.insert(3, f"--icon={icon_png}")
     
     print("Building with PyInstaller...")
     print(f"Command: {' '.join(args)}")

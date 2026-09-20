@@ -24,7 +24,10 @@ from core.parser import Chapter, get_parser_for_url
 # Skip a network TOC fetch when we just checked this novel (seconds, not hours).
 TOC_FRESH_SECONDS = 90.0
 # Cap parallel host groups so we do not open dozens of sessions at once.
-MAX_HOST_WORKERS = 4
+MAX_HOST_WORKERS = 8
+# Library Check can fail closed faster than a chapter download.
+CHECK_TIMEOUT = (4, 10)
+CHECK_RETRIES = 2
 
 
 def host_key(url: str) -> str:
@@ -123,9 +126,23 @@ def cached_toc_if_fresh(
     return chapters or None
 
 
-def fetch_toc_chapters(parser, url: str) -> List[Chapter]:
+def fetch_toc_chapters(
+    parser,
+    url: str,
+    *,
+    until_url: str = "",
+    until_count: int = 0,
+) -> List[Chapter]:
     """TOC only — never get_novel_info / fetch_info_and_chapters / bodies."""
-    chapters = parser.get_chapter_list(url)
+    if hasattr(parser, "_toc_incomplete"):
+        parser._toc_incomplete = False
+    probe = getattr(parser, "get_chapter_list_for_check", None)
+    if callable(probe):
+        chapters = probe(
+            url, until_url=until_url or "", until_count=int(until_count or 0)
+        )
+    else:
+        chapters = parser.get_chapter_list(url)
     if not chapters:
         raise ValueError("No chapters found")
     return list(chapters)
@@ -140,14 +157,23 @@ class HostSessionPool:
         *,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        check_mode: bool = True,
     ):
         self._get_parser = get_parser
         self._sleep = sleep
         self._clock = clock
+        self._check_mode = bool(check_mode)
         self._lock = threading.Lock()
         self._parsers: Dict[str, Any] = {}
         self._host_locks: Dict[str, threading.Lock] = {}
         self._next_ok: Dict[str, float] = {}
+
+    def _configure_parser(self, parser) -> None:
+        if not self._check_mode or parser is None:
+            return
+        parser.request_timeout = CHECK_TIMEOUT
+        parser.fetch_retries = CHECK_RETRIES
+        parser._check_fetch = True
 
     def host_lock(self, host: str) -> threading.Lock:
         with self._lock:
@@ -163,6 +189,7 @@ class HostSessionPool:
             parser = self._parsers.get(host)
             if parser is None:
                 parser = self._get_parser(url)
+                self._configure_parser(parser)
                 self._parsers[host] = parser
             return parser
 
@@ -211,12 +238,18 @@ def check_library_entry(
             return error_status("Unsupported site")
         pool.wait_turn(url, parser)
         try:
-            chapters = fetch_toc_chapters(parser, url)
+            chapters = fetch_toc_chapters(
+                parser,
+                url,
+                until_url=entry.last_chapter_url,
+                until_count=entry.chapter_count,
+            )
         except Exception as e:
             pool.mark_request(url, parser)
             return error_status(str(e))
         pool.mark_request(url, parser)
-    if cache is not None:
+    incomplete = bool(getattr(parser, "_toc_incomplete", False))
+    if cache is not None and not incomplete:
         try:
             cache.put_chapter_list(url, chapters)
         except Exception:
@@ -249,9 +282,10 @@ def run_library_check(
     if total == 0:
         return 0, 0
 
-    pool = HostSessionPool(get_parser, sleep=sleep, clock=clock)
+    pool = HostSessionPool(get_parser, sleep=sleep, clock=clock, check_mode=True)
     progress_lock = threading.Lock()
     started = 0
+    t0 = time.perf_counter()
     with_updates = 0
 
     def emit_progress(entry: LibraryEntry) -> None:
@@ -281,6 +315,10 @@ def run_library_check(
 
     groups = list(by_host.values())
     workers = max(1, min(int(max_workers or 1), len(groups)))
+    print(
+        f"Library check: {total} novel(s) across {len(groups)} host(s) "
+        f"({workers} parallel host group(s))"
+    )
 
     def run_group(group: List[LibraryEntry]) -> List[dict]:
         return [check_one(entry)[1] for entry in group]
@@ -297,4 +335,9 @@ def run_library_check(
                 results.extend(fut.result())
 
     with_updates = sum(1 for st in results if st.get("state") == "update")
+    elapsed = time.perf_counter() - t0
+    print(
+        f"Library check done: {with_updates}/{total} have new chapters "
+        f"({elapsed:.1f}s)"
+    )
     return with_updates, total

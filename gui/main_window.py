@@ -37,10 +37,11 @@ from core.updater import (
 )
 from core.utils import extract_urls, looks_like_url, sanitize_runtime_env
 
+from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
-    ask_accept_glossary_proposals, ask_yes_no, ask_yes_not_now_dont_ask,
-    pick_recent_download, show_cache_dialog, show_error, show_info,
-    show_info_with_preview, show_rich_info, show_warning,
+    CloseWhileSyncingDialog, ask_accept_glossary_proposals, ask_yes_no,
+    ask_yes_not_now_dont_ask, pick_recent_download, show_cache_dialog,
+    show_error, show_info, show_info_with_preview, show_rich_info, show_warning,
 )
 from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
@@ -79,6 +80,7 @@ class MainWindow(
         self.session = AppSession()
         setup_logging(self.session.data_dir)
         self.setWindowTitle(f"{APP_TITLE} v{get_current_version()}")
+        apply_app_icon(QApplication.instance(), self)
         self.resize(960, 720)
         self.setMinimumSize(800, 600)
 
@@ -92,6 +94,8 @@ class MainWindow(
         self._pending_drive_sync = False
         self._drive_sync_silent = True
         self._exiting_for_update = False
+        self._force_close = False
+        self._close_sync_dialog = None
         self._app_update_checking = False
         self._update_check_notify = False
         self._last_app_update_check = None
@@ -429,6 +433,33 @@ class MainWindow(
         save_settings(self.session.settings)
 
     def closeEvent(self, event):
+        update_exit = bool(getattr(self, "_exiting_for_update", False))
+        force_close = bool(getattr(self, "_force_close", False))
+        if (
+            not force_close
+            and not update_exit
+            and self._drive_sync_running()
+        ):
+            event.ignore()
+            if getattr(self, "_close_sync_dialog", None) is not None:
+                return
+            choice = self._confirm_close_while_syncing()
+            if choice == CloseWhileSyncingDialog.STAY:
+                return
+            self._pending_drive_sync = False
+            self._force_close = True
+            if choice == CloseWhileSyncingDialog.ABORT:
+                worker = self._worker
+                if worker is not None and hasattr(worker, "request_cancel"):
+                    try:
+                        worker.request_cancel()
+                    except Exception:
+                        pass
+            self.close()
+            return
+        self._finalize_close(event)
+
+    def _finalize_close(self, event):
         self._save_reader_position()
         self._persist_settings()
         self._save_window_geometry()
@@ -1037,6 +1068,7 @@ class MainWindow(
 
     def _about(self):
         version = get_current_version()
+        logo = load_app_pixmap(64)
         show_rich_info(
             self,
             f"About {APP_TITLE}",
@@ -1059,7 +1091,8 @@ class MainWindow(
             "<a href='https://github.com/dteviot/WebToEpub'>WebToEpub</a> "
             "(dteviot), which this project started from, and by fixTranslate.py.<br>"
             "Not affiliated with novel sites or Google."
-            "</p>"
+            "</p>",
+            icon_pixmap=None if logo.isNull() else logo,
         )
 
     def _auto_check_updates(self):

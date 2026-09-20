@@ -1,9 +1,12 @@
 # Author: joelsnl and Anthropic Claude
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
+
+DRIVE_SYNC_CANCELLED = "Drive sync cancelled"
 
 
 class DriveConnectWorker(QObject):
@@ -29,16 +32,29 @@ class DriveSyncWorker(QObject):
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
+        self._cancel = threading.Event()
+
+    def request_cancel(self) -> None:
+        self._cancel.set()
+
+    def _cancelled(self) -> bool:
+        return self._cancel.is_set()
 
     @Slot()
     def run(self):
         try:
             ds = self.session.drive_sync
+            if self._cancelled():
+                self.finished.emit(DRIVE_SYNC_CANCELLED, "")
+                return
             if not ds.is_connected():
                 self.progress.emit("Restoring Drive session…")
                 if not ds.try_restore_session():
                     self.finished.emit("", "Not connected")
                     return
+            if self._cancelled():
+                self.finished.emit(DRIVE_SYNC_CANCELLED, "")
+                return
             summary_parts = []
             novel_count = 0
             target = ds.inspect_sync_folder()
@@ -47,11 +63,17 @@ class DriveSyncWorker(QObject):
                 self.finished.emit("", f"Drive folder not usable: {target['error']}")
                 return
 
+            if self._cancelled():
+                self.finished.emit(DRIVE_SYNC_CANCELLED, "")
+                return
             if self.session.settings.get("drive_sync_library", True):
                 self.progress.emit(f"Syncing library.json in “{folder_name}”…")
                 merged = ds.sync_library_with_store(self.session.library_store)
                 novel_count = len(merged.library) if merged else 0
                 summary_parts.append(f"library ({novel_count} novel(s))")
+            if self._cancelled():
+                self.finished.emit(DRIVE_SYNC_CANCELLED, "")
+                return
             if self.session.settings.get("drive_sync_epubs", True):
                 self.progress.emit("Listing remote EPUBs…")
                 from core.drive_sync import local_epub_needs_push
@@ -102,6 +124,9 @@ class DriveSyncWorker(QObject):
                     if local_epub_needs_push(Path(path), info):
                         pending.append((path, name, info is not None))
                 for i, (path, name, is_update) in enumerate(pending):
+                    if self._cancelled():
+                        self.finished.emit(DRIVE_SYNC_CANCELLED, "")
+                        return
                     action = "Updating" if is_update else "Uploading"
                     self.progress.emit(
                         f"{action} EPUB {i + 1}/{len(pending)}: {name[:40]}"

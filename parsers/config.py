@@ -312,14 +312,59 @@ class SiteConfigParser(GenericParser):
             soup = self.fetch_page(url)
         return self._load_chapter_list(url, soup)
 
-    def _load_chapter_list(self, url: str, soup: Optional[BeautifulSoup]) -> List[Chapter]:
+    def get_chapter_list_for_check(
+        self,
+        url: str,
+        *,
+        until_url: str = "",
+        until_count: int = 0,
+    ) -> List[Chapter]:
+        """
+        TOC for Library Check: skip the info page when a chapter_list_url
+        exists; stop a newest-first paginated TOC once ``until_url`` is seen.
+        Update/download still use get_chapter_list (full walk).
+        """
+        del until_count  # count fallback stays in new_chapters_since
         self._ensure_spec(url)
         spec = self.spec
-        if soup is None:
-            soup = self.fetch_page(url)
+        skip_info = bool(spec.get("chapter_list_url"))
+        stop_at = (until_url or "").strip() if spec.get("reverse") else ""
+        soup = None
+        if not skip_info:
+            if (
+                spec.get("visit_toc_first")
+                or spec.get("toc_link")
+                or not spec.get("chapter_list_url")
+            ):
+                soup = self.fetch_page(url)
+        return self._load_chapter_list(
+            url, soup, stop_at_url=stop_at, skip_info_page=skip_info
+        )
 
-        toc_sel = spec.get("toc_link")
-        if toc_sel:
+    def _load_chapter_list(
+        self,
+        url: str,
+        soup: Optional[BeautifulSoup],
+        *,
+        stop_at_url: str = "",
+        skip_info_page: bool = False,
+    ) -> List[Chapter]:
+        self._ensure_spec(url)
+        spec = self.spec
+        self._toc_incomplete = False
+        list_url = spec.get("chapter_list_url") or ""
+        toc_sel = spec.get("toc_link") if soup is not None else None
+
+        if skip_info_page and list_url:
+            # Same-origin Referer without a GET of the (often huge) info page.
+            if url:
+                self._referer = url
+            toc_sel = None
+        elif soup is None:
+            soup = self.fetch_page(url)
+            toc_sel = spec.get("toc_link")
+
+        if toc_sel and soup is not None:
             a = self._first(soup, toc_sel)
             href = a.get("href") if a else None
             if href:
@@ -327,7 +372,6 @@ class SiteConfigParser(GenericParser):
                 soup = self.fetch_page(toc_url)
                 url = toc_url
 
-        list_url = spec.get("chapter_list_url") or ""
         book_id = self._book_id(url)
         if list_url:
             if "{book_id}" in list_url:
@@ -336,8 +380,11 @@ class SiteConfigParser(GenericParser):
                 list_url = list_url.format(book_id=book_id)
             html = self.fetch_html(list_url)
             soup = BeautifulSoup(html, "lxml")
+        elif soup is None:
+            soup = self.fetch_page(url)
 
         if spec.get("chapter_list_next"):
+            early: list = []
             chapters = walk_list_pages(
                 first_soup=soup,
                 first_url=url,
@@ -347,7 +394,11 @@ class SiteConfigParser(GenericParser):
                 ),
                 fetch_page=self.fetch_page,
                 delay=self._page_delay,
+                stop_at_url=stop_at_url,
+                early_stop_flag=early,
             )
+            if early:
+                self._toc_incomplete = True
         else:
             chapters = self.parse_chapter_list(soup, url)
         if not chapters:

@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.14.1**
+**Current version: 2.15.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
@@ -17,13 +17,13 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
 - **Library mode** — cover-grid or list shelf, track novels, multi-select for batch update/remove/EPUB download, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
 - **Pause / Resume** — pause a long download, or close the app / shut down the PC and resume later from a banner on startup (local only; not synced to Drive)
-- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a Library Update / Update All, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab). Single / Multi do not auto-sync.
-- **Remove watermarks** and ads automatically
+- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a Library Update / Update All, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab). Single / Multi do not auto-sync. Closing the app while a sync is running shows live progress and **Keep open** / **Wait, then close** / **Close anyway**.
+- **Remove watermarks** and ads automatically (learns repeated site junk across about a dozen chapters, then a wider pass)
 - **Translate to English** using Google (New/HTML/Old), Microsoft Edge, a LibreTranslate server, local **Ollama**, or **Offline NMT** (CTranslate2; optional xianxia/wuxia glossary)
 - **Novel glossary** — Auto (default) applies the built-in cultivation pack only when the book looks like xianxia/wuxia. Urban/romance skip it. The pack is a curated web-novel list (not a general Chinese dictionary). Each book **mines names, sects, and techniques** from its own Chinese into `~/.huaepub/glossaries/<title>.json` (pinyin, not Google). If the polish Qwen GGUF is already on disk (7B+), a classify pass can fix those names; **Help → Polish glossaries with Qwen…** shows Accept all / Discard. It will not start a GGUF download. You do not need to edit the JSON by hand.
 - **Polish English** — after Google or LibreTranslate, a fast local copy-edit (llama.cpp + Qwen). Only awkward MTL spans are rewritten; fluent sentences are copied. Ollama is not required. The first time you tick it, a dialog explains the local download (~2–9 GB into `~/.huaepub/polish`).
 - **Chapter + translation cache** — stored in `~/.huaepub/cache.db` so re-runs and resumes skip network fetches. Default size cap is **2 GB** (Help → **Cache…**); oldest stored chapter HTML is deleted first. Nothing is cleared on a timer.
-- **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes. EPUBs are written to a sibling `.tmp` then replaced so a crash cannot leave a half-written file.
+- **Create EPUB** files ready for e-readers, with volume-grouped table of contents when chapter titles carry volume prefixes. EPUBs are written to a sibling `.tmp` then replaced so a crash cannot leave a half-written file. EPUB 3 TTS overlays mark sentences so Google Play Books **Read Aloud** / Listen can speak the text (no baked audio; files stay small).
 - **Select specific chapters** to download, including quick range selection (e.g. 200-450)
 - **Progress tracking** with ETA (network/uncached work only — cached chapters do not fake “ETA 0s”), Pause, and Cancel. Status names the phase: fetching chapters, translating (including retry pass), polishing, or writing the EPUB. Failed chapters are retried at the end of the run. **Download EPUB** is disabled while a job is already running.
 - **Completion notes** — leftover Chinese, heuristic chapter guesses, or a cancelled polish pass show as “Saved with warnings” (Single, Multi, and Library). A clean run still says Success / complete.
@@ -228,7 +228,7 @@ Use this only if you want the same library list (and optionally EPUBs) on more t
 3. In the app: **Library** → Google Drive panel → enable sync → **Connect** (browser login).
 4. Choose **Sync library** and/or **Sync EPUBs**.
 5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** (or Library → **Sync Drive now**) as needed. Progress appears in the status bar while syncing.
-6. After a successful Library Update / Update All, HuaEPUB queues a **silent** Drive sync if sync is enabled. It does not switch you to the Library tab. Single / Multi do not auto-sync. Startup also runs a silent sync when Drive is already connected.
+6. After a successful Library Update / Update All, HuaEPUB queues a **silent** Drive sync if sync is enabled. It does not switch you to the Library tab. Single / Multi do not auto-sync. Startup also runs a silent sync when Drive is already connected. If you close the window during a sync, a dialog shows the current step and lets you **Keep open**, **Wait, then close**, or **Close anyway**.
 
 If Drive is offline, downloads and the local library still work.
 

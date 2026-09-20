@@ -1002,8 +1002,12 @@ class GoogleTranslator:
         self.progress_callback = progress_callback
         # Footer must leave "Starting download…" as soon as we know N,
         # before unique-GET grouping or the first unofficial GET.
+        # Cap by this pass's size so a 1-segment retry does not paint "200 in flight".
         if self._gtx is not None:
-            self._in_flight = int(self._gtx.limit or GtxThrottle.START_LIMIT)
+            self._in_flight = min(
+                int(self._gtx.limit or GtxThrottle.START_LIMIT),
+                max(1, len(texts)),
+            )
         self._emit_progress(force=True)
         time.sleep(0)
 
@@ -1044,15 +1048,16 @@ class GoogleTranslator:
             return results
 
         if self.backend in THROTTLED_BACKENDS and self._gtx is not None:
+            shown_cap = min(int(self._gtx.limit or 0), unique_n)
             print(
-                f"  {self._throttle_label()} in-flight cap {self._gtx.limit} "
+                f"  {self._throttle_label()} in-flight cap {shown_cap} "
                 f"(ceiling {self._gtx.max_limit}; cools on 429, climbs on success)"
             )
             # Pool size is the UI ceiling. GtxThrottle (start 8) is the
             # in-flight cap — do not freeze the executor at start_cap*4 (32)
             # or the climb to 200 never adds workers.
             workers = min(self.max_workers, unique_n)
-            self._in_flight = min(int(self._gtx.limit or 0), unique_n)
+            self._in_flight = shown_cap
         else:
             workers = min(self.max_workers, unique_n)
 
@@ -1226,21 +1231,33 @@ class GoogleTranslator:
             interval     = _get_step(INTERVAL_STEPS, retry_pass)
             cooldown     = _get_step(COOLDOWN_STEPS, retry_pass)
             extra_retry  = _get_step(EXTRA_RETRIES, retry_pass)
+
+            leftover_n = len(failed_indices)
+            # 1–2 leftovers after a full 200-cap pass are almost never a 429
+            # stampede (usually a name the API will not drop). Do not sit on
+            # the 15–60s recovery cool, and do not advertise cap 200.
+            tiny_leftover = leftover_n <= 8
+            if tiny_leftover and self.backend in THROTTLED_BACKENDS:
+                cooldown = 0
             
             # Resolve actual worker count
             retry_workers = min(
                 workers_cap if workers_cap > 0 else self.max_workers,
-                len(failed_indices)
+                leftover_n
             )
             
             # ── Log & callback ──
             cap_note = ""
             if self.backend in THROTTLED_BACKENDS and self._gtx is not None:
-                cap_note = f", in-flight cap {self._gtx.limit}"
+                shown_cap = min(int(self._gtx.limit or 0), retry_workers)
+                cap_note = f", in-flight cap {shown_cap}"
+            if tiny_leftover:
+                why = "leftover Chinese — often a name the API will not fully drop"
+            else:
+                why = "usually HTTP 429 — not a second copy of the book"
             print(
-                f"\n  Retry pass {retry_pass}: {len(failed_indices)}/{len(texts)} "
-                f"still Chinese after the first pass "
-                f"(usually HTTP 429 — not a second copy of the book) "
+                f"\n  Retry pass {retry_pass}: {leftover_n}/{len(texts)} "
+                f"still Chinese after the first pass ({why}) "
                 f"(workers={retry_workers}{cap_note}, interval={interval:.1f}s, "
                 f"cooldown={cooldown}s, retries={self.max_retries + extra_retry})"
             )

@@ -46,11 +46,11 @@ class TestAdDivs:
 
 
 class TestLearnRepeatingJunk:
-    def test_learns_footer_from_five_chapters(self):
+    def test_learns_footer_from_many_chapters(self):
         footer = "请到顶点小说网阅读最新章节无弹窗"
         chapters = [
             _chapter(f"<p>第{i}章剧情很长，主角走在路上。</p><p>{footer}</p>", f"第{i}章")
-            for i in range(1, 6)
+            for i in range(1, 13)
         ]
         cleaner = ContentCleaner()
         learned = learn_site_junk(cleaner, chapters)
@@ -59,10 +59,66 @@ class TestLearnRepeatingJunk:
         assert "顶点小说网" not in cleaned
         assert "主角走在路上" in cleaned
 
+    def test_two_chapters_does_not_lock(self):
+        footer = "请到顶点小说网阅读最新章节无弹窗"
+        cleaner = ContentCleaner()
+        two = [
+            _chapter(f"<p>序章剧情{i}，主角还在路上。</p><p>{footer}</p>")
+            for i in range(2)
+        ]
+        assert learn_site_junk(cleaner, two) == []
+        assert cleaner._site_junk_learned is False
+        many = [
+            _chapter(f"<p>第{i}章剧情很长，主角走在路上。</p><p>{footer}</p>")
+            for i in range(12)
+        ]
+        learned = learn_site_junk(cleaner, many)
+        assert any(footer in item for item in learned)
+        assert cleaner._site_junk_learned is True
+
+    def test_finalize_learns_before_sample_cap(self):
+        footer = "请到某某网无弹窗阅读最新章节"
+        chapters = [
+            _chapter(f"<p>故事很长第{i}段描写。</p><p>{footer}</p>")
+            for i in range(6)
+        ]
+        cleaner = ContentCleaner()
+        assert learn_site_junk(cleaner, chapters) == []
+        learned = learn_site_junk(cleaner, chapters, finalize=True)
+        assert any(footer in item for item in learned)
+
+    def test_prologue_without_ads_does_not_hide_later_footer(self):
+        footer = "请到顶点小说网阅读最新章节无弹窗"
+        chapters = [
+            _chapter("<p>作品相关。这里没有广告。</p>"),
+            _chapter("<p>序章。主角还没出门。</p>"),
+        ] + [
+            _chapter(f"<p>第{i}章剧情很长，主角走在路上。</p><p>{footer}</p>")
+            for i in range(3, 15)
+        ]
+        cleaner = ContentCleaner()
+        learned = learn_site_junk(cleaner, chapters)
+        assert any(footer in item for item in learned)
+
+    def test_finalize_spread_finds_ads_after_front_matter(self):
+        footer = "请到顶点小说网阅读最新章节无弹窗"
+        chapters = [
+            _chapter(f"<p>设定集第{i}页，没有广告。</p>")
+            for i in range(12)
+        ] + [
+            _chapter(f"<p>第{i}章正文很长，主角走在路上。</p><p>{footer}</p>")
+            for i in range(12, 24)
+        ]
+        cleaner = ContentCleaner()
+        live = learn_site_junk(cleaner, chapters)
+        assert not any(footer in item for item in live)
+        final = learn_site_junk(cleaner, chapters, finalize=True)
+        assert any(footer in item for item in final)
+
     def test_does_not_strip_repeated_plot(self):
         chapters = [
             _chapter(f"<p>他笑了笑，转身离开了大厅。</p><p>第{i}章还有别的描写。</p>")
-            for i in range(1, 6)
+            for i in range(1, 13)
         ]
         cleaner = ContentCleaner()
         learned = learn_site_junk(cleaner, chapters)
@@ -77,12 +133,16 @@ class TestLearnRepeatingJunk:
 
     def test_idempotent(self):
         footer = "请到某某网无弹窗阅读"
-        chapters = [_chapter(f"<p>故事{i}</p><p>{footer}</p>") for i in range(5)]
+        chapters = [_chapter(f"<p>故事{i} 很长的一章。</p><p>{footer}</p>") for i in range(12)]
         cleaner = ContentCleaner()
         first = learn_site_junk(cleaner, chapters)
         second = learn_site_junk(cleaner, chapters)
         assert first == second
 
     def test_repeating_helper_needs_junk_hint(self):
-        htmls = ["<p>他走进了房间。</p>"] * 5
+        htmls = ["<p>他走进了房间。</p>"] * 12
+        assert repeating_junk_lines(htmls) == []
+
+    def test_repeating_helper_ignores_two_samples(self):
+        htmls = ["<p>请收藏本站无弹窗阅读</p>"] * 2
         assert repeating_junk_lines(htmls) == []

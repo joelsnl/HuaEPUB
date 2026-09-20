@@ -82,6 +82,7 @@ def test_cached_chapters_build_real_epub(tmp_path):
         assert "mimetype" in names
         assert zf.read("mimetype") == b"application/epub+zip"
         assert any(n.endswith(".xhtml") or n.endswith(".html") for n in names)
+        assert any(n.endswith(".smil") for n in names)
 
     lib = store.get_library()
     assert any(e.source_url == info.source_url for e in lib)

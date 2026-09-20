@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, List
+from typing import Callable, List, Optional
 from urllib.parse import urljoin, urldefrag
 
 from bs4 import BeautifulSoup
@@ -121,17 +121,28 @@ def walk_list_pages(
     fetch_page: Callable[[str], BeautifulSoup],
     delay: Callable[[], None],
     max_pages: int = MAX_LIST_PAGES,
+    stop_at_url: str = "",
+    early_stop_flag: Optional[list] = None,
 ) -> List[Chapter]:
+    """
+    Walk TOC pages.
+
+    ``stop_at_url`` (Check, newest-first): finish the page that contains that
+    chapter, then do not request later pages. Update/download omit it so the
+    full list is still collected.
+    """
     chapters: List[Chapter] = []
     seen_pages = set()
     seen_ch = set()
     soup = first_soup
     url = first_url
+    cursor = canonicalize_page_url(stop_at_url) if stop_at_url else ""
     for _ in range(max(1, max_pages)):
         page = canonicalize_page_url(url)
         if not page or page in seen_pages:
             break
         seen_pages.add(page)
+        hit_cursor = False
         for ch in parse_chapters(soup, url) or []:
             key = canonicalize_page_url(ch.url)
             if not key or key in seen_ch:
@@ -139,7 +150,13 @@ def walk_list_pages(
             seen_ch.add(key)
             ch.index = len(chapters)
             chapters.append(ch)
+            if cursor and key == cursor:
+                hit_cursor = True
         nxt = canonicalize_page_url(next_url(soup, url) or "")
+        if hit_cursor and cursor:
+            if nxt and nxt not in seen_pages and early_stop_flag is not None:
+                early_stop_flag.append(True)
+            break
         if not nxt or nxt in seen_pages:
             break
         delay()

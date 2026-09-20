@@ -79,3 +79,36 @@ def test_custom_yes_not_now_binds_y_and_n_not_d(qapp):
 def test_pick_item_single_skips_dialog(qapp):
     assert pick_item(None, "Preview", "Which novel?", ["Only book"]) == 0
     assert pick_item(None, "Preview", "Which novel?", []) is None
+
+
+def test_close_while_syncing_parses_epub_progress(qapp):
+    from gui.dialogs import CloseWhileSyncingDialog
+
+    dlg = CloseWhileSyncingDialog(None, "Uploading EPUB 2/10: foo.epub")
+    assert dlg.bar.value() == 2
+    assert dlg.bar.maximum() == 10
+    dlg.set_status("Syncing library.json in “HuaEPUB”…")
+    assert dlg.bar.minimum() == 0
+    assert dlg.bar.maximum() == 0
+    dlg._wait_then_close()
+    assert dlg.choice == CloseWhileSyncingDialog.WAIT
+    assert dlg.wait_btn.isEnabled() is False
+    dlg.mark_finished("Synced “HuaEPUB”: library (3 novel(s))", "")
+    assert dlg._done
+    assert dlg.bar.value() == dlg.bar.maximum()
+    qapp.processEvents()
+    assert dlg.choice == CloseWhileSyncingDialog.WAIT
+
+
+def test_close_while_syncing_keep_open_and_abort(qapp):
+    from gui.dialogs import CloseWhileSyncingDialog
+
+    stay = CloseWhileSyncingDialog(None, "Syncing…")
+    stay._keep_open()
+    assert stay.choice == CloseWhileSyncingDialog.STAY
+
+    abort = CloseWhileSyncingDialog(None, "Syncing…")
+    abort._close_anyway()
+    assert abort.choice == CloseWhileSyncingDialog.ABORT
+    assert abort._accepting
+

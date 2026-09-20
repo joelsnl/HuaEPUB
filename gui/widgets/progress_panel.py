@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+
+from gui.icon import load_app_pixmap
 
 _COUNT_RE = re.compile(r"\d+\s*/\s*\d+")
 
@@ -29,10 +31,24 @@ class ProgressPanel(QWidget):
         self.bar = QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setValue(0)
+        self.logo = QLabel()
+        self.logo.setObjectName("appLogo")
+        self.logo.setFixedSize(20, 20)
+        pix = load_app_pixmap(20)
+        if pix.isNull():
+            self.logo.hide()
+        else:
+            self.logo.setPixmap(pix)
+            self.logo.setScaledContents(True)
         self.status = QLabel("Ready")
         self.status.setWordWrap(True)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(8)
+        status_row.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignTop)
+        status_row.addWidget(self.status, 1)
         lay.addWidget(self.bar)
-        lay.addWidget(self.status)
+        lay.addLayout(status_row)
 
         btns = QHBoxLayout()
         self.download_btn = QPushButton("Download EPUB")

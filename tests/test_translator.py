@@ -128,6 +128,28 @@ class TestRetryLoopTermination:
         assert seen_interval[1] == 0.0
         t.translate_texts = real
 
+    def test_tiny_google_retry_skips_long_cooldown(self, monkeypatch):
+        t = GoogleTranslator(max_workers=200)
+        t._gtx.limit = 200
+        sleeps = []
+        monkeypatch.setattr(t, "_interruptible_sleep", lambda s: sleeps.append(s))
+        passes = []
+
+        def wrap(texts, cb=None):
+            passes.append(len(texts))
+            if len(passes) == 1:
+                out = ["The hero walked away."] * len(texts)
+                out[0] = texts[0]
+                return out
+            return list(texts)
+
+        t.translate_texts = wrap
+        texts = ["中文段落测试内容这是一个很长的句子"] * 10
+        t.translate_texts_with_retry(texts, max_retry_passes=3)
+        assert passes[0] == 10
+        assert all(n == 1 for n in passes[1:])
+        assert sleeps == []
+
 
 class TestPersistentCache:
     class FakeCache:

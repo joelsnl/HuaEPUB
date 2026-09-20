@@ -10,7 +10,9 @@ from core.download_runner import (
     EpubBuildResult,
     _chapter_note_for_slot,
     _forward_progress,
+    _planned_in_flight,
     _translation_status_line,
+    _zero_n_in_flight,
     backend_prefetches_during_fetch,
     build_epub,
     download_chapters_with_cache,
@@ -689,6 +691,32 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
         network_requests=0,
     )
     assert "47278 unique requests" in grouped
+
+
+def test_planned_in_flight_caps_retry_to_leftovers_not_first_pass_ceiling():
+    class Gate:
+        current = 0
+        limit = 200
+
+    class T:
+        backend = "google"
+        _gtx = Gate()
+        _in_flight = 0
+        _unique_requests = 1
+        total = 1
+
+    assert _planned_in_flight(T()) == 1
+    assert _zero_n_in_flight(T()) == 1
+    T._in_flight = 200
+    assert _planned_in_flight(T()) == 1
+    T._gtx.current = 1
+    assert _planned_in_flight(T()) == 1
+    T._unique_requests = 171568
+    T.total = 193823
+    T._in_flight = 0
+    T._gtx.current = 0
+    T._gtx.limit = 200
+    assert _planned_in_flight(T()) == 200
 
 
 def test_chapter_note_for_slot_names_current_chapter():

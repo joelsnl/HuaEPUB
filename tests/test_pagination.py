@@ -82,6 +82,39 @@ class TestWalkers:
         assert [c.title for c in chapters] == ["第1章", "第2章"]
         assert fetched == ["https://demo.test/toc?p=2"]
 
+    def test_walk_list_pages_stops_at_cursor(self):
+        pages = {
+            "https://demo.test/toc": _soup(
+                '<a href="/c/5">5</a><a href="/c/3">3</a>'
+                '<a class="n" href="/toc?p=2">next</a>'
+            ),
+            "https://demo.test/toc?p=2": _soup(
+                '<a href="/c/2">2</a><a href="/c/1">1</a>'
+            ),
+        }
+        fetched = []
+        early = []
+
+        def parse(soup, url):
+            return [
+                Chapter(title=a.get_text(strip=True), url="https://demo.test" + a["href"])
+                for a in soup.select("a[href^='/c/']")
+            ]
+
+        chapters = walk_list_pages(
+            first_soup=pages["https://demo.test/toc"],
+            first_url="https://demo.test/toc",
+            parse_chapters=parse,
+            next_url=lambda s, u: next_from_selector(s, "a.n", u),
+            fetch_page=lambda url: fetched.append(url) or pages[url],
+            delay=lambda: None,
+            stop_at_url="https://demo.test/c/3",
+            early_stop_flag=early,
+        )
+        assert [c.title for c in chapters] == ["5", "3"]
+        assert fetched == []
+        assert early == [True]
+
     def test_walk_content_pages_appends(self):
         first = _soup('<div>one</div><a class="n" href="/c?p=2">下一页</a>')
         extra = _soup("<div>two</div>")

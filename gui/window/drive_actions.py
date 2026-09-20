@@ -8,9 +8,11 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QInputDialog
 
 from core.drive_sync import oauth_setup_instructions
-from gui.dialogs import show_error, show_info, show_warning
+from gui.dialogs import CloseWhileSyncingDialog, show_error, show_info, show_warning
 from gui.window.worker_host import _is_gui_thread
-from gui.workers.drive_workers import DriveConnectWorker, DriveSyncWorker
+from gui.workers.drive_workers import (
+    DRIVE_SYNC_CANCELLED, DriveConnectWorker, DriveSyncWorker,
+)
 
 
 class DriveActionsMixin:
@@ -94,6 +96,28 @@ class DriveActionsMixin:
     def _drive_sync_now(self):
         self._start_drive_sync(silent=False)
 
+    def _confirm_close_while_syncing(self) -> str:
+        """Modal progress + Keep open / Close anyway / Wait, then close."""
+        if getattr(self, "_close_sync_dialog", None) is not None:
+            return CloseWhileSyncingDialog.STAY
+        status = ""
+        try:
+            status = self.progress.status.text() or ""
+        except Exception:
+            pass
+        if not status:
+            try:
+                status = self.library.drive_status.text() or ""
+            except Exception:
+                pass
+        dlg = CloseWhileSyncingDialog(self, status)
+        self._close_sync_dialog = dlg
+        try:
+            dlg.exec()
+            return dlg.choice
+        finally:
+            self._close_sync_dialog = None
+
     def _queue_drive_sync(self):
         """Silent Drive push after Library Update / Update All / Connect (no tab switch)."""
         if self.library.drive_enabled.isChecked():
@@ -106,6 +130,9 @@ class DriveActionsMixin:
             self._call_on_gui(lambda m=msg: self._on_drive_sync_progress(m))
             return
         self.library.drive_status.setText(msg)
+        dlg = getattr(self, "_close_sync_dialog", None)
+        if dlg is not None:
+            dlg.set_status(msg)
         # App update / library Check use other threads; don't clobber their footer.
         if getattr(self, "_app_update_checking", False):
             return
@@ -123,15 +150,22 @@ class DriveActionsMixin:
                 lambda s=summary, e=err: self._on_drive_sync_finished(s, e)
             )
             return
+        dlg = getattr(self, "_close_sync_dialog", None)
+        if dlg is not None:
+            dlg.mark_finished(summary, err)
         silent = getattr(self, "_drive_sync_silent", True)
         checking_app = getattr(self, "_app_update_checking", False)
         checking_library = getattr(self, "_check_busy", False)
+        closing = bool(getattr(self, "_force_close", False) or dlg is not None)
+        cancelled = (summary or "") == DRIVE_SYNC_CANCELLED
+        if closing:
+            self._pending_drive_sync = False
         self.library.set_drive_busy(False)
         if err:
             self.library.drive_status.setText(f"Sync error: {err[:80]}")
             if not checking_app and not checking_library:
                 self.progress.set_status(f"Drive sync error: {err[:60]}")
-            if not silent:
+            if not silent and not closing:
                 show_warning(self, "Drive sync", err)
         else:
             self.library.drive_status.setText(summary)
@@ -144,15 +178,15 @@ class DriveActionsMixin:
             n = len(self.session.library_store.get_library())
             if not checking_library:
                 self.library.show_all()
-                if not silent:
+                if not silent and not closing:
                     self.tabs.setCurrentWidget(self.library)
                 else:
                     self.library.refresh()
-            elif not silent:
+            elif not silent and not closing:
                 self.tabs.setCurrentWidget(self.library)
             if not checking_app and not checking_library:
                 self.progress.set_status(summary or f"Drive sync done — {n} novel(s)")
-            if not silent:
+            if not silent and not closing and not cancelled:
                 extra = ""
                 if n == 0:
                     extra = (

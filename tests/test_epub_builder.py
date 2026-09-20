@@ -109,6 +109,65 @@ class TestVolumeRegex:
             assert not VOLUME_PREFIX_RE.match(title), title
 
 
+class TestReadAloudEpub:
+    def _info_chapters(self, *, language="zh", english=True):
+        body = "<p>Hello there. More words follow.</p>" if english else "<p>你好。世界继续。</p>"
+        info = NovelInfo(
+            title="Test Book",
+            author="Author",
+            source_url="https://example.com/b",
+            language=language,
+        )
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content=body),
+            Chapter(title="Chapter 2", url="https://example.com/2", content=body),
+        ]
+        return info, chapters
+
+    def _opf_and_names(self, dest):
+        import zipfile
+
+        with zipfile.ZipFile(dest) as zf:
+            names = zf.namelist()
+            opf_name = next(n for n in names if n.endswith("content.opf"))
+            opf = zf.read(opf_name).decode("utf-8")
+            chapter = zf.read("EPUB/chapter_0000.xhtml").decode("utf-8")
+            smil = zf.read("EPUB/chapter_0000.smil").decode("utf-8")
+            css = zf.read("EPUB/style/nav.css").decode("utf-8")
+        return names, opf, chapter, smil, css
+
+    def test_overlays_and_language_for_chinese_source(self, tmp_path):
+        dest = tmp_path / "zh.epub"
+        info, chapters = self._info_chapters(language="zh", english=False)
+        EPUBBuilder().build(info, chapters, str(dest))
+        names, opf, chapter, smil, css = self._opf_and_names(dest)
+        assert any(n.endswith(".smil") for n in names)
+        assert "media-overlay=" in opf
+        assert "media:duration" in opf
+        assert "rendition:layout" in opf
+        assert ">zh-CN<" in opf
+        assert 'id="s0000-0001"' in chapter
+        assert "<audio" not in smil
+        assert "-epub-media-overlay-active" in css
+        assert 'xml:lang="zh-CN"' in chapter or 'lang="zh-CN"' in chapter
+
+    def test_translated_build_is_english(self, tmp_path):
+        dest = tmp_path / "en.epub"
+        info, chapters = self._info_chapters(language="zh", english=True)
+        EPUBBuilder().build(info, chapters, str(dest), skip_html_clean=True, language="en")
+        _names, opf, chapter, _smil, _css = self._opf_and_names(dest)
+        assert ">en<" in opf
+        assert "Hello there." in chapter
+        assert "media-overlay=" in opf
+
+    def test_stylesheet_link_survives_ebooklib_rebuild(self, tmp_path):
+        dest = tmp_path / "css.epub"
+        info, chapters = self._info_chapters()
+        EPUBBuilder().build(info, chapters, str(dest), language="en")
+        _names, _opf, chapter, _smil, _css = self._opf_and_names(dest)
+        assert "style/nav.css" in chapter
+
+
 class TestAtomicWrite:
     def _info_chapters(self):
         info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")

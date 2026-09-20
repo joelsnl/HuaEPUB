@@ -130,8 +130,12 @@ class BaseParser(ABC):
         self.request_delay = 2.0
         # 429 retry delays in seconds
         self.rate_limit_delays = [15, 30, 60, 120]
+        self.request_timeout: float | tuple = 30
+        self.fetch_retries = 3
         self._encoding: Optional[str] = None
         self._referer: Optional[str] = None
+        self._toc_incomplete = False
+        self._check_fetch = False
     
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -167,14 +171,18 @@ class BaseParser(ABC):
             return response.content.decode(self._encoding, errors="replace")
         return response.text
 
-    def fetch_page(self, url: str, retries: int = 3) -> BeautifulSoup:
+    def fetch_page(self, url: str, retries: Optional[int] = None) -> BeautifulSoup:
         """Fetch a page and return BeautifulSoup. Retry/429 logic lives in fetch_html."""
         return BeautifulSoup(self.fetch_html(url, retries=retries), "lxml")
     
-    def fetch_html(self, url: str, retries: int = 3) -> str:
+    def fetch_html(self, url: str, retries: Optional[int] = None) -> str:
         """Fetch page and return raw HTML string with 429 handling."""
         from core.security import UnsafeURLError, safe_http_request
 
+        if retries is None:
+            retries = int(getattr(self, "fetch_retries", 3) or 3)
+        retries = max(1, retries)
+        timeout = getattr(self, "request_timeout", 30)
         last_error = None
         rate_limit_retry = 0
         
@@ -182,7 +190,7 @@ class BaseParser(ABC):
             try:
                 self._apply_referer()
                 response = safe_http_request(
-                    self.session, "GET", url, allow_http=True, timeout=30
+                    self.session, "GET", url, allow_http=True, timeout=timeout
                 )
                 
                 # Check for 429 specifically
@@ -214,7 +222,10 @@ class BaseParser(ABC):
                 
                 print(f"  Attempt {attempt + 1}/{retries} failed: {e}")
                 if attempt < retries - 1:
-                    time.sleep(2 ** (attempt + 1))
+                    if getattr(self, "_check_fetch", False):
+                        time.sleep(1)
+                    else:
+                        time.sleep(2 ** (attempt + 1))
         
         raise last_error
 
