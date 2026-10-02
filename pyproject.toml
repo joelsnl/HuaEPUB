@@ -1,33 +1,27 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "HuaEPUB"
-version = "2.15.0"
+version = "2.16.0"
 description = "Download and translate Chinese web novels to EPUB format"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
 ]
 authors = [
     {name = "Joel Sunil", email = "joelsnl@gmail.com"}
 ]
-maintainers = [
-    {name = "Joel Sunil", email = "joelsnl@gmail.com"}
-]
-categories = ["Utilities"]
 keywords = [
     "webnovel",
     "ebook",
@@ -40,11 +34,20 @@ keywords = [
 dynamic = ["dependencies"]
 
 [project.scripts]
-huaepub = "gui.app:main"
+huaepub = "gui.app:run"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["core*", "gui*", "parsers*"]
+
+[tool.setuptools.package-data]
+gui = ["style.qss", "assets/*"]
+parsers = ["sites.json"]
+"core.translation" = ["data/*.json"]
+"core.polish" = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

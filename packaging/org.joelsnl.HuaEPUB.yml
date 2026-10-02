@@ -1,69 +1,29 @@
-# Flatpak manifest for HuaEPUB
-# Build with: flatpak-builder --force-clean build-dir org.joelsnl.HuaEPUB.yml
-# Install with: flatpak install ./org.joelsnl.HuaEPUB.flatpak
----
+# From the repo root:
+#   flatpak-builder --force-clean --user --install build-dir packaging/org.joelsnl.HuaEPUB.yml
+# Freedesktop 25.08 is the supported runtime. PySide6's wheel brings Qt.
 app-id: org.joelsnl.HuaEPUB
-runtime: org.gnome.Platform
-runtime-version: '46'
-sdk: org.gnome.Sdk
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
 command: huaepub
 finish-args:
-  # X11 and Wayland access for GUI
   - --share=ipc
-  - --socket=x11
+  - --socket=fallback-x11
   - --socket=wayland
-  # File access (user's home directory)
-  - --filesystem=host
-  # Network access for downloading novels
-  - --network
-  # D-Bus access for notifications
-  - --session-bus
-  # Audio/Video access if needed
-  - --device=all
-
-done-callbacks: true
-
+  - --device=dri
+  - --share=network
+  - --filesystem=home
 modules:
-  # Python runtime and build dependencies
-  - name: python3
-    buildsystem: simple
-    build-commands:
-      - true
-
-  - name: python3-pip
-    buildsystem: simple
-    build-commands:
-      - true
-
-  # Install application via pip in the Flatpak environment
   - name: huaepub
     buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
     sources:
       - type: dir
-        path: .
+        path: ..
     build-commands:
-      - pip3 install --prefix=/app --no-cache-dir .
-      # Ensure executable is in PATH
-      - mkdir -p /app/bin
-      - ln -sf /app/bin/huaepub /app/bin/huaepub || true
-
-  # Optional: Add desktop file and icon
-  - name: huaepub-desktop
-    buildsystem: simple
-    sources:
-      - type: file
-        path: packaging/org.joelsnl.HuaEPUB.desktop
-      - type: file
-        path: packaging/org.joelsnl.HuaEPUB.svg
-    build-commands:
-      - mkdir -p /app/share/applications
-      - cp org.joelsnl.HuaEPUB.desktop /app/share/applications/
-      - mkdir -p /app/share/icons/hicolor/scalable/apps
-      - cp org.joelsnl.HuaEPUB.svg /app/share/icons/hicolor/scalable/apps/
-      - gtk-update-icon-cache -f /app/share/icons/hicolor || true
-
-  # Post-install: Set executable permissions
-  - name: huaepub-permissions
-    buildsystem: simple
-    build-commands:
-      - chmod +x /app/bin/huaepub || true
+      - python3 -m pip install --prefix=${FLATPAK_DEST} --no-cache-dir .
+      - install -Dm644 packaging/org.joelsnl.HuaEPUB.desktop ${FLATPAK_DEST}/share/applications/org.joelsnl.HuaEPUB.desktop
+      - install -Dm644 packaging/org.joelsnl.HuaEPUB.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/org.joelsnl.HuaEPUB.svg
+      - install -Dm644 packaging/org.joelsnl.HuaEPUB.metainfo.xml ${FLATPAK_DEST}/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml

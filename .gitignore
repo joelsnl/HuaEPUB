@@ -2,11 +2,15 @@
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 
 # PyInstaller build artifacts (build.py regenerates HuaEPUB.spec each run)
 build/
 dist/
 *.spec
+appimage-build/
+*.AppImage
+.flatpak-builder/
 .ruff_cache/
 
 # macOS

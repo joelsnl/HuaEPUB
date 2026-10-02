@@ -1,6 +1,6 @@
 # HuaEPUB
 
-**Current version: 2.15.0**
+**Current version: 2.16.0**
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
