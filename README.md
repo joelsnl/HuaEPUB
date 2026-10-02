@@ -412,6 +412,10 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 ### Update refused / checksum error
 - The release may be incomplete, or the download was corrupted — try again later, or install the zip from Releases manually after checking `SHA256SUMS.txt`.
 
+## Architecture
+
+[docs/architecture.html](docs/architecture.html) is a standalone diagram of how a download moves from a URL through parse, clean, translate, polish, and EPUB. Open it in a browser.
+
 ## Credits
 
 - Inspired by [WebToEpub](https://github.com/dteviot/WebToEpub) (dteviot, Apache-2.0); some site CSS selectors in `parsers/sites.json` are adapted from it
