@@ -4,7 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "HuaEPUB"
-version = "2.16.0"
 description = "Download and translate Chinese web novels to EPUB format"
 readme = "README.md"
 license = "MIT"
@@ -31,12 +30,13 @@ keywords = [
     "xianxia",
     "wuxia",
 ]
-dynamic = ["dependencies"]
+dynamic = ["version", "dependencies"]
 
 [project.scripts]
 huaepub = "gui.app:run"
 
 [tool.setuptools.dynamic]
+version = {file = "VERSION"}
 dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]

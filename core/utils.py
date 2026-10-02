@@ -65,14 +65,52 @@ def in_pytest() -> bool:
     return "pytest" in sys.modules and bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+def format_count(n: int) -> str:
+    """Grouped integer: 51399 → 51,399."""
+    return f"{int(n):,}"
+
+
+def format_ratio(done: int, total: int) -> str:
+    """Progress pair: 4/20, or 1,204/3,000."""
+    return f"{format_count(done)}/{format_count(total)}"
+
+
+def plural(n: int, singular: str, plural_form: str = "") -> str:
+    """'1 novel' or '3 novels'."""
+    n = int(n)
+    word = singular if abs(n) == 1 else (plural_form or f"{singular}s")
+    return f"{format_count(n)} {word}"
+
+
+def format_bytes(n: int) -> str:
+    """File size for cache and download labels."""
+    n = max(0, int(n))
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    if n < 1024 ** 3:
+        value = n / (1024 ** 2)
+        return f"{value:.0f} MB" if value >= 10 else f"{value:.1f} MB"
+    value = n / (1024 ** 3)
+    return f"{value:.0f} GB" if value >= 10 else f"{value:.2f} GB"
+
+
 def format_eta(seconds: float) -> str:
-    """Format a duration like '3m 20s' or '1h 12m'."""
+    """Duration for the progress line: 45s, 3m 20s, 1h 2m. Zero units are omitted."""
     seconds = max(0, int(seconds))
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:
-        return f"{seconds // 60}m {seconds % 60}s"
-    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+        minutes, secs = divmod(seconds, 60)
+        if secs == 0:
+            return f"{minutes}m"
+        return f"{minutes}m {secs}s"
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if minutes == 0:
+        return f"{hours}h"
+    return f"{hours}h {minutes}m"
 
 
 def safe_filename(title: str, max_length: int = 120) -> str:

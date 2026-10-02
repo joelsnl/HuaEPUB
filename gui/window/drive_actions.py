@@ -8,6 +8,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QInputDialog
 
 from core.drive_sync import oauth_setup_instructions
+from core.utils import format_count, plural
 from gui.dialogs import CloseWhileSyncingDialog, show_error, show_info, show_warning
 from gui.window.worker_host import _is_gui_thread
 from gui.workers.drive_workers import (
@@ -185,7 +186,7 @@ class DriveActionsMixin:
             elif not silent and not closing:
                 self.tabs.setCurrentWidget(self.library)
             if not checking_app and not checking_library:
-                self.progress.set_status(summary or f"Drive sync done — {n} novel(s)")
+                self.progress.set_status(summary or f"Drive sync done — {plural(n, 'novel')}")
             if not silent and not closing and not cancelled:
                 extra = ""
                 if n == 0:
@@ -195,7 +196,7 @@ class DriveActionsMixin:
                     )
                 else:
                     extra = (
-                        f"\n\n{n} novel(s) are in your library list now "
+                        f"\n\n{plural(n, 'novel')} in the library now "
                         "(covers/EPUBs stay optional — no full download required)."
                     )
                 show_info(self, "Drive sync", (summary or "Sync done") + extra)
@@ -227,8 +228,8 @@ class DriveActionsMixin:
             epubs = int(info.get("epub_count") or 0)
             detail = (
                 f"Using: {label}\n"
-                f"library.json novels: {novels}\n"
-                f"EPUB files in books/: {epubs}\n"
+                f"library.json: {plural(novels, 'novel')}\n"
+                f"EPUB files in books/: {format_count(epubs)}\n"
                 f"{info.get('web_link') or ''}"
             )
             if info.get("error"):
@@ -239,7 +240,7 @@ class DriveActionsMixin:
             else:
                 show_info(self, "Drive folder", detail)
             self.library.drive_status.setText(
-                f"{label} — {novels} novel(s), {epubs} EPUB(s) on Drive"
+                f"{label} — {plural(novels, 'novel')}, {plural(epubs, 'EPUB')} on Drive"
             )
             # Pull immediately so Library fills from this folder
             QTimer.singleShot(100, self._drive_sync_now)

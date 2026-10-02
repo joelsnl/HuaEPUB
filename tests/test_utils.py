@@ -3,7 +3,8 @@
 import os
 
 from core.utils import (
-    format_eta, safe_filename, extract_urls, looks_like_url, sanitize_runtime_env,
+    format_bytes, format_count, format_eta, format_ratio, plural,
+    safe_filename, extract_urls, looks_like_url, sanitize_runtime_env,
 )
 
 
@@ -13,15 +14,32 @@ class TestFormatEta:
         assert format_eta(45) == "45s"
 
     def test_minutes(self):
-        assert format_eta(60) == "1m 0s"
+        assert format_eta(60) == "1m"
         assert format_eta(200) == "3m 20s"
 
     def test_hours(self):
-        assert format_eta(3600) == "1h 0m"
+        assert format_eta(3600) == "1h"
         assert format_eta(3720) == "1h 2m"
 
     def test_negative_clamped(self):
         assert format_eta(-5) == "0s"
+
+
+class TestNumberPresentation:
+    def test_counts_and_ratios_group_thousands(self):
+        assert format_count(51399) == "51,399"
+        assert format_ratio(4, 20) == "4/20"
+        assert format_ratio(1204, 51399) == "1,204/51,399"
+        assert plural(1, "novel") == "1 novel"
+        assert plural(3, "novel") == "3 novels"
+        assert plural(0, "chapter") == "0 chapters"
+
+    def test_bytes(self):
+        assert format_bytes(500) == "500 B"
+        assert format_bytes(2048) == "2 KB"
+        assert format_bytes(5 * 1024 * 1024) == "5.0 MB"
+        assert format_bytes(20 * 1024 * 1024) == "20 MB"
+        assert format_bytes(3 * 1024 ** 3) == "3.00 GB"
 
 
 class TestSafeFilename:

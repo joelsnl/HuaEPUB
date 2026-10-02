@@ -539,6 +539,7 @@ class TestSourceUpdateItems:
         assert "core" in SOURCE_UPDATE_ITEMS
         assert "app.py" in SOURCE_UPDATE_ITEMS
         assert "build.py" in SOURCE_UPDATE_ITEMS
+        assert "VERSION" in SOURCE_UPDATE_ITEMS
 
 
 class TestRelaunchEnv:

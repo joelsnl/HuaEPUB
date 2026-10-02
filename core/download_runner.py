@@ -30,7 +30,7 @@ from core.translation.glossary import normalize_glossary_mode
 from core.translation.novel_translator import NovelTranslator
 from core.gtx_throttle import GtxThrottle
 from core.translator import THROTTLED_BACKENDS
-from core.utils import format_eta, safe_filename
+from core.utils import format_count, format_eta, format_ratio, plural, safe_filename
 from core.security import safe_epub_basename
 
 
@@ -102,10 +102,10 @@ def format_completion_notes(
             "(already-polished sentences were kept)."
         )
     if failed_chapters:
-        parts.append(f"{len(failed_chapters)} chapter(s) had placeholders.")
+        parts.append(f"{plural(len(failed_chapters), 'chapter')} had placeholders.")
     if heuristic_chapters:
         parts.append(
-            f"{len(heuristic_chapters)} chapter(s) used a generic content guess "
+            f"{plural(len(heuristic_chapters), 'chapter')} used a generic content guess "
             "(the site's content selector missed). Check those chapters if the text looks wrong."
         )
         for title in heuristic_chapters[:6]:
@@ -113,17 +113,17 @@ def format_completion_notes(
             parts.append(f"  • {label}")
         extra = len(heuristic_chapters) - 6
         if extra > 0:
-            parts.append(f"  • … and {extra} more")
+            parts.append(f"  • … and {format_count(extra)} more")
     if translation_warnings:
         parts.append(
-            f"{len(translation_warnings)} chapter(s) still have significant Chinese."
+            f"{plural(len(translation_warnings), 'chapter')} still have significant Chinese."
         )
         for title, count in translation_warnings[:8]:
             label = (title[:50] + "…") if len(title) > 50 else title
-            parts.append(f"  • {label}: {count} chars")
+            parts.append(f"  • {label}: {format_count(count)} chars")
         extra = len(translation_warnings) - 8
         if extra > 0:
-            parts.append(f"  • … and {extra} more")
+            parts.append(f"  • … and {format_count(extra)} more")
     return "\n".join(parts)
 
 
@@ -142,9 +142,16 @@ def completion_has_warnings(body: str) -> bool:
     low = text.lower()
     if any(marker in low for marker in _WARNING_MARKERS):
         return True
-    for pat in (r"Completed:\s*(\d+)/(\d+)", r"Update All:\s*(\d+)/(\d+)"):
+    for pat in (
+        r"Completed:\s*([\d,]+)/([\d,]+)",
+        r"Update All:\s*([\d,]+)/([\d,]+)",
+    ):
         match = re.search(pat, text)
-        if match and int(match.group(1)) != int(match.group(2)):
+        if not match:
+            continue
+        done = int(match.group(1).replace(",", ""))
+        total = int(match.group(2).replace(",", ""))
+        if done != total:
             return True
     return False
 
@@ -165,7 +172,7 @@ def eta_from_network_samples(
     if network_done < 1 or network_remaining <= 0 or network_elapsed <= 0:
         return ""
     avg = network_elapsed / network_done
-    return f"  (ETA {format_eta(avg * network_remaining)})"
+    return f" · {format_eta(avg * network_remaining)} left"
 
 
 def eta_from_pack_samples(
@@ -178,7 +185,7 @@ def eta_from_pack_samples(
     """ETA from completed packed gtx requests, not raw paragraphs."""
     if packs_done < min_samples or packs_remaining <= 0 or elapsed <= 0:
         return ""
-    return f"  (ETA {format_eta(packs_remaining * (elapsed / packs_done))})"
+    return f" · {format_eta(packs_remaining * (elapsed / packs_done))} left"
 
 
 def translator_progress_label(backend: str) -> str:
@@ -204,7 +211,7 @@ def _engine_eta(
 ) -> str:
     if completed < min_samples or remaining <= 0 or elapsed <= 0:
         return ""
-    return f"  (ETA {format_eta(remaining * (elapsed / completed))})"
+    return f" · {format_eta(remaining * (elapsed / completed))} left"
 
 
 def _chapter_note_for_slot(
@@ -232,7 +239,7 @@ def _chapter_note_for_slot(
         title = (chapters[idx].title or "").strip()
         if len(title) > 28:
             title = title[:28] + "…"
-        return f" · ch {idx + 1}/{len(chapters)} {title}"
+        return f" · ch {format_ratio(idx + 1, len(chapters))} {title}"
     return ""
 
 
@@ -311,18 +318,21 @@ def _translation_status_line(
     eta: str = "",
     network_requests: int = 0,
 ) -> str:
+    ratio = format_ratio(completed, total)
     cache_note = ""
     if cache_hits and completed:
-        cache_note = f" · {min(cache_hits, completed)} cached"
-    pack_note = f" · {pack_done}/{pack_total} packs" if pack_total else ""
+        cache_note = f" · {format_count(min(cache_hits, completed))} cached"
+    pack_note = (
+        f" · {format_ratio(pack_done, pack_total)} packs" if pack_total else ""
+    )
     unique_note = ""
     if unique_requests > 0 and network_requests <= 0:
-        unique_note = f" · {unique_requests} unique requests"
-    flight_note = f" · {in_flight} in flight" if in_flight else ""
+        unique_note = f" · {format_count(unique_requests)} unique requests"
+    flight_note = f" · {format_count(in_flight)} in flight" if in_flight else ""
     if retry_pass > 0:
-        prefix = f"{engine} · Retry pass {retry_pass}: {completed}/{total}"
+        prefix = f"{engine} · Retry pass {retry_pass}: {ratio}"
     else:
-        prefix = f"{engine} · Translating: {completed}/{total}"
+        prefix = f"{engine} · Translating: {ratio}"
     return (
         f"{prefix}{cache_note}{pack_note}{unique_note}{flight_note}"
         f"{chapter_note}{eta}"
@@ -548,7 +558,7 @@ def download_chapters_with_cache(
         if control.cancel_requested:
             _cancel_download()
     elif total:
-        set_status(f"Starting download ({total} chapters)…")
+        set_status(f"Starting download ({format_count(total)} chapters)…")
     uncached_done = 0
     cached_done = 0
     network_elapsed = 0.0
@@ -577,7 +587,7 @@ def download_chapters_with_cache(
             cached_done += 1
             extra = ""
             if uncached_total:
-                extra = f" · {uncached_done}/{uncached_total} new"
+                extra = f" · {format_ratio(uncached_done, uncached_total)} new"
             now = time.monotonic()
             if now - last_cache_ui >= 0.07 or cached_done == total:
                 last_cache_ui = now
@@ -585,7 +595,7 @@ def download_chapters_with_cache(
                     set_progress,
                     set_status,
                     frac,
-                    f"Cached {cached_done}/{total}{extra}{eta_text}",
+                    f"Cached {format_ratio(cached_done, total)}{extra}{eta_text}",
                 )
                 time.sleep(0)
             _learn_then_prefetch(
@@ -600,7 +610,7 @@ def download_chapters_with_cache(
             set_progress,
             set_status,
             frac,
-            f"Fetching chapters [{uncached_done + 1}/{uncached_total}]: "
+            f"Fetching chapters [{format_ratio(uncached_done + 1, uncached_total)}]: "
             f"{chapter.title[:40]}{eta_text}",
         )
         t0 = time.monotonic()
@@ -625,7 +635,7 @@ def download_chapters_with_cache(
 
     still_failed: List[str] = []
     if failed:
-        set_status(f"Retrying failed chapters ({len(failed)})…")
+        set_status(f"Retrying {format_count(len(failed))} failed chapters…")
         print(f"Retrying {len(failed)} failed chapter(s)...")
         for chapter in failed:
             paused_for += control.wait_while_paused(set_status)
@@ -980,7 +990,7 @@ def translate_then_build(
                 progress_callback(
                     int(len(chapters) * 1.5),
                     total_steps,
-                    f"Polishing English: {completed}/{total}{eta}",
+                    f"Polishing English: {format_ratio(completed, total)}{eta}",
                 )
 
             print(f"Polishing {len(translated)} segments (KEEP/REPLACE, local LLM)...")

@@ -51,10 +51,37 @@ from core.settings import get_app_dir, is_frozen
 
 SOURCE_UPDATE_ITEMS = [
     'app.py', 'core', 'gui', 'parsers', 'requirements.txt', 'README.md', 'build.py',
+    'VERSION',
 ]
 
-# Current version - UPDATE THIS WITH EACH RELEASE
-__version__ = "2.16.0"
+
+def _read_version() -> str:
+    """The only release number is the repo-root VERSION file.
+
+    Frozen builds read the copy bundled next to the executable. An installed
+    wheel falls back to the version setuptools recorded from that same file.
+    """
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "VERSION")
+    candidates.append(Path(__file__).resolve().parent.parent / "VERSION")
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            return text.split()[0]
+    try:
+        from importlib.metadata import version
+
+        return version("HuaEPUB")
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _read_version()
 
 # GitHub repository (renamed from joelsnl/novelDownloader; GitHub redirects the old path)
 GITHUB_REPO = "joelsnl/HuaEPUB"

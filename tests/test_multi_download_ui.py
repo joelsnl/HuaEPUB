@@ -115,8 +115,12 @@ def test_progress_bar_shows_sliver_for_tiny_fraction(qapp):
     panel = ProgressPanel()
     panel.set_progress(0.00025, None)
     assert panel.bar.value() == 1
+    assert panel.bar.format() == "0.1%"
+    panel.set_progress(0.5, None)
+    assert panel.bar.format() == "50%"
     panel.set_progress(0.0, None)
     assert panel.bar.value() == 0
+    assert not panel.bar.isTextVisible()
 
 
 def test_set_progress_replaces_starting_download(qapp):
@@ -388,12 +392,12 @@ def test_multi_worker_streams_live_fetch_and_translate_status(
     release = threading.Event()
 
     def fake_download(*args, **kwargs):
-        kwargs["set_status"]("Fetching chapters [1/3]: Ch 0  (ETA 12s)")
+        kwargs["set_status"]("Fetching chapters [1/3]: Ch 0 · 12s left")
         kwargs["set_progress"](0.2)
         kwargs["set_status"](
-            "Google · Translating: 4/20 · 8 in flight · ch 1/3 Ch 0  (ETA 9s)"
+            "Google · Translating: 4/20 · 8 in flight · ch 1/3 Ch 0 · 9s left"
         )
-        kwargs["set_build_progress"](0.6, "Polishing English: 2/10  (ETA 8s)")
+        kwargs["set_build_progress"](0.6, "Polishing English: 2/10 · 8s left")
         kwargs["set_status"]("Writing EPUB file...")
         started.set()
         assert release.wait(5)
@@ -435,7 +439,7 @@ def test_multi_worker_streams_live_fetch_and_translate_status(
         assert any("Novel 1/2 — Fetching chapters [1/3]" in s for s in texts)
         assert any("Google · Translating:" in s for s in texts)
         assert any("in flight" in s for s in texts)
-        assert any("ETA" in s for s in texts)
+        assert any("left" in s for s in texts)
         assert any("Polishing English:" in s for s in texts)
         assert any("Writing EPUB file" in s for s in texts)
         assert host.progress.status.text() != "Starting download…"

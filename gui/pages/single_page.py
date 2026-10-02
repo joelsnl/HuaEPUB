@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.parser import Chapter, NovelInfo
+from core.utils import format_count
 
 
 class SinglePage(QWidget):
@@ -115,7 +116,7 @@ class SinglePage(QWidget):
         self.parser = parser
         self.title_label.setText(f"Title: {info.title}")
         self.author_label.setText(f"Author: {info.author or '-'}")
-        self.chapters_label.setText(f"Chapters: {len(chapters)}")
+        self.chapters_label.setText(f"Chapters: {format_count(len(chapters))}")
         if self.translated_title:
             self.eng_title_label.setText(f"English Title: {self.translated_title}")
         else:
@@ -174,7 +175,9 @@ class SinglePage(QWidget):
                 self.tree.topLevelItem(i).setSelected(True)
 
     def _update_selected_count(self):
-        self.selected_label.setText(f"Selected: {len(self.tree.selectedItems())}")
+        self.selected_label.setText(
+            f"Selected: {format_count(len(self.tree.selectedItems()))}"
+        )
 
     def set_url(self, url: str):
         self.url_edit.setText(url)

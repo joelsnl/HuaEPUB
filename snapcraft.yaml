@@ -1,7 +1,8 @@
 # From the repo root, with snapcraft 8: snapcraft
+# Version comes from the VERSION file (adopt-info), not this yaml.
 name: huaepub
 base: core22
-version: '2.16.0'
+adopt-info: huaepub
 summary: Download and translate Chinese web novels to EPUB format
 description: |
   HuaEPUB downloads Chinese web novels, translates them to English,
@@ -30,6 +31,9 @@ parts:
   huaepub:
     plugin: python
     source: .
+    override-pull: |
+      craftctl default
+      craftctl set version="$(tr -d '[:space:]' < "$CRAFT_PART_SRC/VERSION")"
     stage-packages:
       - libgl1
       - libegl1
@@ -48,4 +52,6 @@ parts:
       craftctl default
       install -Dm644 packaging/org.joelsnl.HuaEPUB.desktop "$CRAFT_PART_INSTALL/share/applications/org.joelsnl.HuaEPUB.desktop"
       install -Dm644 packaging/org.joelsnl.HuaEPUB.svg "$CRAFT_PART_INSTALL/share/icons/hicolor/scalable/apps/org.joelsnl.HuaEPUB.svg"
-      install -Dm644 packaging/org.joelsnl.HuaEPUB.metainfo.xml "$CRAFT_PART_INSTALL/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml"
+      mkdir -p "$CRAFT_PART_INSTALL/share/metainfo"
+      ver="$(tr -d '[:space:]' < "$CRAFT_PART_SRC/VERSION")"
+      sed "s/@VERSION@/${ver}/" packaging/org.joelsnl.HuaEPUB.metainfo.xml > "$CRAFT_PART_INSTALL/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml"

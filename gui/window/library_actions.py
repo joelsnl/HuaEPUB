@@ -9,6 +9,7 @@ from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 
 from core.download_job import save_job
+from core.utils import format_count, format_ratio, plural
 from core.download_runner import completion_dialog_title, downloads_folder, epub_path
 from core.notify import notify
 from core.settings import get_default_books_dir
@@ -39,7 +40,7 @@ class LibraryActionsMixin:
         self.library.refresh()
         n = len(entries)
         first = entries[0].translated_title or entries[0].title or "library"
-        self.progress.set_status(f"Checking 1/{n}: {first[:40]}…")
+        self.progress.set_status(f"Checking {format_ratio(1, n)}: {first[:40]}…")
         worker = LibraryCheckWorker(self.session, entries, self.options.snapshot())
         if not self._bind_and_run_check(
             worker,
@@ -69,7 +70,9 @@ class LibraryActionsMixin:
             return
         current = idx if idx >= 1 else 1
         shown = name[:40] if name else ""
-        self.progress.set_status(f"Checking {current}/{total}: {shown}…")
+        self.progress.set_status(
+            f"Checking {format_ratio(current, total)}: {shown}…"
+        )
 
     @Slot(int, int)
     def _library_check_done(self, with_updates: int, total: int):
@@ -80,12 +83,12 @@ class LibraryActionsMixin:
             return
         self.library.set_check_busy(False)
         if with_updates:
-            msg = f"{with_updates}/{total} novel(s) have new chapters"
+            msg = f"{format_ratio(with_updates, total)} have new chapters"
             self.library.status_label.setText(msg)
             self.progress.set_status(msg)
             notify("Library updates available", msg)
         else:
-            msg = f"All {total} novel(s) up to date"
+            msg = f"{plural(total, 'novel')} up to date"
             self.library.status_label.setText(msg)
             self.progress.set_status(msg)
         self.library.refresh()
@@ -126,7 +129,7 @@ class LibraryActionsMixin:
         self._queue_library_update_batch(
             entries,
             title="Update",
-            confirm=f"Update {len(entries)} selected novel(s)?",
+            confirm=f"Update {plural(len(entries), 'selected novel')}?",
         )
 
     @Slot(str)
@@ -164,7 +167,7 @@ class LibraryActionsMixin:
         self._queue_library_update_batch(
             entries,
             title="Update All",
-            confirm=f"Update {len(entries)} novel(s)?",
+            confirm=f"Update {plural(len(entries), 'novel')}?",
         )
 
     def _queue_library_update_batch(self, entries, *, title: str, confirm: str):
@@ -261,8 +264,10 @@ class LibraryActionsMixin:
             rest = len(titles) - len(shown)
             listing = "\n".join(f"• {t}" for t in shown)
             if rest:
-                listing += f"\n• and {rest} more"
-            heading = f"Remove {len(urls)} novels from your library?\n\n{listing}"
+                listing += f"\n• and {format_count(rest)} more"
+            heading = (
+                f"Remove {plural(len(urls), 'novel')} from your library?\n\n{listing}"
+            )
         noun = "this novel" if len(urls) == 1 else "these novels"
         msg = (
             f"{heading}\n\n"
@@ -318,11 +323,13 @@ class LibraryActionsMixin:
                 errors.append(detail)
         lines = []
         if saved:
-            lines.append(f"Downloaded {len(saved)} EPUB(s) from Drive.")
+            lines.append(f"Downloaded {plural(len(saved), 'EPUB')} from Drive.")
         if local_n:
-            lines.append(f"{local_n} already on disk.")
+            lines.append(f"{plural(local_n, 'book')} already on disk.")
         if missing:
-            lines.append(f"{len(missing)} had no local or Drive EPUB.")
+            lines.append(
+                f"{plural(len(missing), 'book')} had no local or Drive EPUB."
+            )
         if errors:
             lines.append("Errors:\n" + "\n".join(errors[:8]))
         body = "\n".join(lines) if lines else "Nothing to download."

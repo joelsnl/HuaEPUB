@@ -51,8 +51,10 @@ QProgressBar {
     border: 1px solid #555;
     border-radius: 4px;
     text-align: center;
+    color: #ffffff;
     background: #3a3a3a;
-    height: 18px;
+    height: 22px;
+    font-size: 12px;
 }
 QProgressBar::chunk { background-color: #1f6aa5; border-radius: 3px; }
 QTabWidget::pane {

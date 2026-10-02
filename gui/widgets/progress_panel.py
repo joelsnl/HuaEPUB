@@ -31,6 +31,7 @@ class ProgressPanel(QWidget):
         self.bar = QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setValue(0)
+        self.bar.setTextVisible(False)
         self.logo = QLabel()
         self.logo.setObjectName("appLogo")
         self.logo.setFixedSize(20, 20)
@@ -104,6 +105,16 @@ class ProgressPanel(QWidget):
         if value == 0 and status and _status_has_work_count(status):
             value = 1
         self.bar.setValue(value)
+        # Range is 0–1000, so the default %p text shows 0% until the bar
+        # is already 1% full. Paint the percent from the value on screen.
+        pct = value / 10.0
+        self.bar.setTextVisible(value > 0)
+        if value <= 0:
+            self.bar.setFormat("%p%")
+        elif pct < 10:
+            self.bar.setFormat(f"{pct:.1f}%")
+        else:
+            self.bar.setFormat(f"{pct:.0f}%")
         if status:
             self.status.setText(status)
 

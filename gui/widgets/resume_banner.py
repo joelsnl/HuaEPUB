@@ -5,6 +5,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
 from core.download_job import job_chapter_urls, job_display_title
+from core.utils import format_ratio
 
 
 class ResumeBanner(QFrame):
@@ -33,7 +34,11 @@ class ResumeBanner(QFrame):
         cached = cache.count_cached_urls(urls) if urls else 0
         total = len(urls)
         title = job_display_title(job)
-        detail = f"{cached}/{total} chapters cached" if total else "cached chapters will be reused"
+        detail = (
+            f"{format_ratio(cached, total)} chapters saved"
+            if total
+            else "saved chapters will be reused"
+        )
         self.label.setText(
             f"Incomplete download: {title}\n{detail} — resume anytime (saved locally, not on Drive)."
         )

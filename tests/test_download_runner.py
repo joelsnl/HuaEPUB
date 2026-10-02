@@ -83,14 +83,14 @@ def test_pause_and_cancel():
 
 
 def test_eta_from_network_samples():
-    assert eta_from_network_samples(10.0, 5, 5) == "  (ETA 10s)"
+    assert eta_from_network_samples(10.0, 5, 5) == " · 10s left"
     assert eta_from_network_samples(0.0, 5, 5) == ""
     assert eta_from_network_samples(10.0, 0, 5) == ""
     assert eta_from_network_samples(10.0, 5, 0) == ""
 
 
 def test_eta_from_pack_samples():
-    assert eta_from_pack_samples(10.0, 5, 5) == "  (ETA 10s)"
+    assert eta_from_pack_samples(10.0, 5, 5) == " · 10s left"
     assert eta_from_pack_samples(10.0, 1, 5) == ""
     assert eta_from_pack_samples(10.0, 5, 0) == ""
 
@@ -114,7 +114,7 @@ def test_format_completion_notes_polish_and_warnings():
         heuristic_chapters=["Chapter 9"],
     )
     assert "Polish was stopped" in notes
-    assert "1 chapter(s) had placeholders" in notes
+    assert "1 chapter had placeholders" in notes
     assert "significant Chinese" in notes
     assert "generic content guess" in notes
     assert "Chapter 9" in notes
@@ -131,6 +131,8 @@ def test_completion_dialog_title_never_says_success_with_warnings():
     assert completion_dialog_title(warned, "Library updated") == "Saved with warnings"
     failed = "Update All: 1/2 succeeded\n  • Other: download failed\n"
     assert completion_dialog_title(failed, "Update All") == "Saved with warnings"
+    assert completion_has_warnings("Completed: 1,200/1,200 novels\n") is False
+    assert completion_has_warnings("Completed: 1,200/1,500 novels\n") is True
     partial = "Completed: 1/3 novels\n\n  • Book: HTTP 403\n"
     assert completion_dialog_title(partial, "Multi-download complete") == (
         "Saved with warnings"
@@ -269,7 +271,7 @@ def test_fetch_status_includes_n_of_n_and_eta(monkeypatch):
     assert fetch_lines
     assert any("[1/3]" in s for s in fetch_lines)
     assert any("[2/3]" in s for s in fetch_lines)
-    assert any("ETA" in s for s in fetch_lines)
+    assert any("left" in s for s in fetch_lines)
 
 
 def test_translation_status_line_zero_of_n_before_http():
@@ -280,8 +282,8 @@ def test_translation_status_line_zero_of_n_before_http():
         unique_requests=47278,
         in_flight=8,
     )
-    assert line.startswith("Google · Translating: 0/51399")
-    assert "47278 unique requests" in line
+    assert line.startswith("Google · Translating: 0/51,399")
+    assert "47,278 unique requests" in line
     assert "8 in flight" in line
     retry = _translation_status_line(
         "Google", 4, 20, retry_pass=2, in_flight=8
@@ -642,10 +644,10 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
         cache_hits=1,
         in_flight=8,
         chapter_note=" · ch 1/3 Ch 0",
-        eta="  (ETA 9s)",
+        eta=" · 9s left",
     )
     assert line == (
-        "Google · Translating: 4/20 · 1 cached · 8 in flight · ch 1/3 Ch 0  (ETA 9s)"
+        "Google · Translating: 4/20 · 1 cached · 8 in flight · ch 1/3 Ch 0 · 9s left"
     )
     retry = _translation_status_line(
         "Microsoft", 2, 10, retry_pass=2, in_flight=4
@@ -659,10 +661,10 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
         pack_done=3,
         pack_total=20,
         in_flight=2,
-        eta="  (ETA 1m)",
+        eta=" · 1m left",
     )
     assert packed == (
-        "LibreTranslate · Translating: 10/100 · 3/20 packs · 2 in flight  (ETA 1m)"
+        "LibreTranslate · Translating: 10/100 · 3/20 packs · 2 in flight · 1m left"
     )
     nmt = _translation_status_line("Offline NMT", 5, 40, in_flight=32)
     assert nmt.startswith("Offline NMT · Translating: 5/40")
@@ -670,8 +672,8 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
     start = _translation_status_line(
         "Google", 0, 51399, unique_requests=47278, in_flight=8
     )
-    assert start.startswith("Google · Translating: 0/51399")
-    assert "47278 unique requests" in start
+    assert start.startswith("Google · Translating: 0/51,399")
+    assert "47,278 unique requests" in start
     assert "8 in flight" in start
     later = _translation_status_line(
         "Google",
@@ -690,7 +692,7 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
         in_flight=8,
         network_requests=0,
     )
-    assert "47278 unique requests" in grouped
+    assert "47,278 unique requests" in grouped
 
 
 def test_planned_in_flight_caps_retry_to_leftovers_not_first_pass_ceiling():

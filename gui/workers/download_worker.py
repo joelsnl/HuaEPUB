@@ -24,6 +24,7 @@ from core.download_runner import (
 from core.library import new_chapters_since
 from core.notify import notify
 from core.parser import fetch_info_and_chapters, get_parser_for_url
+from core.utils import format_count, format_ratio
 
 
 def _live_status(prefix: str, status: str) -> str:
@@ -216,7 +217,7 @@ class MultiDownloadWorker(QObject):
         total = len(self.novels)
         try:
             if total:
-                _emit_bar(self, 0.0, f"Novel 1/{total} — Starting download…")
+                _emit_bar(self, 0.0, f"Novel {format_ratio(1, total)} — Starting download…")
             for ni, novel in enumerate(self.novels):
                 ctrl.wait_while_paused(lambda s: _emit_bar(self, -1.0, s))
                 if ctrl.cancel_requested:
@@ -228,7 +229,7 @@ class MultiDownloadWorker(QObject):
                 _emit_bar(
                     self,
                     ni / max(total, 1),
-                    f"Novel {ni + 1}/{total} — Starting download…",
+                    f"Novel {format_ratio(ni + 1, total)} — Starting download…",
                 )
                 parser = _parser_on_this_thread(
                     novel.get("url") or getattr(info, "source_url", "") or "",
@@ -245,20 +246,20 @@ class MultiDownloadWorker(QObject):
                 )
 
                 def set_status(s, _ni=ni, _tn=total):
-                    _emit_bar(self, -1.0, f"Novel {_ni + 1}/{_tn} — {s}")
+                    _emit_bar(self, -1.0, f"Novel {format_ratio(_ni + 1, _tn)} — {s}")
 
                 def set_progress(f, status="", _ni=ni, _tn=total):
                     _emit_bar(
                         self,
                         (_ni + f / 2) / _tn,
-                        _live_status(f"Novel {_ni + 1}/{_tn} — ", status),
+                        _live_status(f"Novel {format_ratio(_ni + 1, _tn)} — ", status),
                     )
 
                 def set_prog_b(f, status="", _ni=ni, _tn=total):
                     _emit_bar(
                         self,
                         (_ni + 0.5 + f * 0.5) / _tn,
-                        _live_status(f"Novel {_ni + 1}/{_tn} — ", status),
+                        _live_status(f"Novel {format_ratio(_ni + 1, _tn)} — ", status),
                     )
 
                 try:
@@ -313,7 +314,9 @@ class MultiDownloadWorker(QObject):
                 else:
                     clear_job(self.session.data_dir)
                     ctrl.active_job = None
-            summary = f"Completed: {len(success)}/{len(results)} novels\n\n"
+            summary = (
+                f"Completed: {format_ratio(len(success), len(results))} novels\n\n"
+            )
             for title, path, ok, err, failed_ch, _url in results:
                 if ok:
                     line = Path(path).name
@@ -324,7 +327,10 @@ class MultiDownloadWorker(QObject):
                     summary += f"  • {line}\n"
                 else:
                     summary += f"  • {title[:40]}: {err}\n"
-            notify("Multi-download complete", f"{len(success)}/{len(results)} novels saved")
+            notify(
+                "Multi-download complete",
+                f"{format_ratio(len(success), len(results))} novels saved",
+            )
             previews = [
                 {"title": title, "path": path, "source_url": url}
                 for title, path, ok, _err, _failed, url in results
@@ -439,14 +445,21 @@ class LibraryUpdateWorker(QObject):
             )
             clear_job(self.session.data_dir)
             ctrl.active_job = None
-            msg = f"Updated {display}\n+{len(new_only)} new · {len(chapters)} total\n{out}"
+            msg = (
+                f"Updated {display}\n"
+                f"+{format_count(len(new_only))} new · {format_count(len(chapters))} total\n"
+                f"{out}"
+            )
             notes = format_completion_notes(
                 failed, build_result.translation_warnings, build_result.polish_cancelled,
                 build_result.heuristic_chapters,
             )
             if notes:
                 msg += "\n\n" + notes
-            notify("Library update complete", f"{display}: +{len(new_only)} chapters")
+            notify(
+                "Library update complete",
+                f"{display}: +{format_count(len(new_only))} chapters",
+            )
             self.finished_ok.emit(msg)
         except DownloadCancelled:
             self.finished_cancel.emit()
@@ -523,7 +536,7 @@ class LibraryUpdateAllWorker(QObject):
                 _emit_bar(
                     self,
                     idx / max(total, 1),
-                    f"{self.label} [{idx + 1}/{total}]: {display[:40]}",
+                    f"{self.label} [{format_ratio(idx + 1, total)}]: {display[:40]}",
                 )
                 try:
                     parser = get_parser_for_url(entry.source_url)
@@ -554,20 +567,29 @@ class LibraryUpdateAllWorker(QObject):
                     )
 
                     def set_status(s, _i=idx, _t=total):
-                        _emit_bar(self, -1.0, f"{self.label} [{_i + 1}/{_t}] — {s}")
+                        _emit_bar(
+                            self, -1.0,
+                            f"{self.label} [{format_ratio(_i + 1, _t)}] — {s}",
+                        )
 
                     def set_progress(f, status="", _i=idx, _t=total):
                         _emit_bar(
                             self,
                             (_i + f / 2) / _t,
-                            _live_status(f"{self.label} [{_i + 1}/{_t}] — ", status),
+                            _live_status(
+                                f"{self.label} [{format_ratio(_i + 1, _t)}] — ",
+                                status,
+                            ),
                         )
 
                     def set_prog_b(f, status="", _i=idx, _t=total):
                         _emit_bar(
                             self,
                             (_i + 0.5 + f * 0.5) / _t,
-                            _live_status(f"{self.label} [{_i + 1}/{_t}] — ", status),
+                            _live_status(
+                                f"{self.label} [{format_ratio(_i + 1, _t)}] — ",
+                                status,
+                            ),
                         )
 
                     failed, build_result = _download_one_novel(
@@ -588,7 +610,7 @@ class LibraryUpdateAllWorker(QObject):
                             if e.get("source_url") == entry.source_url:
                                 e["done"] = True
                         ctrl.persist_job(force=True)
-                    detail = f"+{len(new_only)} → {Path(out).name}"
+                    detail = f"+{format_count(len(new_only))} → {Path(out).name}"
                     notes = format_completion_notes(
                         failed, build_result.translation_warnings,
                         build_result.polish_cancelled,
@@ -612,7 +634,9 @@ class LibraryUpdateAllWorker(QObject):
                 else:
                     clear_job(self.session.data_dir)
                     ctrl.active_job = None
-            summary = f"{self.label}: {len(ok)}/{len(results)} succeeded"
+            summary = (
+                f"{self.label}: {format_ratio(len(ok), len(results))} succeeded"
+            )
             notify(f"{self.label} complete", summary)
             self.finished_ok.emit(summary)
         except DownloadCancelled:

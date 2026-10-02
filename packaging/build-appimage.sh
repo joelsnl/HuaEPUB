@@ -29,8 +29,9 @@ chmod +x "$APPDIR/usr/bin/$APP"
 cp packaging/org.joelsnl.HuaEPUB.svg "$APPDIR/org.joelsnl.HuaEPUB.svg"
 cp packaging/org.joelsnl.HuaEPUB.svg \
   "$APPDIR/usr/share/icons/hicolor/scalable/apps/org.joelsnl.HuaEPUB.svg"
-cp packaging/org.joelsnl.HuaEPUB.metainfo.xml \
-  "$APPDIR/usr/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml"
+ver=$(tr -d '[:space:]' < VERSION)
+sed "s/@VERSION@/${ver}/" packaging/org.joelsnl.HuaEPUB.metainfo.xml \
+  > "$APPDIR/usr/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml"
 sed 's/^Exec=.*/Exec=HuaEPUB %U/' packaging/org.joelsnl.HuaEPUB.desktop \
   > "$APPDIR/$DESKTOP"
 cp "$APPDIR/$DESKTOP" "$APPDIR/usr/share/applications/$DESKTOP"

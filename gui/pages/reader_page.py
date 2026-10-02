@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.reader import KIND_CACHE, KIND_EPUB, ReaderBook, wrap_reader_html
+from core.utils import format_count
 
 
 class ReaderPage(QWidget):
@@ -137,7 +138,8 @@ class ReaderPage(QWidget):
         self._filling = True
         self.toc.clear()
         for ch in book.chapters:
-            label = f"{ch.index + 1}. {ch.title}" if ch.title else f"Chapter {ch.index + 1}"
+            n = format_count(ch.index + 1)
+            label = f"{n}. {ch.title}" if ch.title else f"Chapter {n}"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, ch.index)
             self.toc.addItem(item)

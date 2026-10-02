@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from core.utils import extract_urls
+from core.utils import extract_urls, format_count
 
 
 class MultiPage(QWidget):
@@ -84,7 +84,8 @@ class MultiPage(QWidget):
         if idx >= self.table.rowCount():
             return
         self.table.setItem(idx, 1, QTableWidgetItem(title))
-        self.table.setItem(idx, 2, QTableWidgetItem(f"{chapters} ch." if chapters else "-"))
+        label = f"{format_count(chapters)} ch" if chapters else "-"
+        self.table.setItem(idx, 2, QTableWidgetItem(label))
         self.table.setItem(idx, 3, QTableWidgetItem(status))
         if novel is not None:
             while len(self.novels) <= idx:

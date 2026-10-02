@@ -35,7 +35,7 @@ from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
 )
-from core.utils import extract_urls, looks_like_url, sanitize_runtime_env
+from core.utils import extract_urls, format_ratio, looks_like_url, sanitize_runtime_env
 
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
@@ -827,7 +827,7 @@ class MainWindow(
             show_warning(self, "Multi", "Paste at least one URL")
             return
         self.multi.begin_fetch(urls)
-        self.progress.set_status(f"Fetching 0/{len(urls)}…")
+        self.progress.set_status(f"Fetching {format_ratio(0, len(urls))}…")
         self.multi.set_busy(True)
         self._multi_fetch_urls = urls
         self._multi_fetch_i = 0
@@ -838,7 +838,9 @@ class MainWindow(
         i = getattr(self, "_multi_fetch_i", 0)
         if i >= len(urls):
             self.multi.set_busy(False)
-            self.progress.set_status(f"Fetched {len(self.multi.fetched_novels())}/{len(urls)}")
+            self.progress.set_status(
+                f"Fetched {format_ratio(len(self.multi.fetched_novels()), len(urls))}"
+            )
             return
         o = self.options.snapshot()
         worker = FetchWorker(

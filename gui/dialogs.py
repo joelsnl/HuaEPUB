@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from core.utils import format_bytes, format_count
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -438,14 +439,7 @@ def show_cache_dialog(parent, cache, settings: dict, on_status) -> None:
     layout = QVBoxLayout(dlg)
 
     def size_text() -> str:
-        n = cache.file_size_bytes()
-        if n < 1024 * 1024:
-            shown = f"{n / 1024:.0f} KB"
-        elif n < 1024 * 1024 * 1024:
-            shown = f"{n / (1024 * 1024):.1f} MB"
-        else:
-            shown = f"{n / (1024 * 1024 * 1024):.2f} GB"
-        return f"Current size: {shown}"
+        return f"Current size: {format_bytes(cache.file_size_bytes())}"
 
     size_lbl = QLabel(size_text())
     layout.addWidget(size_lbl)
@@ -484,7 +478,7 @@ def show_cache_dialog(parent, cache, settings: dict, on_status) -> None:
         removed = cache.maybe_evict()
         size_lbl.setText(size_text())
         if removed:
-            on_status(f"Cache trimmed ({removed} oldest entries removed)")
+            on_status(f"Cache trimmed ({format_count(removed)} oldest entries removed)")
 
     combo.currentIndexChanged.connect(on_cap_changed)
     cap_row.addWidget(combo)

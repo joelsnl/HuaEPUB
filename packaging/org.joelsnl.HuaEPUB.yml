@@ -26,4 +26,5 @@ modules:
       - python3 -m pip install --prefix=${FLATPAK_DEST} --no-cache-dir .
       - install -Dm644 packaging/org.joelsnl.HuaEPUB.desktop ${FLATPAK_DEST}/share/applications/org.joelsnl.HuaEPUB.desktop
       - install -Dm644 packaging/org.joelsnl.HuaEPUB.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/org.joelsnl.HuaEPUB.svg
-      - install -Dm644 packaging/org.joelsnl.HuaEPUB.metainfo.xml ${FLATPAK_DEST}/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml
+      - mkdir -p ${FLATPAK_DEST}/share/metainfo
+      - sed "s/@VERSION@/$(tr -d '[:space:]' < VERSION)/" packaging/org.joelsnl.HuaEPUB.metainfo.xml > ${FLATPAK_DEST}/share/metainfo/org.joelsnl.HuaEPUB.metainfo.xml

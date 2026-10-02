@@ -117,6 +117,7 @@ def build():
         f'--add-data={script_dir / "core"}{separator}core',
         f'--add-data={script_dir / "parsers"}{separator}parsers',
         f'--add-data={script_dir / "gui"}{separator}gui',
+        f'--add-data={script_dir / "VERSION"}{separator}.',
         
         # Main script
         str(script_dir / 'app.py'),

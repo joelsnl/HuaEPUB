@@ -11,8 +11,10 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QGroupBox, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QTableWidgetSelectionRange, QVBoxLayout, QWidget,
+    QTableWidgetItem, QTableWidgetSelectionRange,     QVBoxLayout, QWidget,
 )
+
+from core.utils import format_count, format_ratio, plural
 
 
 class LibraryPage(QWidget):
@@ -275,7 +277,10 @@ class LibraryPage(QWidget):
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(title[:80]))
-            self.table.setItem(r, 1, QTableWidgetItem(str(entry.chapter_count or "")))
+            count = entry.chapter_count or 0
+            self.table.setItem(
+                r, 1, QTableWidgetItem(format_count(count) if count else "")
+            )
             status_item = QTableWidgetItem(st.strip())
             if kind == "update":
                 status_item.setForeground(Qt.yellow)
@@ -303,15 +308,15 @@ class LibraryPage(QWidget):
         if self._filter == "updates":
             if total and not shown:
                 self._status_base = (
-                    f"{total} novel(s) in library — none flagged yet. "
+                    f"{plural(total, 'novel')} in library — none flagged yet. "
                     "Click All, or run Check updates."
                 )
             else:
                 self._status_base = (
-                    f"Updates filter: {shown}/{total} novel(s) with new chapters"
+                    f"{format_ratio(shown, total)} with new chapters"
                 )
         else:
-            self._status_base = f"{total} novel(s) in library"
+            self._status_base = f"{plural(total, 'novel')} in library"
 
         self.update_all_btn.setEnabled(any(
             (self.check_status.get(e.source_url) or {}).get("state") == "update"
@@ -372,7 +377,7 @@ class LibraryPage(QWidget):
             return "Checking…", "checking"
         if state == "update":
             n = int(info.get("new_count") or 0)
-            return (f"{n} new" if n else "Update"), "update"
+            return (f"{format_count(n)} new" if n else "Update"), "update"
         if state == "current":
             return "Up to date", "current"
         if state == "error":
@@ -516,14 +521,16 @@ class LibraryPage(QWidget):
         n = len(self.selected_urls())
         base = self._status_base or ""
         if n and base:
-            self.status_label.setText(f"{base} · {n} selected")
+            self.status_label.setText(f"{base} · {format_count(n)} selected")
         elif n:
-            self.status_label.setText(f"{n} selected")
+            self.status_label.setText(f"{format_count(n)} selected")
         else:
             self.status_label.setText(base)
-        self.update_btn.setText("Update" if n <= 1 else f"Update ({n})")
-        self.remove_btn.setText("Remove" if n <= 1 else f"Remove ({n})")
-        self.dl_epub_btn.setText("Download EPUB" if n <= 1 else f"Download EPUB ({n})")
+        self.update_btn.setText("Update" if n <= 1 else f"Update ({format_count(n)})")
+        self.remove_btn.setText("Remove" if n <= 1 else f"Remove ({format_count(n)})")
+        self.dl_epub_btn.setText(
+            "Download EPUB" if n <= 1 else f"Download EPUB ({format_count(n)})"
+        )
         has = n > 0
         self.read_btn.setEnabled(has)
         self.update_btn.setEnabled(has)

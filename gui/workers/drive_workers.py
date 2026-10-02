@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from core.utils import format_count, plural
+
 DRIVE_SYNC_CANCELLED = "Drive sync cancelled"
 
 
@@ -70,7 +72,7 @@ class DriveSyncWorker(QObject):
                 self.progress.emit(f"Syncing library.json in “{folder_name}”…")
                 merged = ds.sync_library_with_store(self.session.library_store)
                 novel_count = len(merged.library) if merged else 0
-                summary_parts.append(f"library ({novel_count} novel(s))")
+                summary_parts.append(f"library ({plural(novel_count, 'novel')})")
             if self._cancelled():
                 self.finished.emit(DRIVE_SYNC_CANCELLED, "")
                 return
@@ -129,7 +131,7 @@ class DriveSyncWorker(QObject):
                         return
                     action = "Updating" if is_update else "Uploading"
                     self.progress.emit(
-                        f"{action} EPUB {i + 1}/{len(pending)}: {name[:40]}"
+                        f"{action} EPUB {format_count(i + 1)}/{format_count(len(pending))}: {name[:40]}"
                     )
                     try:
                         file_id = ds.upload_epub(path, name)

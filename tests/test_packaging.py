@@ -9,13 +9,6 @@ from parsers.config import load_sites
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _version_line(text: str, prefix: str) -> str:
-    for line in text.splitlines():
-        if line.startswith(prefix):
-            return line.split("=", 1)[1].strip().strip("\"'")
-    raise AssertionError(prefix)
-
-
 def test_console_script_calls_run():
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'huaepub = "gui.app:run"' in project
@@ -28,12 +21,23 @@ def test_sites_json_loads():
 
 
 def test_package_versions_match_app():
+    """Humans edit VERSION once. Packaging reads that file instead of a copy."""
+    recorded = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert __version__ == recorded
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert _version_line(project, "version = ") == __version__
+    assert 'version = {file = "VERSION"}' in project
+    assert f'version = "{recorded}"' not in project
     snap = (ROOT / "snapcraft.yaml").read_text(encoding="utf-8")
-    assert f"version: '{__version__}'" in snap
+    assert "adopt-info: huaepub" in snap
+    assert f"version: '{recorded}'" not in snap
+    assert "CRAFT_PART_SRC/VERSION" in snap
     meta = (ROOT / "packaging" / "org.joelsnl.HuaEPUB.metainfo.xml").read_text(encoding="utf-8")
-    assert f'version="{__version__}"' in meta
+    assert 'version="@VERSION@"' in meta
+    assert f'version="{recorded}"' not in meta
+    flatpak = (ROOT / "packaging" / "org.joelsnl.HuaEPUB.yml").read_text(encoding="utf-8")
+    appimage = (ROOT / "packaging" / "build-appimage.sh").read_text(encoding="utf-8")
+    assert "@VERSION@" in flatpak and "VERSION" in flatpak
+    assert "@VERSION@" in appimage and "VERSION" in appimage
 
 
 def test_linux_launchers_name_the_real_command():
