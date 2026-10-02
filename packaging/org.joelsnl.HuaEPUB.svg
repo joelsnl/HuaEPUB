@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90D9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2E5C8A;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="64" fill="url(#grad)"/>
+  <!-- Book shape -->
+  <path d="M160 80 L352 80 C390 80 420 110 420 148 L420 432 C420 470 390 500 352 500 L160 500 C122 500 92 470 92 432 L92 148 C92 110 122 80 160 80 Z" fill="white"/>
+  <!-- Book pages lines -->
+  <line x1="180" y1="180" x2="380" y2="180" stroke="#4A90D9" stroke-width="4"/>
+  <line x1="180" y1="210" x2="380" y2="210" stroke="#4A90D9" stroke-width="4"/>
+  <line x1="180" y1="240" x2="380" y2="240" stroke="#4A90D9" stroke-width="4"/>
+  <line x1="180" y1="270" x2="380" y2="270" stroke="#4A90D9" stroke-width="4"/>
+  <!-- Chinese character approximation -->
+  <text x="256" y="360" font-family="Arial, sans-serif" font-size="120" font-weight="bold" fill="#2E5C8A" text-anchor="middle">书</text>
+</svg>

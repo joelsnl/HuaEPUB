@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=HuaEPUB
+Comment=Download and translate Chinese web novels to EPUB format
+Exec=huaepub %U
+Icon=org.joelsnl.HuaEPUB
+Terminal=false
+Type=Application
+Categories=Utility;Education;
+Keywords=webnovel;ebook;translator;epub;chinese;
+MimeType=application/epub+zip;
+StartupNotify=true
