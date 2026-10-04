@@ -112,3 +112,31 @@ def test_close_while_syncing_keep_open_and_abort(qapp):
     assert abort.choice == CloseWhileSyncingDialog.ABORT
     assert abort._accepting
 
+
+def test_update_progress_stays_open_until_allowed(qapp):
+    from PySide6.QtCore import Qt, QEvent
+    from PySide6.QtGui import QKeyEvent
+    from gui.dialogs import UpdateProgressDialog
+
+    dlg = UpdateProgressDialog()
+    dlg.show()
+    qapp.processEvents()
+    dlg.set_progress(40, 100, "Verifying download...")
+    assert dlg.bar.value() == 40
+    assert dlg.label.text() == "Verifying download..."
+    dlg.close()
+    qapp.processEvents()
+    assert dlg.isVisible()
+    dlg.keyPressEvent(
+        QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+    assert dlg.isVisible()
+    dlg.allow_close()
+    dlg.close()
+    qapp.processEvents()
+    assert dlg.isVisible() is False
+
