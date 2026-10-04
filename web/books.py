@@ -9,22 +9,28 @@ folder and Library as one built at the PC.
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core import tasks as core_tasks
 from core.download_job import (
-    chapters_from_job,
-    chapters_to_job,
+    book_job,
     clear_job,
+    entries_from_job,
     job_display_title,
+    library_update_all_job,
     load_job,
-    novel_info_from_job,
-    novel_info_to_job,
+    multi_job,
+    novels_from_job,
     save_job,
+    single_from_job,
 )
-from core.download_runner import completion_has_warnings, downloads_folder, epub_path
-from core.parser import NovelInfo, get_parser_for_url
+from core.download_runner import (
+    completion_has_warnings,
+    downloads_folder,
+    epub_path,
+    format_completion_notes,
+    library_epub_path,
+)
 from web.options import job_options
 from web.preview import Preview, PreviewError, build_preview, translate_preview
 from web.tasks import TaskContext, TaskManager
@@ -37,22 +43,7 @@ def _flagged(chapters, titles) -> List[int]:
     return [pos for pos, ch in enumerate(chapters) if ch.title in wanted]
 
 
-def _out_path(session, title: str, source_url: str, options: Dict[str, Any]) -> str:
-    preferred = ""
-    entry = session.library_store.get_library_entry(source_url or "")
-    if entry:
-        preferred = entry.epub_filename or entry.output_path or ""
-    return epub_path(
-        downloads_folder(options.get("output_dir", "")),
-        title,
-        preferred_name=Path(preferred).name if preferred else "",
-        preferred_path=preferred,
-    )
-
-
 def _single_result(ctx: TaskContext, result, chapters) -> Dict[str, Any]:
-    from core.download_runner import format_completion_notes
-
     notes = format_completion_notes(
         result.failed, result.warnings, result.polish_cancelled, result.heuristic,
     )
@@ -78,18 +69,9 @@ def start_single(manager: TaskManager, preview: Preview, chapter_from: int, chap
     chapters = [dataclasses.replace(ch) for ch in preview.chapters[chapter_from - 1:chapter_to]]
     info = dataclasses.replace(preview.info)
     translated_title = (preview.title_en or None) if options["translate"] else None
-    out = _out_path(session, translated_title or info.title, info.source_url, options)
-    job = {
-        "kind": "single",
-        "status": "running",
-        "source_url": info.source_url or "",
-        "title": info.title or "",
-        "translated_title": translated_title or "",
-        "info": novel_info_to_job(info),
-        "chapters": chapters_to_job(chapters),
-        "output_path": out,
-        "options": options,
-    }
+    out = library_epub_path(session.library_store, translated_title or info.title,
+                            info.source_url, options.get("output_dir", ""))
+    job = book_job("single", info, chapters, out, options, translated_title=translated_title or "")
     label = translated_title or info.title or "Novel"
     return _start_single_job(manager, preview.parser, info, chapters, out, translated_title, job,
                              label=label)
@@ -167,23 +149,7 @@ def start_multi(manager: TaskManager, previews: List[Preview]):
             "status": "fetched",
             "translated_title": translated,
         })
-    job = {
-        "kind": "multi",
-        "status": "running",
-        "options": options,
-        "novels": [
-            {
-                "source_url": n["url"],
-                "title": n["info"].title,
-                "translated_title": n.get("translated_title") or "",
-                "info": novel_info_to_job(n["info"]),
-                "chapters": chapters_to_job(n["chapters"]),
-                "done": False,
-            }
-            for n in novels
-        ],
-    }
-    return _start_multi_job(manager, novels, job)
+    return _start_multi_job(manager, novels, multi_job(novels, options))
 
 
 def _start_multi_job(manager, novels, job):
@@ -250,7 +216,7 @@ def start_library_update_many(manager: TaskManager, entries: list, *, label: str
                               job: Optional[dict] = None):
     session = manager.session
     options = (job or {}).get("options") or job_options(session.settings)
-    job = job or core_tasks.library_update_all_job(entries, options)
+    job = job or library_update_all_job(entries, options)
     rows = [{"title": e.translated_title or e.title or e.source_url, "status": "Queued",
              "url": e.source_url} for e in entries]
 
@@ -343,14 +309,10 @@ def start_resume(manager: TaskManager):
         raise ResumeError("There is no unfinished download.")
     kind = job.get("kind")
     if kind == "single":
-        info = novel_info_from_job(job.get("info"))
-        chapters = chapters_from_job(job.get("chapters") or [])
-        url = (job.get("source_url") or (info.source_url if info else "")).strip()
-        parser = get_parser_for_url(url)
-        if not parser or not chapters:
+        resumed = single_from_job(job)
+        if resumed is None:
             raise ResumeError("Saved download incomplete")
-        if not info:
-            info = NovelInfo(title=job.get("title") or "Untitled", source_url=url)
+        _url, parser, info, chapters = resumed
         translated = job.get("translated_title") or None
         out = job.get("output_path") or epub_path(
             downloads_folder((job.get("options") or {}).get("output_dir", "")),
@@ -359,19 +321,7 @@ def start_resume(manager: TaskManager):
         return _start_single_job(manager, parser, info, chapters, out, translated, job,
                                  label=translated or info.title)
     if kind == "multi":
-        novels = []
-        for item in job.get("novels") or []:
-            if item.get("done"):
-                continue
-            url = (item.get("source_url") or "").strip()
-            chapters = chapters_from_job(item.get("chapters") or [])
-            info = novel_info_from_job(item.get("info"))
-            parser = get_parser_for_url(url) if url else None
-            if not parser or not chapters or not info:
-                continue
-            novels.append({"url": url, "parser": parser, "info": info, "chapters": chapters,
-                           "status": "fetched",
-                           "translated_title": item.get("translated_title") or ""})
+        novels = novels_from_job(job)
         if not novels:
             clear_job(session.data_dir)
             raise ResumeError("No unfinished novels left")
@@ -382,13 +332,7 @@ def start_resume(manager: TaskManager):
             raise ResumeError("Library entry missing. Try Update from Library.")
         return start_library_update(manager, entry)
     if kind == "library_update_all":
-        entries = []
-        for e in job.get("entries") or []:
-            if e.get("done"):
-                continue
-            ent = session.library_store.get_library_entry(e.get("source_url") or "")
-            if ent:
-                entries.append(ent)
+        entries = entries_from_job(job, session.library_store)
         if not entries:
             clear_job(session.data_dir)
             raise ResumeError("No unfinished library novels")

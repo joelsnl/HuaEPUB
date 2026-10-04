@@ -8,11 +8,11 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+    QButtonGroup, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-MIN_PASSWORD = 10
+from web.auth import MIN_PASSWORD
 
 
 @dataclass
@@ -32,13 +32,32 @@ def _hint(text: str) -> QLabel:
     return lbl
 
 
+def _password_problem(p1: str, p2: str) -> str:
+    """Why this new password cannot be used, or '' when it can."""
+    if len(p1) < MIN_PASSWORD:
+        return f"The password needs at least {MIN_PASSWORD} characters."
+    if p1 != p2:
+        return "The two passwords are not the same."
+    return ""
+
+
+def _buttons(dialog: QDialog, ok_text: str) -> QDialogButtonBox:
+    """Cancel + the dialog's own OK button; accepted goes to ``dialog._accept``."""
+    box = QDialogButtonBox()
+    box.addButton(QDialogButtonBox.StandardButton.Cancel).setObjectName("secondaryBtn")
+    box.addButton(ok_text, QDialogButtonBox.ButtonRole.AcceptRole).setDefault(True)
+    box.accepted.connect(dialog._accept)
+    box.rejected.connect(dialog.reject)
+    return box
+
+
 class ServerModeDialog(QDialog):
     """Pick This network / Anywhere before serving. Returns a ServerChoice."""
 
     _sig_public = Signal(str, str)
 
     def __init__(self, parent=None, *, settings: dict, has_password: bool,
-                 find_public_address=None):
+                 find_public_address):
         super().__init__(parent)
         self.setWindowTitle("Server mode")
         self.setModal(True)
@@ -102,7 +121,6 @@ class ServerModeDialog(QDialog):
         self.find_btn = QPushButton("Find my public address")
         self.find_btn.setObjectName("secondaryBtn")
         self.find_btn.clicked.connect(self._find)
-        self.find_btn.setVisible(find_public_address is not None)
         host_row.addWidget(self.hostname, 1)
         host_row.addWidget(self.find_btn)
         rf.addRow("Address", host_row)
@@ -128,17 +146,7 @@ class ServerModeDialog(QDialog):
         self.error.hide()
         lay.addWidget(self.error)
 
-        btns = QHBoxLayout()
-        cancel = QPushButton("Cancel")
-        cancel.setObjectName("secondaryBtn")
-        cancel.clicked.connect(self.reject)
-        self.start_btn = QPushButton("Start serving")
-        self.start_btn.setDefault(True)
-        self.start_btn.clicked.connect(self._accept)
-        btns.addStretch(1)
-        btns.addWidget(cancel)
-        btns.addWidget(self.start_btn)
-        lay.addLayout(btns)
+        lay.addWidget(_buttons(self, "Start serving"))
 
         if (settings.get("server_mode") or "lan") == "remote":
             self.remote_rb.setChecked(True)
@@ -169,8 +177,6 @@ class ServerModeDialog(QDialog):
         self.adjustSize()
 
     def _find(self) -> None:
-        if self._find_public is None:
-            return
         self.find_btn.setEnabled(False)
         self.find_note.setText("Asking api.ipify.org…")
         finder = self._find_public
@@ -204,11 +210,9 @@ class ServerModeDialog(QDialog):
         if mode == "remote":
             p1, p2 = self.pw1.text(), self.pw2.text()
             if p1 or p2 or not self._has_password:
-                if len(p1) < MIN_PASSWORD:
-                    self._fail(f"The password needs at least {MIN_PASSWORD} characters.")
-                    return
-                if p1 != p2:
-                    self._fail("The two passwords are not the same.")
+                problem = _password_problem(p1, p2)
+                if problem:
+                    self._fail(problem)
                     return
                 password = p1
             if bool(cert) != bool(key):
@@ -243,26 +247,13 @@ class ChangePasswordDialog(QDialog):
         self.error.setObjectName("flagLabel")
         self.error.hide()
         lay.addWidget(self.error)
-        btns = QHBoxLayout()
-        cancel = QPushButton("Cancel")
-        cancel.setObjectName("secondaryBtn")
-        cancel.clicked.connect(self.reject)
-        ok = QPushButton("Change password")
-        ok.setDefault(True)
-        ok.clicked.connect(self._accept)
-        btns.addStretch(1)
-        btns.addWidget(cancel)
-        btns.addWidget(ok)
-        lay.addLayout(btns)
+        lay.addWidget(_buttons(self, "Change password"))
 
     def _accept(self) -> None:
         p1, p2 = self.pw1.text(), self.pw2.text()
-        if len(p1) < MIN_PASSWORD:
-            self.error.setText(f"The password needs at least {MIN_PASSWORD} characters.")
-            self.error.show()
-            return
-        if p1 != p2:
-            self.error.setText("The two passwords are not the same.")
+        problem = _password_problem(p1, p2)
+        if problem:
+            self.error.setText(problem)
             self.error.show()
             return
         self.password = p1

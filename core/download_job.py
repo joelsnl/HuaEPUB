@@ -3,7 +3,8 @@
 Local-only incomplete download job (active_download.json in ~/.huaepub/).
 
 Never synced to Google Drive — only chapter cache + this file let a download
-resume after Pause, app close, or PC shutdown.
+resume after Pause, app close, or PC shutdown. The desktop and server mode
+build and decode the job dicts here, so both resume the same file.
 """
 
 from __future__ import annotations
@@ -12,9 +13,9 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from core.parser import Chapter, NovelInfo
+from core.parser import Chapter, NovelInfo, get_parser_for_url
 from core.settings import get_data_dir
 
 JOB_FILE = "active_download.json"
@@ -130,6 +131,114 @@ def novel_info_from_job(data: Optional[Dict[str, Any]]) -> Optional[NovelInfo]:
         tags=list(data.get("tags") or []),
         source_url=source,
     )
+
+
+def book_job(
+    kind: str,
+    info: NovelInfo,
+    chapters: List[Chapter],
+    output_path: str,
+    options: Dict[str, Any],
+    *,
+    translated_title: str = "",
+    source_url: str = "",
+    title: str = "",
+) -> Dict[str, Any]:
+    """The resume payload for one book: ``single`` or ``library_update``."""
+    return {
+        "kind": kind,
+        "status": "running",
+        "source_url": source_url or info.source_url or "",
+        "title": title or info.title or "",
+        "translated_title": translated_title or "",
+        "info": novel_info_to_job(info),
+        "chapters": chapters_to_job(chapters),
+        "output_path": output_path,
+        "options": options,
+    }
+
+
+def multi_job(novels: List[Dict[str, Any]], options: Dict[str, Any]) -> Dict[str, Any]:
+    """The resume payload for a Multi download (``novels`` as the Multi tab holds them)."""
+    return {
+        "kind": "multi",
+        "status": "running",
+        "options": options,
+        "novels": [
+            {
+                "source_url": n["url"],
+                "title": n["info"].title,
+                "translated_title": n.get("translated_title") or "",
+                "info": novel_info_to_job(n["info"]),
+                "chapters": chapters_to_job(n["chapters"]),
+                "done": False,
+            }
+            for n in novels
+        ],
+    }
+
+
+def library_update_all_job(entries: list, options: Dict[str, Any]) -> Dict[str, Any]:
+    """The resume payload for an Update / Update All batch."""
+    return {
+        "kind": "library_update_all",
+        "status": "running",
+        "options": options,
+        "entries": [
+            {
+                "source_url": e.source_url,
+                "title": e.title or "",
+                "translated_title": e.translated_title or "",
+                "done": False,
+            }
+            for e in entries
+        ],
+    }
+
+
+def single_from_job(job: Dict[str, Any]) -> Optional[Tuple[str, Any, NovelInfo, List[Chapter]]]:
+    """``(url, parser, info, chapters)`` for a saved Single job, or None if it cannot resume."""
+    info = novel_info_from_job(job.get("info"))
+    chapters = chapters_from_job(job.get("chapters") or [])
+    url = (job.get("source_url") or (info.source_url if info else "")).strip()
+    parser = get_parser_for_url(url)
+    if not parser or not chapters:
+        return None
+    if not info:
+        info = NovelInfo(title=job.get("title") or "Untitled", source_url=url)
+    return url, parser, info, chapters
+
+
+def novels_from_job(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The unfinished novels of a saved Multi job, ready to download again."""
+    novels = []
+    for item in job.get("novels") or []:
+        if item.get("done"):
+            continue
+        url = (item.get("source_url") or "").strip()
+        chapters = chapters_from_job(item.get("chapters") or [])
+        info = novel_info_from_job(item.get("info"))
+        parser = get_parser_for_url(url) if url else None
+        if not parser or not chapters or not info:
+            continue
+        novels.append({
+            "url": url, "parser": parser, "info": info,
+            "chapters": chapters, "status": "fetched",
+            "translated_title": item.get("translated_title") or "",
+        })
+    return novels
+
+
+def entries_from_job(job: Dict[str, Any], library_store) -> list:
+    """Library entries a saved Update All job has not finished yet."""
+    entries = []
+    for e in job.get("entries") or []:
+        if e.get("done"):
+            continue
+        ent = library_store.get_library_entry(e.get("source_url") or "")
+        if ent:
+            entries.append(ent)
+    return entries
 
 
 def job_display_title(job: Dict[str, Any]) -> str:

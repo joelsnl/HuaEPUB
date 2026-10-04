@@ -4,8 +4,20 @@ Download Chinese web novels and build English EPUBs. Run from source on **Window
 
 GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter through 2.5).
 
-<img width="1838" height="1124" alt="Screenshot 2026-08-08 at 16 30 03" src="https://github.com/user-attachments/assets/6ffa080a-5ba0-4bde-a506-e52de3a90fd5" />
+![HuaEPUB desktop app translating a book](docs/screenshots/desktop-single-dark.png)
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/desktop-library-light.png" alt="Library tab in the light look"></td>
+    <td width="50%"><img src="docs/screenshots/desktop-serving-dark.png" alt="Server mode: address, access code and QR code"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/browser-library-light.png" alt="The same library in a browser"></td>
+    <td align="center"><img src="docs/screenshots/phone-library-dark.png" width="45%" alt="Library on a phone"> <img src="docs/screenshots/phone-reader-dark.png" width="45%" alt="Reading on a phone"></td>
+  </tr>
+</table>
+
+<sub>Screenshots use made-up demo books.</sub>
 
 ## Features
 
@@ -75,7 +87,7 @@ Each zip is just `HuaEPUB` (`HuaEPUB.exe` on Windows). Each release also include
 
 ## User Manual
 
-HuaEPUB has four tabs at the top: **Single**, **Multi**, **Library**, and **Read**. Options below the main area (translate, clean, cache, workers, save folder) apply to downloads in all modes and are remembered between sessions.
+HuaEPUB has four tabs at the top: **Single**, **Multi**, **Library**, and **Read**. Options below the main area (translate, clean, cache, workers, save folder) apply to downloads in all modes and are remembered between sessions. The **SERVE** chip at the right of the tabs turns on [Server mode](#server-mode).
 
 ### Quick start (one novel)
 
@@ -446,7 +458,7 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 
 ## Architecture
 
-[docs/architecture.html](docs/architecture.html) is a standalone diagram of how a download moves from a URL through parse, clean, translate, polish, and EPUB. Open it in a browser.
+[docs/architecture.html](docs/architecture.html) is a standalone diagram of HuaEPUB 3.0: the desktop app and server mode sharing one session and one set of job code, and how a download moves from a URL through parse, clean, translate, polish, and EPUB. Open it in a browser. It was made with [Archify](https://github.com/tt-a1i/archify).
 
 ## Credits
 

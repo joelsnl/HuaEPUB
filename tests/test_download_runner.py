@@ -1,6 +1,7 @@
 """Tests for core.download_runner helpers."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,10 +26,10 @@ from core.download_runner import (
     format_completion_notes,
     completion_dialog_title,
     completion_has_warnings,
-    run_single_download,
     translator_progress_label,
 )
 from core.parser import Chapter, NovelInfo
+from core.tasks import download_one_novel
 
 
 def test_epub_path_preferred_strips_copy_suffix(tmp_path):
@@ -388,10 +389,8 @@ def test_google_run_starts_fetch_before_translator(tmp_path, monkeypatch):
         return EpubBuildResult(output_path=kwargs["output_path"])
 
     monkeypatch.setattr("core.download_runner.prepare_translation", fake_prepare)
-    monkeypatch.setattr("core.download_runner.build_epub", fake_build)
-    monkeypatch.setattr(
-        "core.download_runner.record_successful_download", lambda *_a, **_k: None
-    )
+    monkeypatch.setattr("core.tasks.build_epub", fake_build)
+    monkeypatch.setattr("core.tasks.record_successful_download", lambda *_a, **_k: None)
 
     class _P(_Parser):
         def get_chapter_content(self, chapter):
@@ -400,24 +399,14 @@ def test_google_run_starts_fetch_before_translator(tmp_path, monkeypatch):
 
     info = NovelInfo(title="T", source_url="https://example.com/book")
     chapters = [Chapter(title="Ch 1", url="https://example.com/1", content="")]
-    run_single_download(
-        control=DownloadControl(),
-        cache=_MemCache(),
-        library_store=object(),
-        parser=_P(),
-        info=info,
-        chapters=chapters,
-        output_path=str(tmp_path / "book.epub"),
-        translated_title="T",
-        use_cache=True,
-        clean=True,
-        translate=True,
-        workers=8,
-        backend="google",
-        libretranslate_url="",
-        set_status=lambda _s: None,
-        set_progress=lambda _f: None,
-        glossary_mode="auto",
+    session = SimpleNamespace(control=DownloadControl(), cache=_MemCache(),
+                              library_store=object(), settings={})
+    options = {"use_cache": True, "clean": True, "translate": True, "workers": 8,
+               "backend": "google", "glossary": "auto"}
+    download_one_novel(
+        session, _P(), info, chapters, str(tmp_path / "book.epub"), "T", options,
+        book_key=info.source_url, set_status=lambda _s: None,
+        set_progress=lambda _f, _s="": None, set_build_progress=lambda _f, _s="": None,
     )
     assert order[0] == "fetch"
     assert "prepare" not in order
@@ -436,10 +425,8 @@ def test_libre_run_prepares_translator_before_fetch(tmp_path, monkeypatch):
         return EpubBuildResult(output_path=kwargs["output_path"])
 
     monkeypatch.setattr("core.download_runner.prepare_translation", fake_prepare)
-    monkeypatch.setattr("core.download_runner.build_epub", fake_build)
-    monkeypatch.setattr(
-        "core.download_runner.record_successful_download", lambda *_a, **_k: None
-    )
+    monkeypatch.setattr("core.tasks.build_epub", fake_build)
+    monkeypatch.setattr("core.tasks.record_successful_download", lambda *_a, **_k: None)
 
     class _P(_Parser):
         def get_chapter_content(self, chapter):
@@ -448,24 +435,14 @@ def test_libre_run_prepares_translator_before_fetch(tmp_path, monkeypatch):
 
     info = NovelInfo(title="T", source_url="https://example.com/book")
     chapters = [Chapter(title="Ch 1", url="https://example.com/1", content="")]
-    run_single_download(
-        control=DownloadControl(),
-        cache=_MemCache(),
-        library_store=object(),
-        parser=_P(),
-        info=info,
-        chapters=chapters,
-        output_path=str(tmp_path / "book.epub"),
-        translated_title="T",
-        use_cache=True,
-        clean=False,
-        translate=True,
-        workers=8,
-        backend="libretranslate",
-        libretranslate_url="https://libretranslate.com",
-        set_status=lambda _s: None,
-        set_progress=lambda _f: None,
-        glossary_mode="auto",
+    session = SimpleNamespace(control=DownloadControl(), cache=_MemCache(),
+                              library_store=object(), settings={})
+    options = {"use_cache": True, "clean": False, "translate": True, "workers": 8,
+               "backend": "libretranslate", "libretranslate_url": "https://libretranslate.com", "glossary": "auto"}
+    download_one_novel(
+        session, _P(), info, chapters, str(tmp_path / "book.epub"), "T", options,
+        book_key=info.source_url, set_status=lambda _s: None,
+        set_progress=lambda _f, _s="": None, set_build_progress=lambda _f, _s="": None,
     )
     assert order[0] == "prepare"
     assert order.index("prepare") < order.index("fetch")

@@ -4,7 +4,6 @@
 (function () {
   'use strict';
   var KEY = 'huaepub-look';
-  var OLD_KEY = 'huaepub-simple-look';
   // id -> data-theme value (null = follow the system)
   var THEMES = {
     auto: null, dark: 'graphite', light: 'celadon',
@@ -18,7 +17,7 @@
 
   function read() {
     try {
-      var v = localStorage.getItem(KEY) || localStorage.getItem(OLD_KEY);
+      var v = localStorage.getItem(KEY);
       if (v && (v in NAMES)) return v;
     } catch (e) {}
     return 'auto';
@@ -26,16 +25,15 @@
   function write(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
 
   function apply(id) {
-    var root = document.documentElement, theme = null;
-    if (id === 'surprise') theme = SURPRISE[Math.floor(Math.random() * SURPRISE.length)];
-    else theme = THEMES[id] || null;
+    var root = document.documentElement;
+    var theme = id === 'surprise' ? SURPRISE[Math.floor(Math.random() * SURPRISE.length)] : THEMES[id];
     if (theme) root.setAttribute('data-theme', theme); else root.removeAttribute('data-theme');
   }
 
   window.HuaTheme = {
     names: NAMES,
     get: read,
-    set: function (id) { write(id); if (id !== 'surprise') apply(id); else apply('surprise'); }
+    set: function (id) { write(id); apply(id); }
   };
   apply(read());
 })();

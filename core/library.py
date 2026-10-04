@@ -643,3 +643,25 @@ def purge_novel_artifacts(
         if not roots or not is_allowed_epub_path(path, roots):
             continue
         _unlink_epub(path)
+
+
+def remove_and_purge(store: "LibraryStore", urls: List[str], *, cache=None, output_dir: str = "",
+                     data_dir=None) -> int:
+    """Remove each URL from the library and purge its EPUB, caches and reading position.
+
+    Returns how many of the URLs were in the library.
+    """
+    from core.settings import get_default_books_dir
+
+    extra_dirs = [get_default_books_dir()]
+    custom = (output_dir or "").strip()
+    if custom:
+        extra_dirs.append(Path(custom))
+    removed = 0
+    for url in urls:
+        before = store.get_library_entry(url)
+        target = store.remove_library(url) or before
+        if target:
+            removed += 1
+            purge_novel_artifacts(target, cache=cache, extra_dirs=extra_dirs, data_dir=data_dir)
+    return removed

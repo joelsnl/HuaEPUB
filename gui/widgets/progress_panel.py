@@ -6,6 +6,7 @@ import re
 from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from core.utils import pipeline_phase
 from gui.icon import load_app_pixmap
 from gui.widgets.slips import SealMark, SlipStrip
 
@@ -17,20 +18,6 @@ def _status_has_work_count(status: str) -> bool:
     if not status or "Starting download" in status:
         return False
     return bool(_COUNT_RE.search(status))
-
-
-def phase_of(status: str) -> str:
-    """The pipeline phase a status line names (Fetching / Translating / Polishing / Writing)."""
-    text = (status or "").lower()
-    if "polish" in text:
-        return "polishing"
-    if "writing epub" in text or text.startswith("writing"):
-        return "writing"
-    if "translat" in text:
-        return "translating"
-    if "fetch" in text or "chapter" in text or "download" in text:
-        return "fetching"
-    return ""
 
 
 class ProgressPanel(QWidget):
@@ -132,11 +119,11 @@ class ProgressPanel(QWidget):
             value = 1
         self._value = value
         if status:
-            phase = phase_of(status)
+            phase = pipeline_phase(status)
             if phase:
                 self._phase = phase
         if value <= 0:
-            self._phase = phase_of(status or "") if status else ""
+            self._phase = pipeline_phase(status or "") if status else ""
         self.seal.hide()
         self.slips.set_progress(value / 1000.0, self._phase)
         self.percent.setText(self.percent_text())

@@ -20,10 +20,12 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from core.parser import Chapter, get_parser_for_url
+from core.parser import get_parser_for_url
 from core.reader import (
     KIND_CACHE,
+    fetch_reader_chapter,
     html_needs_live_translate,
+    live_translate_html,
     next_cache_prefetch_index,
     resolve_reader_book,
     resume_index,
@@ -96,25 +98,14 @@ def build_router(ctx) -> APIRouter:
             wait = delay - (time.monotonic() - item.last_fetch)
             if wait > 0:
                 time.sleep(min(wait, 10.0))
-        parser = get_parser_for_url(ch.url) or get_parser_for_url(book.source_url)
-        if not parser:
-            raise RuntimeError("Unsupported site")
-        html = parser.get_chapter_content(Chapter(title=ch.title or "", url=ch.url))
-        item.last_fetch = time.monotonic()
-        if not html or not str(html).strip():
-            raise RuntimeError("Chapter came back empty.")
         try:
-            session.cache.put_chapter(book.source_url, ch.url, ch.title or "", html)
-        except Exception:
-            pass
+            html = fetch_reader_chapter(session.cache, book.source_url, ch.url, ch.title)
+        finally:
+            item.last_fetch = time.monotonic()
         ch.html = html
         return html
 
     def live_translate(book, index: int) -> None:
-        from types import SimpleNamespace
-
-        from core.cleaner import ContentCleaner
-        from core.download_runner import make_translator, translator_backend_kwargs
         from web.options import job_options
 
         options = job_options(session.settings)
@@ -123,18 +114,10 @@ def build_router(ctx) -> APIRouter:
         ch = book.chapters[index]
         if not html_needs_live_translate(ch.html or ""):
             return
-        kw = translator_backend_kwargs({}, options)
-        translator = make_translator(cache=session.cache,
-                                     max_workers=int(options.get("workers", 200) or 200), **kw)
-        cfg = getattr(translator, "configure_glossary", None)
-        if callable(cfg):
-            cfg(SimpleNamespace(title=book.title or "", description=""),
-                mode=kw.get("glossary_mode", "auto"),
-                detect_text=" ".join([book.title or ""] + [c.title or "" for c in book.chapters[:40]]))
-        cleaner = ContentCleaner() if options.get("clean", True) else None
-        out = translator.translate_and_apply_html(ch.html or "", cleaner=cleaner)
-        if out:
-            ch.html = out
+        ch.html = live_translate_html(
+            ch.html or "", cache=session.cache, options=options, novel_title=book.title or "",
+            detect_text=" ".join([book.title or ""] + [c.title or "" for c in book.chapters[:40]]),
+        )
 
     def prefetch_next(item: OpenBook, index: int) -> None:
         nxt = next_cache_prefetch_index(item.book, index)

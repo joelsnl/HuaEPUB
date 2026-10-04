@@ -21,16 +21,16 @@ from core.branding import (
     APP_REPO_URL, APP_TITLE, LOG_FILE_NAME,
 )
 from core.download_job import (
-    chapters_from_job, chapters_to_job, clear_job, load_job,
-    novel_info_from_job, novel_info_to_job, save_job,
+    book_job, clear_job, entries_from_job, load_job, multi_job, novels_from_job, save_job,
+    single_from_job,
 )
 from core.download_runner import (
     completion_dialog_title, downloads_folder, epub_path, format_completion_notes,
-    translator_backend_kwargs,
+    library_epub_path, translator_backend_kwargs,
 )
 from core.logger import setup_logging
 from core.settings import save_settings, set_setting
-from core.parser import cleanup_browser, create_http_session, get_parser_for_url
+from core.parser import cleanup_browser, create_http_session
 from core.updater import (
     check_for_updates_async, download_update_async, get_auto_check_updates,
     get_current_version, set_auto_check_updates,
@@ -555,15 +555,10 @@ class MainWindow(
     def _resume_single(self, job: dict):
         self.tabs.setCurrentWidget(self.single)
         self.options.apply_snapshot(job.get("options") or {})
-        info = novel_info_from_job(job.get("info"))
-        chapters = chapters_from_job(job.get("chapters") or [])
-        url = (job.get("source_url") or (info.source_url if info else "")).strip()
-        parser = get_parser_for_url(url)
-        if not parser or not chapters:
+        resumed = single_from_job(job)
+        if resumed is None:
             raise Exception("Saved download incomplete")
-        if not info:
-            from core.parser import NovelInfo
-            info = NovelInfo(title=job.get("title") or "Untitled", source_url=url)
+        url, parser, info, chapters = resumed
         self.single.translated_title = job.get("translated_title") or None
         self.single.set_url(url)
         self.single.show_novel(info, chapters, parser)
@@ -576,21 +571,7 @@ class MainWindow(
     def _resume_multi(self, job: dict):
         self.tabs.setCurrentWidget(self.multi)
         self.options.apply_snapshot(job.get("options") or {})
-        novels = []
-        for item in job.get("novels") or []:
-            if item.get("done"):
-                continue
-            url = (item.get("source_url") or "").strip()
-            chapters = chapters_from_job(item.get("chapters") or [])
-            info = novel_info_from_job(item.get("info"))
-            parser = get_parser_for_url(url) if url else None
-            if not parser or not chapters or not info:
-                continue
-            novels.append({
-                "url": url, "parser": parser, "info": info,
-                "chapters": chapters, "status": "fetched",
-                "translated_title": item.get("translated_title") or "",
-            })
+        novels = novels_from_job(job)
         if not novels:
             clear_job(self.session.data_dir)
             raise Exception("No unfinished novels left")
@@ -614,13 +595,7 @@ class MainWindow(
     def _resume_library_update_all(self, job: dict):
         self.tabs.setCurrentWidget(self.library)
         self.options.apply_snapshot(job.get("options") or {})
-        entries = []
-        for e in job.get("entries") or []:
-            if e.get("done"):
-                continue
-            ent = self.session.library_store.get_library_entry(e.get("source_url") or "")
-            if ent:
-                entries.append(ent)
+        entries = entries_from_job(job, self.session.library_store)
         if not entries:
             clear_job(self.session.data_dir)
             raise Exception("No unfinished library novels")
@@ -698,28 +673,13 @@ class MainWindow(
             return
         self._persist_settings()
         o = self.options.snapshot()
-        title = self.single.translated_title or self.single.novel_info.title
-        preferred = ""
-        entry = self.session.library_store.get_library_entry(self.single.novel_info.source_url)
-        if entry:
-            preferred = entry.epub_filename or entry.output_path or ""
-        out = epub_path(
-            downloads_folder(o.get("output_dir", "")),
-            title,
-            preferred_name=Path(preferred).name if preferred else "",
-            preferred_path=preferred,
+        info = self.single.novel_info
+        out = library_epub_path(
+            self.session.library_store, self.single.translated_title or info.title,
+            info.source_url, o.get("output_dir", ""),
         )
-        job = {
-            "kind": "single",
-            "status": "running",
-            "source_url": self.single.novel_info.source_url or "",
-            "title": self.single.novel_info.title or "",
-            "translated_title": self.single.translated_title or "",
-            "info": novel_info_to_job(self.single.novel_info),
-            "chapters": chapters_to_job(selected),
-            "output_path": out,
-            "options": o,
-        }
+        job = book_job("single", info, selected, out, o,
+                       translated_title=self.single.translated_title or "")
         self._begin_single_download(
             self.single.parser, self.single.novel_info, selected, out,
             self.single.translated_title, job,
@@ -741,6 +701,7 @@ class MainWindow(
         if not self._serving():
             self._start_drive_sync_silent()
 
+    @Slot()
     def _drive_sync_now(self):
         DriveActionsMixin._drive_sync_now(self)
 
@@ -919,23 +880,7 @@ class MainWindow(
         if not novels:
             return
         self._persist_settings()
-        o = self.options.snapshot()
-        job = {
-            "kind": "multi",
-            "status": "running",
-            "options": o,
-            "novels": [
-                {
-                    "source_url": n["url"],
-                    "title": n["info"].title,
-                    "translated_title": n.get("translated_title") or "",
-                    "info": novel_info_to_job(n["info"]),
-                    "chapters": chapters_to_job(n["chapters"]),
-                    "done": False,
-                }
-                for n in novels
-            ],
-        }
+        job = multi_job(novels, self.options.snapshot())
         self.session.control.active_job = job
         save_job(job, self.session.data_dir)
         self._start_multi_download_with(novels)

@@ -104,8 +104,6 @@ class ServerActionsMixin:
         return self._start_serving(announce_errors=True, on_launch=True)
 
     def _start_serving(self, *, announce_errors: bool, on_launch: bool = False) -> bool:
-        from web.host import ServerStartError
-
         s = self.session.settings
         # The browser edits the same settings: write what the tabs show first.
         self._persist_settings()
@@ -118,7 +116,7 @@ class ServerActionsMixin:
                        hostname=s.get("server_hostname") or "",
                        cert_path=s.get("server_cert_path") or "",
                        key_path=s.get("server_key_path") or "")
-        except (ServerStartError, OSError, ValueError) as exc:
+        except Exception as exc:  # ServerStartError, ports, certificate files, cryptography, …
             QApplication.restoreOverrideCursor()
             s["server_enabled"] = False
             save_settings(s)
@@ -127,13 +125,6 @@ class ServerActionsMixin:
                         if on_launch else "Server mode could not start.")
                 show_error(self, "Server mode", f"{lead}\n\n{exc}\n\nThe desktop app is open "
                                                 "as usual.")
-            return False
-        except Exception as exc:  # certificate files, cryptography errors, …
-            QApplication.restoreOverrideCursor()
-            s["server_enabled"] = False
-            save_settings(s)
-            if announce_errors:
-                show_error(self, "Server mode", f"Server mode could not start.\n\n{exc}")
             return False
         QApplication.restoreOverrideCursor()
         s["server_enabled"] = True

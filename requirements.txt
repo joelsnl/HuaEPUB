@@ -33,6 +33,7 @@ google-auth-httplib2>=0.2.0
 
 # Server mode (serve the app to browsers on your network or the internet)
 fastapi>=0.110
+pydantic>=2.0
 uvicorn>=0.29
 qrcode>=7.4
 cryptography>=42.0

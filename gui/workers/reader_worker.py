@@ -6,7 +6,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from core.parser import Chapter, get_parser_for_url
+from core.reader import (
+    UnsupportedSite,
+    fetch_reader_chapter,
+    html_needs_live_translate,
+    live_translate_html,
+)
 
 
 class ReaderChapterFetchWorker(QObject):
@@ -41,20 +46,10 @@ class ReaderChapterFetchWorker(QObject):
                 self.status.emit("Waiting for site delay…")
                 time.sleep(self.delay)
             self.status.emit(f"Fetching chapter: {(self.title or self.url)[:40]}")
-            parser = get_parser_for_url(self.url) or get_parser_for_url(self.book_url)
-            if not parser:
-                self.error.emit(self.index, f"Unsupported site.\n{self.url}")
-                return
-            chapter = Chapter(title=self.title or "", url=self.url)
-            html = parser.get_chapter_content(chapter)
-            if not html or not str(html).strip():
-                self.error.emit(self.index, "Chapter came back empty.")
-                return
-            try:
-                self.cache.put_chapter(self.book_url, self.url, self.title or "", html)
-            except Exception:
-                pass
+            html = fetch_reader_chapter(self.cache, self.book_url, self.url, self.title)
             self.finished.emit(self.index, self.url, html)
+        except UnsupportedSite:
+            self.error.emit(self.index, f"Unsupported site.\n{self.url}")
         except Exception as exc:
             self.error.emit(self.index, str(exc))
 
@@ -89,32 +84,15 @@ class ReaderTranslateWorker(QObject):
     @Slot()
     def run(self):
         try:
-            from types import SimpleNamespace
-
-            from core.cleaner import ContentCleaner
-            from core.download_runner import make_translator, translator_backend_kwargs
-            from core.reader import html_needs_live_translate
-
             if not html_needs_live_translate(self.html):
                 self.finished.emit(self.index, self.url, self.html)
                 return
             self.status.emit("Translating chapter…")
-            kw = translator_backend_kwargs({}, self.options)
-            translator = make_translator(
-                cache=self.cache,
-                max_workers=int(self.options.get("workers", 200) or 200),
-                **kw,
+            out = live_translate_html(
+                self.html, cache=self.cache, options=self.options,
+                novel_title=self.novel_title, detect_text=self.detect_text,
             )
-            cfg = getattr(translator, "configure_glossary", None)
-            if callable(cfg):
-                cfg(
-                    SimpleNamespace(title=self.novel_title, description=""),
-                    mode=kw.get("glossary_mode", "auto"),
-                    detect_text=self.detect_text or self.novel_title,
-                )
-            cleaner = ContentCleaner() if self.options.get("clean", True) else None
-            out = translator.translate_and_apply_html(self.html, cleaner=cleaner)
-            self.finished.emit(self.index, self.url, out or self.html)
+            self.finished.emit(self.index, self.url, out)
         except Exception as exc:
             self.error.emit(self.index, str(exc))
 

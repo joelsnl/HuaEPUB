@@ -230,12 +230,7 @@ class ServerScreen(QWidget):
             QApplication.instance().devicePixelRatio() if QApplication.instance() else 1.0)
         # Dark modules on a light square read best with every phone camera.
         dark, light = ("#0F1214", pal.ink) if pal.dark else (pal.ink, pal.ground)
-        pix = qr_pixmap(self._qr_text, QR_SIZE, dark=dark, light=light, ratio=ratio)
-        if pix.isNull():
-            self.qr.setText("Install the qrcode package to show a QR code here.")
-            self.qr.setWordWrap(True)
-        else:
-            self.qr.setPixmap(pix)
+        self.qr.setPixmap(qr_pixmap(self._qr_text, QR_SIZE, dark=dark, light=light, ratio=ratio))
 
     def show_task(self, task: dict | None) -> None:
         self.task.setText(task_line(task))

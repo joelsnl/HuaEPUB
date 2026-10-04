@@ -11,7 +11,6 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from core import tasks
 from core.download_runner import DownloadCancelled
-from core.tasks import live_status as _live_status  # noqa: F401 (tests import it here)
 
 
 def _emit_bar(owner, fraction: float, status: str = "") -> None:

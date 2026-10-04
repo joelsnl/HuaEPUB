@@ -15,7 +15,7 @@ from core.parser import Chapter, NovelInfo, fetch_info_and_chapters, get_parser_
 from core.security import UnsafeURLError, validate_fetch_url
 
 PREVIEW_TTL_SECONDS = 30 * 60
-MAX_PREVIEWS = 8
+MAX_PREVIEWS = 64
 PREVIEW_TRANSLATE_WORKERS = 50
 
 
@@ -135,10 +135,12 @@ def translate_preview(preview: Preview, *, cache: Any, workers: int = PREVIEW_TR
     try:
         from core.translator import GoogleTranslator
 
+        title_zh = is_chinese(preview.info.title)
+        author_zh = is_chinese(preview.info.author)
         texts: List[str] = []
-        if is_chinese(preview.info.title):
+        if title_zh:
             texts.append(preview.info.title)
-        if is_chinese(preview.info.author):
+        if author_zh:
             texts.append(preview.info.author)
         chapter_indices = [i for i, ch in enumerate(preview.chapters) if is_chinese(ch.title)]
         texts.extend(preview.chapters[i].title for i in chapter_indices)
@@ -149,10 +151,10 @@ def translate_preview(preview: Preview, *, cache: Any, workers: int = PREVIEW_TR
         results = translator.translate_texts(texts)
 
         pos = 0
-        if is_chinese(preview.info.title):
+        if title_zh:
             preview.title_en = results[pos] if pos < len(results) else ""
             pos += 1
-        if is_chinese(preview.info.author):
+        if author_zh:
             preview.author_en = results[pos] if pos < len(results) else ""
             pos += 1
         titles_en = [""] * len(preview.chapters)

@@ -19,7 +19,7 @@ try:
     from gui.pages.single_page import SinglePage
     from gui.widgets.progress_panel import ProgressPanel
     from gui.widgets.resume_banner import ResumeBanner
-    from gui.workers.download_worker import MultiDownloadWorker, _live_status
+    from gui.workers.download_worker import MultiDownloadWorker
     from gui.window.worker_host import WorkerHostMixin
 except ImportError as exc:
     pytest.skip(f"Qt GUI unavailable: {exc}", allow_module_level=True)
@@ -166,11 +166,13 @@ def test_on_progress_from_pool_thread_updates_footer(qapp, tmp_path):
 
 
 def test_live_status_keeps_novel_prefix():
+    from core.tasks import live_status
+
     assert (
-        _live_status("Novel 1/2 — ", "Google · Translating: 0/10 · 8 in flight")
+        live_status("Novel 1/2 — ", "Google · Translating: 0/10 · 8 in flight")
         == "Novel 1/2 — Google · Translating: 0/10 · 8 in flight"
     )
-    assert _live_status("Novel 1/2 — ", "") == ""
+    assert live_status("Novel 1/2 — ", "") == ""
 
 
 def test_set_downloading_enables_pause_and_replaces_fetch_status(qapp, tmp_path):

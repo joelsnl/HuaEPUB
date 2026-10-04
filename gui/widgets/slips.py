@@ -63,13 +63,6 @@ class SlipStrip(QWidget):
         self._flagged = bool(flagged)
         self.update()
 
-    def reset(self) -> None:
-        self._fraction = 0.0
-        self._phase = ""
-        self._finished = False
-        self._flagged = False
-        self.update()
-
     def paintEvent(self, _event):
         pal = theme.current()
         n = self.slip_count()
@@ -119,10 +112,9 @@ class SlipStrip(QWidget):
 class SealMark(QWidget):
     """The red 译 stamp shown on a finished translated build."""
 
-    def __init__(self, parent=None, *, size: int = 40, text: str = "译"):
+    def __init__(self, parent=None, *, size: int = 40):
         super().__init__(parent)
         self._size = size
-        self._text = text
         self.setFixedSize(size + 4, size + 4)
         self.setToolTip("Translated")
 
@@ -139,5 +131,5 @@ class SealMark(QWidget):
         painter.drawRoundedRect(rect, 3, 3)
         painter.setPen(QColor(pal.seal_ink))
         painter.setFont(theme.serif_font(s * 0.42))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._text)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "译")
         painter.end()

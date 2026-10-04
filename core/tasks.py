@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.download_job import clear_job, save_job
+from core.download_job import book_job, clear_job, save_job
 from core.download_runner import (
     DownloadCancelled,
     backend_prefetches_during_fetch,
@@ -30,8 +30,8 @@ from core.download_runner import (
     epub_path,
     epub_translate_kwargs,
     format_completion_notes,
+    library_epub_path,
     record_successful_download,
-    run_single_download,
     translator_backend_kwargs,
 )
 from core.library import new_chapters_since
@@ -64,6 +64,36 @@ def _detail(detail: Optional[DetailFn], novel: int, novels: int, stage: str, fra
     if frac < 0:
         return
     detail({"novel": novel, "novels": novels, "stage": stage, "fraction": min(frac, 1.0)})
+
+
+def _reporters(emit: EmitFn, detail: Optional[DetailFn], prefix: str, novel: int = 0,
+               novels: int = 1):
+    """``set_status`` / ``set_progress`` / ``set_build_progress`` for book ``novel`` of ``novels``.
+
+    Fetch fills the first half of that book's share of the bar, the build the
+    second half. ``prefix`` (e.g. "Novel 2/5 — ") heads every status line.
+    """
+
+    def set_status(s):
+        emit(-1.0, f"{prefix}{s}")
+
+    def set_progress(f, status=""):
+        emit((novel + f / 2) / novels, live_status(prefix, status))
+        _detail(detail, novel, novels, "fetch", f)
+
+    def set_build_progress(f, status=""):
+        emit((novel + 0.5 + f * 0.5) / novels, live_status(prefix, status))
+        _detail(detail, novel, novels, "build", f)
+
+    return {"set_status": set_status, "set_progress": set_progress,
+            "set_build_progress": set_build_progress}
+
+
+def _notes(failed, build_result) -> str:
+    return format_completion_notes(
+        failed, build_result.translation_warnings, build_result.polish_cancelled,
+        build_result.heuristic_chapters,
+    )
 
 
 def parser_for(url: str, fallback=None):
@@ -186,41 +216,17 @@ def run_single(
     re-raises.
     """
     ctrl = session.control
-
-    def set_status(s):
-        emit(-1.0, s)
-
-    def set_progress(f, status=""):
-        emit(f, status)
-        try:
-            frac = float(f)
-        except (TypeError, ValueError):
-            return
-        if frac < 0:
-            return
-        if frac <= 0.5:
-            _detail(detail, 0, 1, "fetch", frac * 2)
-        else:
-            _detail(detail, 0, 1, "fetch", 1.0)
-            _detail(detail, 0, 1, "build", (frac - 0.5) * 2)
-
     try:
-        failed, build_result = run_single_download(
-            control=ctrl,
-            cache=session.cache,
-            library_store=session.library_store,
-            parser=parser_for(getattr(info, "source_url", "") or "", parser),
-            info=info,
-            chapters=chapters,
-            output_path=output_path,
-            translated_title=translated_title,
-            use_cache=bool(options.get("use_cache", True)),
-            clean=bool(options.get("clean", True)),
-            translate=bool(options.get("translate", True)),
-            workers=int(options.get("workers", 200) or 200),
-            **epub_translate_kwargs(session.settings, options),
-            set_status=set_status,
-            set_progress=set_progress,
+        failed, build_result = download_one_novel(
+            session,
+            parser_for(getattr(info, "source_url", "") or "", parser),
+            info,
+            chapters,
+            output_path,
+            translated_title,
+            options,
+            book_key=info.source_url if info else "",
+            **_reporters(emit, detail, ""),
         )
     except DownloadCancelled:
         raise
@@ -270,7 +276,6 @@ def run_multi(
     print("Multi-download started")
     ctrl = session.control
     results = []
-    folder = downloads_folder(options.get("output_dir", ""))
     total = len(novels)
     if total:
         emit(0.0, f"Novel {format_ratio(1, total)} — Starting download…")
@@ -287,30 +292,9 @@ def run_multi(
             novel.get("url") or getattr(info, "source_url", "") or "",
             novel.get("parser"),
         )
-        preferred = ""
-        entry = session.library_store.get_library_entry(info.source_url)
-        if entry:
-            preferred = entry.epub_filename or entry.output_path or ""
-        out = epub_path(
-            folder, title,
-            preferred_name=Path(preferred).name if preferred else "",
-            preferred_path=preferred,
+        out = library_epub_path(
+            session.library_store, title, info.source_url, options.get("output_dir", "")
         )
-
-        def set_status(s, _ni=ni, _tn=total):
-            emit(-1.0, f"Novel {format_ratio(_ni + 1, _tn)} — {s}")
-
-        def set_progress(f, status="", _ni=ni, _tn=total):
-            emit((_ni + f / 2) / _tn, live_status(f"Novel {format_ratio(_ni + 1, _tn)} — ", status))
-            _detail(detail, _ni, _tn, "fetch", f)
-
-        def set_prog_b(f, status="", _ni=ni, _tn=total):
-            emit(
-                (_ni + 0.5 + f * 0.5) / _tn,
-                live_status(f"Novel {format_ratio(_ni + 1, _tn)} — ", status),
-            )
-            _detail(detail, _ni, _tn, "build", f)
-
         try:
             failed, build_result = download_one_novel(
                 session,
@@ -321,20 +305,14 @@ def run_multi(
                 novel.get("translated_title"),
                 options,
                 book_key=info.source_url,
-                set_status=set_status,
-                set_progress=set_progress,
-                set_build_progress=set_prog_b,
+                **_reporters(emit, detail, f"Novel {format_ratio(ni + 1, total)} — ", ni, total),
             )
             if ctrl.active_job and ctrl.active_job.get("kind") == "multi":
                 for n in ctrl.active_job.get("novels") or []:
                     if n.get("source_url") == info.source_url:
                         n["done"] = True
                 ctrl.persist_job(force=True)
-            notes = format_completion_notes(
-                failed, build_result.translation_warnings,
-                build_result.polish_cancelled,
-                build_result.heuristic_chapters,
-            )
+            notes = _notes(failed, build_result)
             results.append((title, out, True, notes, len(failed), info.source_url or ""))
             on_novel_status(
                 ni,
@@ -399,6 +377,32 @@ class LibraryUpdateResult:
     path: str = ""
 
 
+def _fetch_entry(session, entry, *, require_chapters: bool = False):
+    """``(parser, info, chapters, new_only)`` for a tracked novel; saves the TOC snapshot."""
+    parser = get_parser_for_url(entry.source_url)
+    if not parser:
+        raise Exception("Unsupported site")
+    info, chapters = fetch_info_and_chapters(parser, entry.source_url)
+    if require_chapters and not chapters:
+        raise Exception("No chapters found")
+    try:
+        session.cache.put_chapter_list(entry.source_url, chapters)
+    except Exception:
+        pass
+    new_only, _ = new_chapters_since(chapters, entry.last_chapter_url, entry.chapter_count)
+    return parser, info, chapters, new_only
+
+
+def _entry_epub_path(entry, title: str, options: dict) -> str:
+    """Rebuild over the entry's own EPUB name/path when it has one."""
+    return epub_path(
+        downloads_folder(options.get("output_dir", "")),
+        title,
+        preferred_name=entry.epub_filename or "",
+        preferred_path=entry.output_path or "",
+    )
+
+
 def run_library_update(
     session,
     entry,
@@ -413,18 +417,8 @@ def run_library_update(
     """
     ctrl = session.control
     display = entry.translated_title or entry.title or "Novel"
-    parser = get_parser_for_url(entry.source_url)
-    if not parser:
-        raise Exception("Unsupported site")
     emit(0.0, f"Checking: {display[:40]}...")
-    info, chapters = fetch_info_and_chapters(parser, entry.source_url)
-    if not chapters:
-        raise Exception("No chapters found")
-    try:
-        session.cache.put_chapter_list(entry.source_url, chapters)
-    except Exception:
-        pass
-    new_only, _ = new_chapters_since(chapters, entry.last_chapter_url, entry.chapter_count)
+    parser, info, chapters, new_only = _fetch_entry(session, entry, require_chapters=True)
     if not new_only:
         return LibraryUpdateResult(up_to_date=True, display=display)
     translated_title = entry.translated_title or info.title
@@ -442,39 +436,14 @@ def run_library_update(
             translated_title = translator.translate_text(info.title) or info.title
         except Exception:
             translated_title = info.title
-    out = epub_path(
-        downloads_folder(options.get("output_dir", "")),
-        translated_title,
-        preferred_name=entry.epub_filename or "",
-        preferred_path=entry.output_path or "",
+    out = _entry_epub_path(entry, translated_title, options)
+    job = book_job(
+        "library_update", info, chapters, out, options,
+        translated_title=translated_title, source_url=entry.source_url,
+        title=info.title or entry.title or "",
     )
-    from core.download_job import chapters_to_job, novel_info_to_job
-
-    job = {
-        "kind": "library_update",
-        "status": "running",
-        "source_url": entry.source_url,
-        "title": info.title or entry.title or "",
-        "translated_title": translated_title or "",
-        "info": novel_info_to_job(info),
-        "chapters": chapters_to_job(chapters),
-        "output_path": out,
-        "options": options,
-    }
     ctrl.active_job = job
     save_job(job, session.data_dir)
-
-    def set_status(s):
-        emit(-1.0, s)
-
-    def set_progress(f, status=""):
-        emit(f / 2, status)
-        _detail(detail, 0, 1, "fetch", f)
-
-    def set_prog_b(f, status=""):
-        emit(0.5 + f * 0.5, status)
-        _detail(detail, 0, 1, "build", f)
-
     failed, build_result = download_one_novel(
         session,
         parser,
@@ -484,9 +453,7 @@ def run_library_update(
         translated_title,
         options,
         book_key=info.source_url or entry.source_url,
-        set_status=set_status,
-        set_progress=set_progress,
-        set_build_progress=set_prog_b,
+        **_reporters(emit, detail, ""),
     )
     clear_job(session.data_dir)
     ctrl.active_job = None
@@ -495,10 +462,7 @@ def run_library_update(
         f"+{format_count(len(new_only))} new · {format_count(len(chapters))} total\n"
         f"{out}"
     )
-    notes = format_completion_notes(
-        failed, build_result.translation_warnings, build_result.polish_cancelled,
-        build_result.heuristic_chapters,
-    )
+    notes = _notes(failed, build_result)
     if notes:
         msg += "\n\n" + notes
     notify("Library update complete", f"{display}: +{format_count(len(new_only))} chapters")
@@ -527,46 +491,13 @@ def run_library_update_all(
             display = entry.translated_title or entry.title or "Novel"
             emit(idx / max(total, 1), f"{label} [{format_ratio(idx + 1, total)}]: {display[:40]}")
             try:
-                parser = get_parser_for_url(entry.source_url)
-                if not parser:
-                    raise Exception("Unsupported site")
-                info, chapters = fetch_info_and_chapters(parser, entry.source_url)
-                try:
-                    session.cache.put_chapter_list(entry.source_url, chapters)
-                except Exception:
-                    pass
-                new_only, _ = new_chapters_since(
-                    chapters, entry.last_chapter_url, entry.chapter_count
-                )
+                parser, info, chapters, new_only = _fetch_entry(session, entry)
                 if not new_only:
                     results.append((display, True, "Already up to date"))
                     _mark_entry_done(ctrl, entry.source_url)
                     continue
                 translated_title = entry.translated_title or info.title
-                out = epub_path(
-                    downloads_folder(options.get("output_dir", "")),
-                    translated_title,
-                    preferred_name=entry.epub_filename or "",
-                    preferred_path=entry.output_path or "",
-                )
-
-                def set_status(s, _i=idx, _t=total):
-                    emit(-1.0, f"{label} [{format_ratio(_i + 1, _t)}] — {s}")
-
-                def set_progress(f, status="", _i=idx, _t=total):
-                    emit(
-                        (_i + f / 2) / _t,
-                        live_status(f"{label} [{format_ratio(_i + 1, _t)}] — ", status),
-                    )
-                    _detail(detail, _i, _t, "fetch", f)
-
-                def set_prog_b(f, status="", _i=idx, _t=total):
-                    emit(
-                        (_i + 0.5 + f * 0.5) / _t,
-                        live_status(f"{label} [{format_ratio(_i + 1, _t)}] — ", status),
-                    )
-                    _detail(detail, _i, _t, "build", f)
-
+                out = _entry_epub_path(entry, translated_title, options)
                 failed, build_result = download_one_novel(
                     session,
                     parser,
@@ -576,17 +507,13 @@ def run_library_update_all(
                     translated_title,
                     options,
                     book_key=info.source_url or entry.source_url,
-                    set_status=set_status,
-                    set_progress=set_progress,
-                    set_build_progress=set_prog_b,
+                    **_reporters(
+                        emit, detail, f"{label} [{format_ratio(idx + 1, total)}] — ", idx, total
+                    ),
                 )
                 _mark_entry_done(ctrl, entry.source_url)
                 detail_line = f"+{format_count(len(new_only))} → {Path(out).name}"
-                notes = format_completion_notes(
-                    failed, build_result.translation_warnings,
-                    build_result.polish_cancelled,
-                    build_result.heuristic_chapters,
-                )
+                notes = _notes(failed, build_result)
                 if notes:
                     detail_line += f" ({notes.splitlines()[0]})"
                 results.append((display, True, detail_line))
@@ -620,24 +547,6 @@ def _mark_entry_done(ctrl, source_url: str) -> None:
             if e.get("source_url") == source_url:
                 e["done"] = True
         ctrl.persist_job(force=True)
-
-
-def library_update_all_job(entries: list, options: dict) -> dict:
-    """The resume-file payload for an Update / Update All batch."""
-    return {
-        "kind": "library_update_all",
-        "status": "running",
-        "options": options,
-        "entries": [
-            {
-                "source_url": e.source_url,
-                "title": e.title or "",
-                "translated_title": e.translated_title or "",
-                "done": False,
-            }
-            for e in entries
-        ],
-    }
 
 
 # ----------------------------------------------------------------------

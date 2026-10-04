@@ -67,7 +67,8 @@ def test_slip_states():
 
 
 def test_progress_panel_marks_a_translated_finish(qapp):
-    from gui.widgets.progress_panel import ProgressPanel, phase_of
+    from core.utils import pipeline_phase
+    from gui.widgets.progress_panel import ProgressPanel
 
     panel = ProgressPanel()
     panel.set_progress(0.3, "Fetching chapters 3/10")
@@ -76,9 +77,9 @@ def test_progress_panel_marks_a_translated_finish(qapp):
     assert not panel.seal.isHidden()
     panel.set_progress(0.0, "Starting download…")
     assert panel.seal.isHidden()
-    assert phase_of("Writing EPUB…") == "writing"
-    assert phase_of("Polishing English 3/9") == "polishing"
-    assert phase_of("Translating · Google · 10/40") == "translating"
+    assert pipeline_phase("Writing EPUB…") == "writing"
+    assert pipeline_phase("Polishing English 3/9") == "polishing"
+    assert pipeline_phase("Translating · Google · 10/40") == "translating"
 
 
 # ----------------------------------------------------------------------

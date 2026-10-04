@@ -27,11 +27,9 @@ class LookActionsMixin:
             group.addAction(act)
             look_m.addAction(act)
             self._look_actions[look_id] = act
-        app = QApplication.instance()
-        try:
-            app.styleHints().colorSchemeChanged.connect(self._on_system_scheme_changed)
-        except AttributeError:  # Qt < 6.5: Auto stays on the colours picked at start
-            pass
+        QApplication.instance().styleHints().colorSchemeChanged.connect(
+            self._on_system_scheme_changed
+        )
 
     @Slot(str)
     def _set_look(self, look_id: str) -> None:
