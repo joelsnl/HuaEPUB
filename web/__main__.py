@@ -100,7 +100,7 @@ def main(argv=None) -> int:
     except Exception:
         workers = 200
     manager = JobManager(data_dir / "simple" / "staging", cache, workers=workers)
-    app = create_app(manager=manager, version=__version__, lan_code=code)
+    app = create_app(manager=manager, version=__version__, lan_code=code, cache=cache)
 
     url = f"http://{host}:{args.port}/"
     _say(f"{SIMPLE_TITLE} {__version__}")

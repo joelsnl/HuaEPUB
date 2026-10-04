@@ -66,8 +66,14 @@
       <span class="label">Book</span>
       <div class="book-empty" id="book-empty">The title, author and chapter count appear here once the page has been read.</div>
       <div id="book-full" hidden>
-        <div class="book-title" id="book-title"></div>
-        <div class="muted" id="book-meta"></div>
+        <div class="book-head">
+          <img id="book-cover" class="book-cover" alt="" hidden>
+          <div class="book-head-text">
+            <div class="book-title" id="book-title"></div>
+            <div class="muted small" id="book-title-orig" hidden></div>
+            <div class="muted" id="book-meta"></div>
+          </div>
+        </div>
         <div class="range">
           <div class="range-cell">
             <label class="label" for="from">From chapter</label>

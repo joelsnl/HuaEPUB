@@ -159,7 +159,11 @@ button, input { font: inherit; color: inherit; }
 .actions .btn-wide { align-self: flex-start; }
 
 .book-empty { border: 1px dashed var(--line); border-radius: 2px; padding: 20px; min-height: 104px; color: var(--muted); }
+.book-head { display: flex; gap: 16px; align-items: flex-start; }
+.book-head-text { flex: 1; min-width: 0; }
+.book-cover { width: 64px; height: 88px; object-fit: cover; border: 1px solid var(--line); flex-shrink: 0; background: var(--rule); }
 .book-title { font-family: var(--serif); font-weight: 500; font-size: 30px; line-height: 1.2; overflow-wrap: anywhere; }
+#book-title-orig { margin-top: 2px; overflow-wrap: anywhere; }
 .range { display: flex; gap: 20px; margin-top: 16px; }
 .range-cell { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .range-cell .field { padding: 8px 0; }

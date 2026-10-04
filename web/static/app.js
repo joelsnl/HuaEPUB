@@ -212,21 +212,39 @@
   }
 
   function fillBook() {
-    setText('book-title', preview.title);
-    setText('book-meta', (preview.author || 'Unknown author') + ' · ' + preview.chapter_count +
+    var title = preview.title_en || preview.title;
+    var author = preview.author_en || preview.author || 'Unknown author';
+    setText('book-title', title);
+    var showOrig = !!preview.title_en && preview.title_en !== preview.title;
+    show('book-title-orig', showOrig);
+    if (showOrig) setText('book-title-orig', preview.title);
+    setText('book-meta', author + ' · ' + preview.chapter_count +
       ' chapter' + (preview.chapter_count === 1 ? '' : 's'));
+    var cover = $('book-cover');
+    if (preview.has_cover) {
+      cover.src = '/api/preview/' + preview.preview_id + '/cover';
+      cover.hidden = false;
+      cover.onerror = function () { cover.hidden = true; };
+    } else {
+      cover.hidden = true;
+      cover.removeAttribute('src');
+    }
     $('from').value = '1';
     $('to').value = String(preview.chapter_count);
     rangeChanged();
   }
 
+  function chapterTitle(pos) {
+    // pos is 1-based; preview.chapters[] holds {title, title_en}
+    var ch = preview && pos >= 1 && pos <= preview.chapter_count ? preview.chapters[pos - 1] : null;
+    return ch ? (ch.title_en || ch.title) : '';
+  }
+
   function rangeChanged() {
     if (!preview) return;
     var r = range();
-    var fromT = r.ok || (r.from >= 1 && r.from <= preview.chapter_count) ? preview.chapters[r.from - 1] : null;
-    var toT = r.to >= 1 && r.to <= preview.chapter_count ? preview.chapters[r.to - 1] : null;
-    setText('from-title', fromT ? fromT.title : '');
-    setText('to-title', toT ? toT.title : '');
+    setText('from-title', chapterTitle(r.from));
+    setText('to-title', chapterTitle(r.to));
     var bad = !r.ok;
     show('range-error', bad);
     if (bad) setText('range-error', 'Use numbers from 1 to ' + preview.chapter_count + ', with From not above To.');

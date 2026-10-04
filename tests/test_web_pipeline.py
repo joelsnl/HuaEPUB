@@ -281,6 +281,60 @@ def test_health_and_page(client):
     assert client.get("/static/app.js").status_code == 200
 
 
+def test_preview_route_calls_the_translator_with_the_cache(tmp_path, cache):
+    calls = []
+    prev = _preview()
+    store = PreviewStore()
+    app = create_app(
+        manager=_manager(tmp_path, cache), previews=store, cache=cache,
+        preview_builder=lambda url: (store.put(prev), prev)[1],
+        preview_translator=lambda item, **kw: calls.append((item.id, kw.get("cache"))),
+    )
+    with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+        c.post("/api/preview", json={"url": "https://example.com/book/1"})
+    assert calls == [("p1", cache)]
+
+
+def test_cover_route(tmp_path, cache):
+    prev = _preview()
+    prev.info.cover_url = "https://example.com/cover.jpg"
+    prev.has_cover = True
+    store = PreviewStore()
+    store.put(prev)
+
+    def fake_fetch(session, url):
+        assert url == "https://example.com/cover.jpg"
+        return b"\x89PNG\r\n\x1a\n" + b"x" * 20
+
+    app = create_app(manager=_manager(tmp_path, cache), previews=store, version="1")
+    import web.server as server_mod
+
+    with monkeypatch_module(server_mod, "fetch_cover_bytes", fake_fetch):
+        with TestClient(app, base_url="http://127.0.0.1:8765") as c:
+            ok = c.get("/api/preview/p1/cover")
+            assert ok.status_code == 200 and ok.headers["content-type"] == "image/png"
+            assert c.get("/api/preview/missing/cover").status_code == 404
+
+    no_cover = create_app(manager=_manager(tmp_path, cache), previews=PreviewStore())
+    with TestClient(no_cover, base_url="http://127.0.0.1:8765") as c:
+        c.post("/api/preview", json={"url": "https://example.com/book/1"})
+        assert c.get("/api/preview/missing/cover").status_code == 404
+
+
+class monkeypatch_module:
+    """Tiny context manager: patch one attribute on a module, restore on exit."""
+
+    def __init__(self, module, name, value):
+        self.module, self.name, self.value = module, name, value
+
+    def __enter__(self):
+        self._old = getattr(self.module, self.name)
+        setattr(self.module, self.name, self.value)
+
+    def __exit__(self, *exc):
+        setattr(self.module, self.name, self._old)
+
+
 def test_full_flow_preview_build_download_delete(client):
     pv = client.post("/api/preview", json={"url": "https://example.com/book/1"})
     assert pv.status_code == 200

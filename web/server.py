@@ -8,18 +8,21 @@ import ipaddress
 import json
 import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
+from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from core.branding import SIMPLE_TITLE
+from core.parser import create_http_session
+from core.security import UnsafeURLError, fetch_cover_bytes
 from web.jobs import TERMINAL_STATES, JobBusy, JobFinished, JobManager
-from web.preview import PreviewError, PreviewStore, build_preview
+from web.preview import PreviewError, PreviewStore, build_preview, translate_preview
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ACCESS_COOKIE = "huaepub_simple_code"
@@ -74,6 +77,8 @@ def create_app(
     version: str = "",
     lan_code: Optional[str] = None,
     preview_builder=build_preview,
+    cache: Any = None,
+    preview_translator=translate_preview,
 ) -> FastAPI:
     app = FastAPI(title=SIMPLE_TITLE, docs_url=None, redoc_url=None, openapi_url=None)
     previews = previews or PreviewStore()
@@ -128,8 +133,37 @@ def create_app(
             if exc.detail:
                 payload["detail"] = exc.detail
             return JSONResponse(payload, status_code=exc.status)
+        preview_translator(item, cache=cache)
         previews.put(item)
         return item.to_payload()
+
+    @app.get("/api/preview/{preview_id}/cover")
+    def preview_cover(preview_id: str):
+        item = previews.get(preview_id)
+        if item is None or not item.info.cover_url:
+            return JSONResponse({"error": "no_cover"}, status_code=404)
+        session = create_http_session()
+        try:
+            data = fetch_cover_bytes(session, item.info.cover_url)
+        except UnsafeURLError:
+            return JSONResponse({"error": "no_cover"}, status_code=404)
+        except Exception:
+            return JSONResponse({"error": "cover_failed"}, status_code=502)
+        finally:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
+        kind = "image/jpeg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            kind = "image/png"
+        elif data[:6] in (b"GIF87a", b"GIF89a"):
+            kind = "image/gif"
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            kind = "image/webp"
+        return Response(
+            content=data, media_type=kind,
+            headers={"Cache-Control": "private, max-age=1800"},
+        )
 
     @app.post("/api/jobs")
     def start_job(body: JobIn):
