@@ -458,7 +458,7 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 
 ## Architecture
 
-[docs/architecture.html](docs/architecture.html) is a standalone diagram of how a download moves from a URL through parse, clean, translate, polish, and EPUB. Open it in a browser.
+[docs/architecture.html](docs/architecture.html) is a standalone diagram of HuaEPUB 3.0: the desktop app and server mode sharing one session and one set of job code, and how a download moves from a URL through parse, clean, translate, polish, and EPUB. Open it in a browser. It was made with [Archify](https://github.com/tt-a1i/archify).
 
 ## Credits
 
