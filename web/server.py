@@ -56,7 +56,7 @@ CSP = (
 # Reachable without a session: the sign-in page and what it needs.
 PUBLIC_PATHS = {
     "/login", "/api/login", "/api/session",
-    "/static/login.js", "/static/app.css", "/static/theme.js",
+    "/static/login.js", "/static/app.css", "/static/theme.js", "/static/icon.svg",
 }
 
 
