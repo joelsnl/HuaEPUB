@@ -255,12 +255,12 @@ def test_multi_worker_emits_progress_before_slow_prepare(qapp, tmp_path, monkeyp
         return [], EpubBuildResult(output_path=str(tmp_path / "x.epub"))
 
     monkeypatch.setattr(
-        "gui.workers.download_worker.get_parser_for_url", fake_get_parser
+        "core.tasks.get_parser_for_url", fake_get_parser
     )
     monkeypatch.setattr(
-        "gui.workers.download_worker._download_one_novel", fake_download
+        "core.tasks.download_one_novel", fake_download
     )
-    monkeypatch.setattr("gui.workers.download_worker.notify", lambda *_a, **_k: None)
+    monkeypatch.setattr("core.tasks.notify", lambda *_a, **_k: None)
 
     host = _Host(tmp_path)
     host.progress.set_status("Fetched 4/4")
@@ -318,12 +318,12 @@ def test_stale_finish_does_not_kill_new_download_worker(qapp, tmp_path, monkeypa
         return [], EpubBuildResult(output_path=str(tmp_path / "x.epub"))
 
     monkeypatch.setattr(
-        "gui.workers.download_worker.get_parser_for_url", lambda _u: object()
+        "core.tasks.get_parser_for_url", lambda _u: object()
     )
     monkeypatch.setattr(
-        "gui.workers.download_worker._download_one_novel", fake_download
+        "core.tasks.download_one_novel", fake_download
     )
-    monkeypatch.setattr("gui.workers.download_worker.notify", lambda *_a, **_k: None)
+    monkeypatch.setattr("core.tasks.notify", lambda *_a, **_k: None)
 
     host = _Host(tmp_path)
     dummy = QThread()
@@ -404,12 +404,12 @@ def test_multi_worker_streams_live_fetch_and_translate_status(
         return [], EpubBuildResult(output_path=str(tmp_path / "x.epub"))
 
     monkeypatch.setattr(
-        "gui.workers.download_worker.get_parser_for_url", lambda _u: object()
+        "core.tasks.get_parser_for_url", lambda _u: object()
     )
     monkeypatch.setattr(
-        "gui.workers.download_worker._download_one_novel", fake_download
+        "core.tasks.download_one_novel", fake_download
     )
-    monkeypatch.setattr("gui.workers.download_worker.notify", lambda *_a, **_k: None)
+    monkeypatch.setattr("core.tasks.notify", lambda *_a, **_k: None)
 
     host = _Host(tmp_path)
     host.progress.set_status("Fetched 4/4")
@@ -470,12 +470,12 @@ def test_multi_footer_shows_translate_before_first_http(
         return [], EpubBuildResult(output_path=str(tmp_path / "x.epub"))
 
     monkeypatch.setattr(
-        "gui.workers.download_worker.get_parser_for_url", lambda _u: object()
+        "core.tasks.get_parser_for_url", lambda _u: object()
     )
     monkeypatch.setattr(
-        "gui.workers.download_worker._download_one_novel", fake_download
+        "core.tasks.download_one_novel", fake_download
     )
-    monkeypatch.setattr("gui.workers.download_worker.notify", lambda *_a, **_k: None)
+    monkeypatch.setattr("core.tasks.notify", lambda *_a, **_k: None)
 
     host = _Host(tmp_path)
     host.progress.set_status("Fetched 4/4")
