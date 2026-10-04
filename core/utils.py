@@ -113,6 +113,20 @@ def format_eta(seconds: float) -> str:
     return f"{hours}h {minutes}m"
 
 
+def pipeline_phase(status: str) -> str:
+    """The pipeline phase a status line names: polishing / writing / translating / fetching, or ''."""
+    text = (status or "").lower()
+    if "polish" in text:
+        return "polishing"
+    if "writing epub" in text or text.startswith("writing"):
+        return "writing"
+    if "translat" in text:
+        return "translating"
+    if "fetch" in text or "chapter" in text or "download" in text:
+        return "fetching"
+    return ""
+
+
 def safe_filename(title: str, max_length: int = 120) -> str:
     """
     Build a filesystem-safe EPUB basename from a (preferably English) title.

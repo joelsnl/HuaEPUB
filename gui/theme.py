@@ -42,9 +42,6 @@ class Palette:
     seal: str
     seal_ink: str = "#FFF3EE"
 
-    def color(self, key: str) -> QColor:
-        return QColor(getattr(self, key))
-
     def tokens(self) -> Dict[str, str]:
         t = {k: v for k, v in asdict(self).items() if isinstance(v, str)}
         ground = QColor(self.ground)
@@ -85,8 +82,8 @@ LOOKS = (
     ("mist", "Blue Mist"),
     ("random", "Surprise me"),
 )
-_LOOK_TO_PALETTE = {"dark": "graphite", "light": "celadon", "indigo": "indigo", "gold": "gold",
-                    "cinnabar": "cinnabar", "mist": "mist"}
+# The other looks share their palette's id.
+_LOOK_TO_PALETTE = {"dark": "graphite", "light": "celadon"}
 
 _current: Optional[Palette] = None
 _fonts_loaded = False
@@ -101,13 +98,8 @@ def system_is_dark() -> bool:
     app = QGuiApplication.instance()
     if app is None:
         return True
-    try:
-        scheme = app.styleHints().colorScheme()
-    except AttributeError:  # Qt < 6.5
-        return True
-    if scheme == Qt.ColorScheme.Light:
-        return False
-    return True  # Dark or Unknown: the app was dark before the Slips look
+    # Dark or Unknown: the app was dark before the Slips look
+    return app.styleHints().colorScheme() != Qt.ColorScheme.Light
 
 
 def resolve(look: str, *, system_dark: Optional[bool] = None) -> Palette:
@@ -117,16 +109,15 @@ def resolve(look: str, *, system_dark: Optional[bool] = None) -> Palette:
         return PALETTES["graphite" if dark else "celadon"]
     if look == "random":
         return PALETTES[random.choice(list(PALETTES))]
-    return PALETTES[_LOOK_TO_PALETTE[look]]
+    return PALETTES[_LOOK_TO_PALETTE.get(look, look)]
 
 
 def current() -> Palette:
     return _current or PALETTES["graphite"]
 
 
-def render_qss(palette: Palette, template_text: Optional[str] = None) -> str:
-    if template_text is None:
-        template_text = Path(__file__).with_name("style.qss").read_text(encoding="utf-8")
+def render_qss(palette: Palette) -> str:
+    template_text = Path(__file__).with_name("style.qss").read_text(encoding="utf-8")
     return Template(template_text).safe_substitute(palette.tokens())
 
 
@@ -155,13 +146,6 @@ def serif_font(point_size: float, weight: QFont.Weight = QFont.Weight.Medium) ->
     font.setPointSizeF(point_size)
     font.setWeight(weight)
     font.setStyleHint(QFont.StyleHint.Serif)
-    return font
-
-
-def mono_font(point_size: float) -> QFont:
-    font = QFont(MONO)
-    font.setPointSizeF(point_size)
-    font.setStyleHint(QFont.StyleHint.Monospace)
     return font
 
 

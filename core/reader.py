@@ -4,6 +4,8 @@ Resolve a novel for the in-app reader: local EPUB first, else cached TOC/HTML.
 
 Never Drive-syncs. Callers pull a Drive EPUB into the books folder first if
 needed. Chapter HTML is sanitized for QTextBrowser (no scripts, no navigation).
+The one-chapter site fetch and the live translate are shared by the desktop
+Read tab and the browser reader.
 """
 
 from __future__ import annotations
@@ -362,6 +364,50 @@ def html_needs_live_translate(html: str) -> bool:
     from core.cleaner import count_chinese_chars, is_chinese
 
     return is_chinese(raw) and count_chinese_chars(raw) > 8
+
+
+class UnsupportedSite(RuntimeError):
+    """No parser handles the chapter (or book) URL."""
+
+
+def fetch_reader_chapter(cache, book_url: str, url: str, title: str = "") -> str:
+    """Fetch one missing chapter body from the site and keep it in the cache.
+
+    Raises UnsupportedSite, RuntimeError("Chapter came back empty."), or the
+    parser's own error. The caller waits out the site's ``request_delay``.
+    """
+    from core.parser import Chapter, get_parser_for_url
+
+    parser = get_parser_for_url(url) or get_parser_for_url(book_url)
+    if not parser:
+        raise UnsupportedSite("Unsupported site")
+    html = parser.get_chapter_content(Chapter(title=title or "", url=url))
+    if not html or not str(html).strip():
+        raise RuntimeError("Chapter came back empty.")
+    try:
+        cache.put_chapter(book_url, url, title or "", html)
+    except Exception:
+        pass
+    return html
+
+
+def live_translate_html(html: str, *, cache, options: dict, novel_title: str = "",
+                        detect_text: str = "") -> str:
+    """Translate one cache chapter for the reader (check ``html_needs_live_translate`` first)."""
+    from types import SimpleNamespace
+
+    from core.cleaner import ContentCleaner
+    from core.download_runner import make_translator, translator_backend_kwargs
+
+    kw = translator_backend_kwargs({}, options)
+    translator = make_translator(cache=cache,
+                                 max_workers=int(options.get("workers", 200) or 200), **kw)
+    cfg = getattr(translator, "configure_glossary", None)
+    if callable(cfg):
+        cfg(SimpleNamespace(title=novel_title or "", description=""),
+            mode=kw.get("glossary_mode", "auto"), detect_text=detect_text or novel_title or "")
+    cleaner = ContentCleaner() if options.get("clean", True) else None
+    return translator.translate_and_apply_html(html or "", cleaner=cleaner) or html
 
 
 def resume_index(book: ReaderBook, position: Optional[dict]) -> int:

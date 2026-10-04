@@ -474,6 +474,21 @@ def epub_path(
     return str(dest)
 
 
+def library_epub_path(library_store: LibraryStore, title: str, source_url: str,
+                      output_dir: str = "") -> str:
+    """Where a book's EPUB goes: its Library file name when tracked, else one from the title."""
+    preferred = ""
+    entry = library_store.get_library_entry(source_url or "")
+    if entry:
+        preferred = entry.epub_filename or entry.output_path or ""
+    return epub_path(
+        downloads_folder(output_dir),
+        title,
+        preferred_name=Path(preferred).name if preferred else "",
+        preferred_path=preferred,
+    )
+
+
 def record_successful_download(
     library_store: LibraryStore,
     info: NovelInfo,
@@ -1307,103 +1322,3 @@ def build_epub(
             ch.title for ch in chapters if getattr(ch, "used_heuristic", False)
         ],
     )
-
-
-def run_single_download(
-    *,
-    control: DownloadControl,
-    cache: NovelCache,
-    library_store: LibraryStore,
-    parser: Any,
-    info: NovelInfo,
-    chapters: List[Chapter],
-    output_path: str,
-    translated_title: Optional[str],
-    use_cache: bool,
-    clean: bool,
-    translate: bool,
-    workers: int,
-    backend: str,
-    libretranslate_url: str,
-    set_status: StatusFn,
-    set_progress: ProgressFn,
-    ollama_url: str = "http://127.0.0.1:11434",
-    ollama_model: str = "qwen2.5:3b",
-    ollama_polish: bool = False,
-    glossary_mode: str = "auto",
-) -> Tuple[List[str], EpubBuildResult]:
-    """
-    Full single-novel download + EPUB. Progress 0..1 overall.
-    Returns (failed chapter titles, build result). Raises DownloadCancelled.
-    """
-    book_key = info.source_url if info else ""
-    if translate and backend_prefetches_during_fetch(backend):
-        set_status("Preparing translation…")
-        try:
-            set_progress(0)
-        except TypeError:
-            pass
-    translator, cleaner = engines_for_chapter_fetch(
-        cache=cache,
-        workers=workers,
-        backend=backend,
-        libretranslate_url=libretranslate_url,
-        ollama_url=ollama_url,
-        ollama_model=ollama_model,
-        clean=clean,
-        translate=translate,
-        glossary_mode=glossary_mode,
-        novel_info=info,
-        chapters=chapters,
-    )
-
-    def set_prog_dl(f, status=""):
-        try:
-            set_progress(f / 2, status)
-        except TypeError:
-            set_progress(f / 2)
-
-    failed = download_chapters_with_cache(
-        control=control,
-        cache=cache,
-        parser=parser,
-        chapters=chapters,
-        book_key=book_key,
-        use_cache=use_cache,
-        set_status=set_status,
-        set_progress=set_prog_dl,
-        translator=translator,
-        cleaner=cleaner,
-    )
-
-    def set_prog_build(f, status=""):
-        try:
-            set_progress(0.5 + f * 0.5, status)
-        except TypeError:
-            set_progress(0.5 + f * 0.5)
-
-    build_result = build_epub(
-        control=control,
-        cache=cache,
-        info=info,
-        chapters=chapters,
-        output_path=output_path,
-        clean=clean,
-        translate=translate,
-        workers=workers,
-        backend=backend,
-        libretranslate_url=libretranslate_url,
-        ollama_url=ollama_url,
-        ollama_model=ollama_model,
-        ollama_polish=ollama_polish,
-        glossary_mode=glossary_mode,
-        set_status=set_status,
-        set_progress=set_prog_build,
-        translator=translator,
-        cleaner=cleaner,
-    )
-
-    record_successful_download(
-        library_store, info, chapters, translated_title, output_path
-    )
-    return failed, build_result

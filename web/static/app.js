@@ -128,17 +128,13 @@
   var stream = null;
   var poller = null;
   function connect() {
-    if (window.EventSource) {
-      stream = new EventSource('/api/events');
-      stream.onmessage = function (ev) { try { publish(JSON.parse(ev.data)); } catch (e) { /* ignore */ } };
-      stream.onerror = function () {
-        if (stream) { stream.close(); stream = null; }
-        startPolling();
-        setTimeout(function () { if (!stream) { stopPolling(); connect(); } }, 15000);
-      };
-    } else {
+    stream = new EventSource('/api/events');
+    stream.onmessage = function (ev) { try { publish(JSON.parse(ev.data)); } catch (e) { /* ignore */ } };
+    stream.onerror = function () {
+      if (stream) { stream.close(); stream = null; }
       startPolling();
-    }
+      setTimeout(function () { if (!stream) { stopPolling(); connect(); } }, 15000);
+    };
   }
   function startPolling() {
     if (poller) return;
@@ -221,42 +217,19 @@
   function cancelTask() { return api('POST', '/api/task/cancel').then(refresh); }
 
   // ---------- look switch ----------
-  function buildLookMenu() {
-    var menu = $('look-menu');
-    var order = ['auto', 'dark', 'light', '-', 'indigo', 'gold', 'cinnabar', 'mist', '-', 'surprise'];
-    var cur = window.HuaTheme ? window.HuaTheme.get() : 'auto';
-    menu.textContent = '';
-    order.forEach(function (id) {
-      var li = document.createElement('li');
-      if (id === '-') { li.appendChild(document.createElement('hr')); menu.appendChild(li); return; }
-      var b = el('button', '', window.HuaTheme.names[id]);
-      b.type = 'button';
-      b.setAttribute('role', 'menuitemradio');
-      b.setAttribute('aria-checked', id === cur ? 'true' : 'false');
-      b.addEventListener('click', function () {
-        window.HuaTheme.set(id);
-        closeLook();
-        buildLookMenu();
-      });
-      li.appendChild(b);
-      menu.appendChild(li);
+  function buildLookSelect() {
+    var sel = $('look-select');
+    Object.keys(window.HuaTheme.names).forEach(function (id) {
+      var o = el('option', '', window.HuaTheme.names[id]);
+      o.value = id;
+      sel.appendChild(o);
     });
-    setText('look-btn', 'Look: ' + window.HuaTheme.names[cur]);
-  }
-  function closeLook() { show('look-menu', false); $('look-btn').setAttribute('aria-expanded', 'false'); }
-  function toggleLook() {
-    var open = $('look-menu').hidden;
-    show('look-menu', open);
-    $('look-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) { var first = $('look-menu').querySelector('button'); if (first) first.focus(); }
+    sel.value = window.HuaTheme.get();
+    sel.addEventListener('change', function () { window.HuaTheme.set(sel.value); });
   }
 
   function init() {
-    $('look-btn').addEventListener('click', toggleLook);
-    document.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape' && !$('look-menu').hidden) { closeLook(); $('look-btn').focus(); }
-    });
-    document.addEventListener('click', function (ev) { if (!ev.target.closest('.look')) closeLook(); });
+    buildLookSelect();
     document.querySelectorAll('.nav a').forEach(function (a) {
       a.addEventListener('click', function (ev) { ev.preventDefault(); go(a.getAttribute('data-view')); });
     });
@@ -277,7 +250,6 @@
     $('btn-discard').addEventListener('click', function () {
       api('POST', '/api/resume/discard').then(refresh);
     });
-    buildLookMenu();
     onState(renderResume);
     onState(renderDock);
   }

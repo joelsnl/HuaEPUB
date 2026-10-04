@@ -538,8 +538,9 @@ def test_resume_payload_and_discard(session):
 def test_library_list_and_reader_from_cache(session, monkeypatch):
     from web import reader_api
 
-    monkeypatch.setattr(reader_api, "get_parser_for_url",
-                        lambda _u: _Parser("<p>Second chapter text.</p>"))
+    fake = lambda _u: _Parser("<p>Second chapter text.</p>")  # noqa: E731
+    monkeypatch.setattr(reader_api, "get_parser_for_url", fake)
+    monkeypatch.setattr("core.parser.get_parser_for_url", fake)  # fetch_reader_chapter
     url = "https://example.com/book/9"
     chapters = [Chapter(title="Chapter 1", url=f"{url}/1"), Chapter(title="Chapter 2", url=f"{url}/2")]
     session.cache.put_chapter_list(url, chapters)

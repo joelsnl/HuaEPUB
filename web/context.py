@@ -35,7 +35,7 @@ class ServerContext:
     version: str = ""
     https: bool = False
     hsts: bool = False
-    previews: PreviewStore = field(default_factory=lambda: PreviewStore(limit=64))
+    previews: PreviewStore = field(default_factory=PreviewStore)
     limiter: LoginLimiter = field(default_factory=LoginLimiter)
     open_links: OpenLinks = field(default_factory=OpenLinks)
     preview_builder: Callable = build_preview

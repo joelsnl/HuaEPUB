@@ -13,9 +13,9 @@ import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 DEFAULT_PORT = 8765
 
@@ -66,7 +66,6 @@ class ServerStatus:
     fingerprint: str = ""
     own_certificate: bool = False
     error: str = ""
-    addresses: List[str] = field(default_factory=list)
 
     @property
     def scheme(self) -> str:
@@ -110,11 +109,8 @@ class ServerHost:
               cert_path: str = "", key_path: str = "") -> ServerStatus:
         if self.running:
             return self.status
-        try:
-            import uvicorn
-        except ImportError as exc:
-            raise ServerStartError("Server mode needs fastapi and uvicorn "
-                                   "(pip install -r requirements.txt).") from exc
+        import uvicorn
+
         from web.books import drive_sync_after_change
         from web.context import ServerContext, book_roots
         from web.server import create_app
@@ -180,7 +176,6 @@ class ServerHost:
             thread.join(2)
             raise ServerStartError(status.error or "The server did not start.")
         status.running = True
-        status.addresses = [u for u in (status.local_url, status.lan_url, status.public_url) if u]
         self.status = status
         self.ctx = ctx
         self._server = server

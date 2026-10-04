@@ -313,20 +313,9 @@ fieldset.block legend { padding: 0 0 4px; }
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
-/* Look menu */
-.look { position: relative; }
-.look-btn { background: none; border: 0; padding: 4px 0; cursor: pointer; color: var(--ink); text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--line); }
-.look-menu {
-  position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; margin: 0; padding: 6px 0; list-style: none;
-  min-width: 11rem; background: var(--ground); border: 1px solid var(--line);
-}
-.look-menu button {
-  display: block; width: 100%; text-align: left; background: none; border: 0; padding: 8px 14px;
-  cursor: pointer; font-size: 13px; color: var(--ink);
-}
-.look-menu button:hover { background: var(--rule); }
-.look-menu button[aria-checked="true"]::after { content: "  ✓"; color: var(--accent); }
-.look-menu hr { border: 0; border-top: 1px solid var(--rule); margin: 6px 0; }
+/* Look switch */
+.look { display: inline-flex; align-items: center; gap: 8px; }
+.look-select { padding: 4px 8px; font-family: var(--sans); font-size: 13px; letter-spacing: normal; text-transform: none; }
 .shelf-empty { color: var(--muted); padding: 24px 0; }
 .desk-only .btn-link { align-self: flex-start; }
 .reader-bar { padding-top: 8px; }

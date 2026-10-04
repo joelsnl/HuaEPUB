@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QDesktopServices
 
-from core.download_job import save_job
+from core.download_job import library_update_all_job, save_job
 from core.utils import format_count, format_ratio, plural
 from core.download_runner import completion_dialog_title, downloads_folder, epub_path
 from core.notify import notify
@@ -180,21 +180,7 @@ class LibraryActionsMixin:
         if not ask_yes_no(self, title, confirm):
             return
         self._persist_settings()
-        o = self.options.snapshot()
-        job = {
-            "kind": "library_update_all",
-            "status": "running",
-            "options": o,
-            "entries": [
-                {
-                    "source_url": e.source_url,
-                    "title": e.title or "",
-                    "translated_title": e.translated_title or "",
-                    "done": False,
-                }
-                for e in entries
-            ],
-        }
+        job = library_update_all_job(entries, self.options.snapshot())
         self.session.control.active_job = job
         save_job(job, self.session.data_dir)
         self._run_library_update_all(entries, label=title)
@@ -241,15 +227,10 @@ class LibraryActionsMixin:
         urls = [u for u in urls if u]
         if not urls:
             return
-        entries = []
         titles = []
         for url in urls:
             entry = self.session.library_store.get_library_entry(url)
-            if entry:
-                entries.append(entry)
-                titles.append(entry.translated_title or entry.title or url)
-            else:
-                titles.append(url)
+            titles.append((entry.translated_title or entry.title or url) if entry else url)
         drive_on = bool(self.library.drive_enabled.isChecked())
         extra = (
             "\n• the Google Drive EPUB and library.json entry "
@@ -279,21 +260,12 @@ class LibraryActionsMixin:
         )
         if not ask_yes_no(self, "Remove", msg):
             return
-        from core.library import purge_novel_artifacts
+        from core.library import remove_and_purge
 
-        extra_dirs = [get_default_books_dir()]
-        custom = (self.session.output_dir or "").strip()
-        if custom:
-            extra_dirs.append(Path(custom))
-        by_url = {e.source_url: e for e in entries}
-        for url in urls:
-            removed = self.session.library_store.remove_library(url)
-            target = removed or by_url.get(url)
-            if target:
-                purge_novel_artifacts(
-                    target, cache=self.session.cache, extra_dirs=extra_dirs,
-                    data_dir=self.session.data_dir,
-                )
+        remove_and_purge(
+            self.session.library_store, urls, cache=self.session.cache,
+            output_dir=self.session.output_dir, data_dir=self.session.data_dir,
+        )
         self.library.refresh()
         if drive_on and self.session.drive_sync.is_connected():
             self._start_drive_sync(silent=True)

@@ -12,7 +12,6 @@ from __future__ import annotations
 import contextlib
 import secrets
 import threading
-import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +19,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from core.download_runner import DownloadCancelled
 from core.security import is_allowed_epub_path
+from core.utils import pipeline_phase
 
 TERMINAL = ("done", "error", "cancelled")
 
@@ -44,22 +44,17 @@ class Busy(Exception):
 
 
 def phase_from_status(status: str, fallback: str) -> str:
+    """``pipeline_phase`` plus the server's own phases (paused, syncing, checking)."""
     low = (status or "").lower()
     if "paused" in low:
         return "paused"
-    if "polish" in low:
-        return "polishing"
-    if "writing epub" in low or low.startswith("writing"):
-        return "writing"
-    if "translat" in low:
-        return "translating"
-    if "drive" in low:
-        return "syncing"
-    if "checking" in low:
-        return "checking"
-    if "fetch" in low or "chapter" in low or "download" in low:
-        return "fetching"
-    return fallback
+    phase = pipeline_phase(low)
+    if phase in ("", "fetching"):
+        if "drive" in low:
+            return "syncing"
+        if "checking" in low:
+            return "checking"
+    return phase or fallback
 
 
 @dataclass
@@ -80,7 +75,6 @@ class Task:
     result: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
     rev: int = 0
-    started_at: float = field(default_factory=time.time)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def snapshot(self) -> Dict[str, Any]:
@@ -198,25 +192,30 @@ class TaskManager:
         self._exclusive = False
         self._files: Dict[str, Path] = {}
         self._thread: Optional[threading.Thread] = None
-        self.rev = 0
 
     # -- state -------------------------------------------------------------
+    def _running(self) -> Optional[Task]:
+        """The unfinished task, if any. Call with ``_lock`` held."""
+        task = self._task
+        return task if task is not None and task.state not in TERMINAL else None
+
+    def _check_free(self, label: str) -> None:
+        """Raise Busy unless the slot is free. Call with ``_lock`` held."""
+        task = self._running()
+        if self._exclusive or task is not None:
+            raise Busy(task.id if task else "", task.label if task else label)
+
     def current(self) -> Optional[Task]:
         with self._lock:
             return self._task
 
     def active(self) -> Optional[Task]:
         with self._lock:
-            task = self._task
-            if task is not None and task.state not in TERMINAL:
-                return task
-        return None
+            return self._running()
 
     def is_busy(self) -> bool:
         with self._lock:
-            if self._exclusive:
-                return True
-            return self._task is not None and self._task.state not in TERMINAL
+            return self._exclusive or self._running() is not None
 
     def snapshot(self) -> Optional[Dict[str, Any]]:
         task = self.current()
@@ -256,9 +255,7 @@ class TaskManager:
         library_change: bool = False,
     ) -> Task:
         with self._lock:
-            if self._exclusive or (self._task is not None and self._task.state not in TERMINAL):
-                busy = self._task
-                raise Busy(busy.id if busy else "", busy.label if busy else "Reading")
+            self._check_free("Reading")
             task = Task(
                 id=secrets.token_urlsafe(9), kind=kind, label=label,
                 rows=list(rows or []), novels=max(1, novels), chapters=max(0, chapters),
@@ -302,10 +299,7 @@ class TaskManager:
     def exclusive(self, label: str = "Reading") -> Iterator[None]:
         """Hold the slot for a short synchronous job (a reader fetch)."""
         with self._lock:
-            if self._exclusive or (self._task is not None and self._task.state not in TERMINAL):
-                busy = self._task
-                raise Busy(busy.id if busy and busy.state not in TERMINAL else "",
-                           busy.label if busy and busy.state not in TERMINAL else label)
+            self._check_free(label)
             self._exclusive = True
         try:
             yield

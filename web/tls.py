@@ -34,19 +34,15 @@ class Certificate:
     generated: bool
 
 
-def _fingerprint(pem: bytes) -> str:
-    from cryptography import x509
+def _fingerprint(cert) -> str:
     from cryptography.hazmat.primitives import hashes
 
-    cert = x509.load_pem_x509_certificate(pem)
-    raw = cert.fingerprint(hashes.SHA256())
-    return ":".join(f"{b:02X}" for b in raw)
+    return ":".join(f"{b:02X}" for b in cert.fingerprint(hashes.SHA256()))
 
 
-def _names_in(pem: bytes) -> List[str]:
+def _names_in(cert) -> List[str]:
     from cryptography import x509
 
-    cert = x509.load_pem_x509_certificate(pem)
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
@@ -56,14 +52,17 @@ def _names_in(pem: bytes) -> List[str]:
     return names
 
 
-def _not_after(pem: bytes) -> _dt.datetime:
-    from cryptography import x509
-
-    cert = x509.load_pem_x509_certificate(pem)
+def _not_after(cert) -> _dt.datetime:
     value = getattr(cert, "not_valid_after_utc", None)
     if value is None:
         value = cert.not_valid_after.replace(tzinfo=_dt.timezone.utc)
     return value
+
+
+def _load(pem: bytes):
+    from cryptography import x509
+
+    return x509.load_pem_x509_certificate(pem)
 
 
 def generate(directory: Path, names: Iterable[str]) -> Certificate:
@@ -110,7 +109,7 @@ def generate(directory: Path, names: Iterable[str]) -> Certificate:
     key_path = directory / KEY_NAME
     write_secret_file(key_path, key_pem.decode("ascii"))
     cert_path.write_bytes(cert_pem)
-    return Certificate(cert_path, key_path, _fingerprint(cert_pem), True)
+    return Certificate(cert_path, key_path, _fingerprint(cert), True)
 
 
 def _clean_names(names: Iterable[str]) -> List[str]:
@@ -130,11 +129,11 @@ def ensure_certificate(directory: Path, names: Iterable[str]) -> Certificate:
     wanted = _clean_names(names)
     if cert_path.is_file() and key_path.is_file():
         try:
-            pem = cert_path.read_bytes()
-            have = set(_names_in(pem))
-            fresh = _not_after(pem) - _dt.datetime.now(_dt.timezone.utc) > _dt.timedelta(days=14)
+            cert = _load(cert_path.read_bytes())
+            have = set(_names_in(cert))
+            fresh = _not_after(cert) - _dt.datetime.now(_dt.timezone.utc) > _dt.timedelta(days=14)
             if fresh and set(wanted) <= have:
-                return Certificate(cert_path, key_path, _fingerprint(pem), True)
+                return Certificate(cert_path, key_path, _fingerprint(cert), True)
         except Exception:
             pass
     return generate(directory, wanted)
@@ -149,8 +148,7 @@ def load_own_certificate(cert_file: str, key_file: str) -> Certificate:
     if not key_path.is_file():
         raise CertificateError(f"Key file not found: {key_path}")
     try:
-        pem = cert_path.read_bytes()
-        fingerprint = _fingerprint(pem)
+        fingerprint = _fingerprint(_load(cert_path.read_bytes()))
     except Exception as exc:
         raise CertificateError(f"Could not read the certificate: {exc}") from exc
     try:

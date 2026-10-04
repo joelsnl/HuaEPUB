@@ -29,13 +29,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from core.branding import APP_TITLE
-from core.parser import create_http_session
-from core.security import UnsafeURLError, fetch_cover_bytes
+from core.security import UnsafeURLError
 from web import books
-from web.auth import COOKIE_NAME
+from web.auth import COOKIE_NAME, LAN_COOKIE_DAYS, REMOTE_COOKIE_DAYS
 from web.context import ServerContext
 from web.library_api import build_router as library_router
-from web.library_api import busy_response, sniff_image
+from web.library_api import fetch_and_cache_cover, sniff_image
 from web.options import SettingsError, apply_settings, settings_payload
 from web.preview import PreviewError
 from web.reader_api import build_router as reader_router
@@ -116,7 +115,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
         return ctx.secrets.cookie_valid(request.cookies.get(COOKIE_NAME) or "", ctx.mode)
 
     def set_session_cookie(resp: Response) -> None:
-        days = 7 if ctx.remote else 30
+        days = REMOTE_COOKIE_DAYS if ctx.remote else LAN_COOKIE_DAYS
         resp.set_cookie(
             COOKIE_NAME, ctx.secrets.make_cookie(ctx.mode), httponly=True, samesite="strict",
             secure=ctx.https, max_age=days * 86400, path="/",
@@ -124,6 +123,12 @@ def create_app(ctx: ServerContext) -> FastAPI:
 
     def client_ip(request: Request) -> str:
         return request.client.host if request.client else ""
+
+    @app.exception_handler(Busy)
+    async def busy(_request: Request, exc: Busy):
+        # Routes that need the task slot raise Busy; this is the one answer for all of them.
+        return JSONResponse({"error": "busy", "task_id": exc.task_id, "label": exc.label},
+                            status_code=409)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -280,8 +285,6 @@ def create_app(ctx: ServerContext) -> FastAPI:
     def resume():
         try:
             task = books.start_resume(ctx.tasks)
-        except Busy as exc:
-            return busy_response(exc)
         except books.ResumeError as exc:
             return JSONResponse({"error": "cannot_resume", "detail": str(exc)}, status_code=400)
         return JSONResponse({"task_id": task.id}, status_code=202)
@@ -289,7 +292,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
     @app.post("/api/resume/discard")
     def discard():
         if ctx.tasks.is_busy():
-            return busy_response(Busy())
+            raise Busy()
         from core.download_job import clear_job
 
         clear_job(session.data_dir)
@@ -302,7 +305,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
     def preview(body: PreviewIn):
         if ctx.tasks.is_busy():
             busy = ctx.tasks.active()
-            return busy_response(Busy(busy.id if busy else "", busy.label if busy else ""))
+            raise Busy(busy.id if busy else "", busy.label if busy else "")
         try:
             item = ctx.preview_builder(body.url)
         except PreviewError as exc:
@@ -327,22 +330,13 @@ def create_app(ctx: ServerContext) -> FastAPI:
         item = ctx.previews.get(preview_id)
         if item is None or not item.info.cover_url:
             return JSONResponse({"error": "no_cover"}, status_code=404)
-        http = create_http_session()
         try:
-            data = fetch_cover_bytes(http, item.info.cover_url)
+            data = fetch_and_cache_cover(session.cache, item.info.cover_url,
+                                         item.info.source_url or item.url, timeout=20)
         except UnsafeURLError:
             return JSONResponse({"error": "no_cover"}, status_code=404)
         except Exception:
             return JSONResponse({"error": "cover_failed"}, status_code=502)
-        finally:
-            close = getattr(http, "close", None)
-            if callable(close):
-                close()
-        try:
-            session.cache.put_cover(data, cover_url=item.info.cover_url,
-                                    source_url=item.info.source_url or item.url)
-        except Exception:
-            pass
         return Response(content=data, media_type=sniff_image(data),
                         headers={"Cache-Control": "private, max-age=1800"})
 
@@ -353,10 +347,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
             return JSONResponse({"error": "preview_expired"}, status_code=404)
         if not (1 <= body.chapter_from <= body.chapter_to <= len(item.chapters)):
             return JSONResponse({"error": "bad_range"}, status_code=400)
-        try:
-            task = books.start_single(ctx.tasks, item, body.chapter_from, body.chapter_to)
-        except Busy as exc:
-            return busy_response(exc)
+        task = books.start_single(ctx.tasks, item, body.chapter_from, body.chapter_to)
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     # -- Multi ---------------------------------------------------------------
@@ -376,12 +367,9 @@ def create_app(ctx: ServerContext) -> FastAPI:
         if len(urls) > books.MAX_MULTI:
             return JSONResponse({"error": "too_many_links", "max": books.MAX_MULTI},
                                 status_code=400)
-        try:
-            task = books.start_lookup(ctx.tasks, urls, ctx.previews,
-                                      preview_builder=ctx.preview_builder,
-                                      preview_translator=ctx.preview_translator)
-        except Busy as exc:
-            return busy_response(exc)
+        task = books.start_lookup(ctx.tasks, urls, ctx.previews,
+                                  preview_builder=ctx.preview_builder,
+                                  preview_translator=ctx.preview_translator)
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     @app.post("/api/multi/build")
@@ -390,10 +378,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
         items = [p for p in items if p is not None]
         if not items:
             return JSONResponse({"error": "preview_expired"}, status_code=404)
-        try:
-            task = books.start_multi(ctx.tasks, items)
-        except Busy as exc:
-            return busy_response(exc)
+        task = books.start_multi(ctx.tasks, items)
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     # -- Settings ------------------------------------------------------------
@@ -413,7 +398,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
         busy = ctx.tasks.active()
         if busy is not None and set(changes) - {"reader_font_pt"}:
             # A running job keeps the options it started with; change them after.
-            return busy_response(Busy(busy.id, busy.label))
+            raise Busy(busy.id, busy.label)
         try:
             apply_settings(session.settings, changes)
         except SettingsError as exc:

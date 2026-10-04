@@ -1,7 +1,8 @@
 # Author: joelsnl and Anthropic Claude
-"""HuaEPUB Simple: a localhost web companion for the download-translate-EPUB pipeline.
+"""HuaEPUB server mode: the full app served to a browser from the desktop process.
 
-Run from a checkout with ``python3 -m web``. Imported only by the web process;
-``core/`` and ``gui/`` never import this package, and this package never
-imports ``gui/`` (Qt must not load here).
+``web.host.ServerHost`` runs FastAPI + uvicorn on a daemon thread inside the
+desktop app (File → Server mode… or the SERVE chip). ``core/`` and ``parsers/``
+never import this package, and this package never imports ``gui/`` (Qt must
+not load here).
 """

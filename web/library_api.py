@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Query
@@ -11,7 +10,9 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from core.download_runner import downloads_folder, epub_path
+from core.parser import create_http_session
 from core.reader import find_local_epub
+from core.security import fetch_cover_bytes
 from web import books
 from web.context import ServerContext
 from web.tasks import Busy
@@ -27,9 +28,20 @@ class UrlIn(BaseModel):
     url: str
 
 
-def busy_response(exc: Busy) -> JSONResponse:
-    return JSONResponse({"error": "busy", "task_id": exc.task_id, "label": exc.label},
-                        status_code=409)
+def fetch_and_cache_cover(cache, cover_url: str, source_url: str, *, timeout: float) -> bytes:
+    """Fetch a cover through the SSRF guard and keep it in the cover cache. Raises on failure."""
+    http = create_http_session()
+    try:
+        data = fetch_cover_bytes(http, cover_url, timeout=timeout)
+    finally:
+        close = getattr(http, "close", None)
+        if callable(close):
+            close()
+    try:
+        cache.put_cover(data, cover_url=cover_url, source_url=source_url)
+    except Exception:
+        pass
+    return data
 
 
 def sniff_image(data: bytes) -> str:
@@ -100,23 +112,11 @@ def build_router(ctx: ServerContext) -> APIRouter:
         except Exception:
             data = None
         if not data and entry.cover_url:
-            from core.parser import create_http_session
-            from core.security import fetch_cover_bytes
-
-            http = create_http_session()
             try:
-                data = fetch_cover_bytes(http, entry.cover_url, timeout=15)
-                try:
-                    session.cache.put_cover(data, cover_url=entry.cover_url,
-                                            source_url=entry.source_url)
-                except Exception:
-                    pass
+                data = fetch_and_cache_cover(session.cache, entry.cover_url, entry.source_url,
+                                             timeout=15)
             except Exception:
                 data = None
-            finally:
-                close = getattr(http, "close", None)
-                if callable(close):
-                    close()
         if not data:
             return JSONResponse({"error": "no_cover"}, status_code=404)
         return Response(content=data, media_type=sniff_image(data),
@@ -158,10 +158,7 @@ def build_router(ctx: ServerContext) -> APIRouter:
                 pass
             return {"notes": msg, "with_updates": with_updates, "total": total}
 
-        try:
-            task = ctx.tasks.start("check", "Checking for new chapters", body)
-        except Busy as exc:
-            return busy_response(exc)
+        task = ctx.tasks.start("check", "Checking for new chapters", body)
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     @r.post("/update")
@@ -169,13 +166,10 @@ def build_router(ctx: ServerContext) -> APIRouter:
         entries = _entries_for(ctx, body.urls)
         if not entries:
             return JSONResponse({"error": "unknown_book"}, status_code=404)
-        try:
-            if len(entries) == 1:
-                task = books.start_library_update(ctx.tasks, entries[0])
-            else:
-                task = books.start_library_update_many(ctx.tasks, entries, label="Update")
-        except Busy as exc:
-            return busy_response(exc)
+        if len(entries) == 1:
+            task = books.start_library_update(ctx.tasks, entries[0])
+        else:
+            task = books.start_library_update_many(ctx.tasks, entries, label="Update")
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     @r.post("/update-all")
@@ -186,35 +180,21 @@ def build_router(ctx: ServerContext) -> APIRouter:
         ]
         if not entries:
             return JSONResponse({"error": "nothing_to_update"}, status_code=400)
-        try:
-            task = books.start_library_update_many(ctx.tasks, entries, label="Update All")
-        except Busy as exc:
-            return busy_response(exc)
+        task = books.start_library_update_many(ctx.tasks, entries, label="Update All")
         return JSONResponse({"task_id": task.id}, status_code=202)
 
     @r.post("/remove")
     def remove(body: UrlsIn):
         if ctx.tasks.is_busy():
-            return busy_response(Busy())
-        from core.library import purge_novel_artifacts
-        from core.settings import get_default_books_dir
+            raise Busy()
+        from core.library import remove_and_purge
 
         urls = [(u or "").strip() for u in body.urls[:MAX_SELECTION] if (u or "").strip()]
         if not urls:
             return JSONResponse({"error": "nothing_selected"}, status_code=400)
-        extra_dirs = [get_default_books_dir()]
-        custom = (session.output_dir or "").strip()
-        if custom:
-            extra_dirs.append(Path(custom))
-        removed = 0
+        removed = remove_and_purge(session.library_store, urls, cache=session.cache,
+                                   output_dir=session.output_dir, data_dir=session.data_dir)
         for url in urls:
-            before = session.library_store.get_library_entry(url)
-            gone = session.library_store.remove_library(url)
-            target = gone or before
-            if target:
-                removed += 1
-                purge_novel_artifacts(target, cache=session.cache, extra_dirs=extra_dirs,
-                                      data_dir=session.data_dir)
             ctx.check_status.pop(url, None)
         _sync_drive_quietly(ctx)
         return {"removed": removed}
@@ -222,7 +202,7 @@ def build_router(ctx: ServerContext) -> APIRouter:
     @r.post("/reset")
     def reset():
         if ctx.tasks.is_busy():
-            return busy_response(Busy())
+            raise Busy()
         session.library_store.clear(clear_library=True, clear_history=False)
         ctx.check_status.clear()
         _sync_drive_quietly(ctx)
@@ -244,15 +224,13 @@ def build_router(ctx: ServerContext) -> APIRouter:
             folder = downloads_folder(session.output_dir or "")
             dest = epub_path(folder, entry.title or "book",
                              preferred_name=entry.epub_filename or "")
-            try:
-                with ctx.tasks.exclusive("Downloading from Drive"):
+            with ctx.tasks.exclusive("Downloading from Drive"):
+                try:
                     saved = session.drive_sync.download_epub(entry.drive_file_id, dest,
                                                              allowed_root=folder)
-            except Busy as exc:
-                return busy_response(exc)
-            except Exception as exc:
-                return JSONResponse({"error": "drive_failed", "detail": str(exc)[:200]},
-                                    status_code=502)
+                except Exception as exc:
+                    return JSONResponse({"error": "drive_failed", "detail": str(exc)[:200]},
+                                        status_code=502)
             file = ctx.tasks.register_file(str(saved))
             if file:
                 return {"file": file}
@@ -291,4 +269,4 @@ def _sync_drive_quietly(ctx: ServerContext) -> None:
         pass
 
 
-__all__ = ["build_router", "sniff_image", "busy_response"]
+__all__ = ["build_router", "fetch_and_cache_cover", "sniff_image"]

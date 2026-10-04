@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import zipfile
+from types import SimpleNamespace
 
 from core.cache import NovelCache
-from core.download_runner import DownloadControl, run_single_download
+from core.download_runner import DownloadControl
 from core.library import LibraryStore
 from core.parser import Chapter, NovelInfo
+from core.tasks import download_one_novel
 
 
 class _NoNetworkParser:
@@ -50,23 +52,14 @@ def test_cached_chapters_build_real_epub(tmp_path):
         "<p>Second chapter body with enough words.</p>",
     )
 
-    failed, result = run_single_download(
-        control=DownloadControl(),
-        cache=cache,
-        library_store=store,
-        parser=_NoNetworkParser(),
-        info=info,
-        chapters=chapters,
-        output_path=str(dest),
-        translated_title="A Test Novel",
-        use_cache=True,
-        clean=True,
-        translate=False,
-        workers=1,
-        backend="google",
-        libretranslate_url="",
-        set_status=lambda _s: None,
-        set_progress=lambda _f: None,
+    session = SimpleNamespace(control=DownloadControl(), cache=cache, library_store=store,
+                              settings={})
+    options = {"use_cache": True, "clean": True, "translate": False, "workers": 1,
+               "backend": "google"}
+    failed, result = download_one_novel(
+        session, _NoNetworkParser(), info, chapters, str(dest), "A Test Novel", options,
+        book_key=info.source_url, set_status=lambda _s: None,
+        set_progress=lambda _f, _s="": None, set_build_progress=lambda _f, _s="": None,
     )
 
     assert failed == []
