@@ -52,7 +52,7 @@ class SinglePage(QWidget):
         self.cover_label = QLabel("No Cover")
         self.cover_label.setFixedSize(100, 140)
         self.cover_label.setAlignment(Qt.AlignCenter)
-        self.cover_label.setStyleSheet("background:#3a3a3a;border-radius:4px;")
+        self.cover_label.setObjectName("coverLabel")
         info.addWidget(self.cover_label)
         meta = QVBoxLayout()
         self.title_label = QLabel("Title: -")
@@ -60,7 +60,7 @@ class SinglePage(QWidget):
         self.author_label = QLabel("Author: -")
         self.chapters_label = QLabel("Chapters: 0")
         self.eng_title_label = QLabel("English Title: -")
-        self.eng_title_label.setStyleSheet("color:#aaa;")
+        self.eng_title_label.setObjectName("mutedLabel")
         for w in (self.title_label, self.author_label, self.chapters_label, self.eng_title_label):
             meta.addWidget(w)
         meta.addStretch(1)

@@ -7,6 +7,7 @@
   <summary>Download and translate Chinese web novels to EPUB format</summary>
   <description>
     <p>HuaEPUB downloads Chinese web novels, translates them to English, and builds EPUB files.</p>
+    <p>Server mode lets you use it from a web browser on your phone or another computer, on your own network or over the internet with HTTPS and a password.</p>
   </description>
   <launchable type="desktop-id">org.joelsnl.HuaEPUB.desktop</launchable>
   <url type="homepage">https://github.com/joelsnl/HuaEPUB</url>
@@ -14,7 +15,7 @@
     <binary>huaepub</binary>
   </provides>
   <releases>
-    <release version="@VERSION@" date="2026-10-02"/>
+    <release version="@VERSION@" date="2026-10-04"/>
   </releases>
   <content_rating type="oars-1.1"/>
 </component>

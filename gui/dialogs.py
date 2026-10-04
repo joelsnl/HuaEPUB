@@ -335,7 +335,7 @@ class CloseWhileSyncingDialog(QDialog):
             "Closing now can leave library.json or EPUBs half-uploaded."
         )
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color: #aaa; font-size: 12px;")
+        self.hint.setObjectName("hintLabel")
         lay.addWidget(self.hint)
 
         btns = QHBoxLayout()

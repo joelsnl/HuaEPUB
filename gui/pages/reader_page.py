@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from core.reader import KIND_CACHE, KIND_EPUB, ReaderBook, wrap_reader_html
 from core.utils import format_count
+from gui import theme
 
 
 class ReaderPage(QWidget):
@@ -36,7 +37,7 @@ class ReaderPage(QWidget):
         self.title_lbl = QLabel("Open a novel from Library or Single to read.")
         self.title_lbl.setWordWrap(True)
         self.source_lbl = QLabel("")
-        self.source_lbl.setStyleSheet("color:#aaa;")
+        self.source_lbl.setObjectName("mutedLabel")
         self.prev_btn = QPushButton("Prev")
         self.prev_btn.setObjectName("secondaryBtn")
         self.next_btn = QPushButton("Next")
@@ -74,9 +75,7 @@ class ReaderPage(QWidget):
         self.view.setOpenLinks(False)
         self.view.setReadOnly(True)
         self.view.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self.view.setStyleSheet(
-            "QTextBrowser { background:#2b2b2b; color:#e8e8e8; border:1px solid #444; }"
-        )
+        self.view.setObjectName("readerView")
         split.addWidget(self.toc)
         split.addWidget(self.view)
         split.setStretchFactor(0, 0)
@@ -85,7 +84,7 @@ class ReaderPage(QWidget):
         root.addWidget(split, 1)
 
         self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color:#aaa;")
+        self.status_lbl.setObjectName("mutedLabel")
         root.addWidget(self.status_lbl)
 
         self._set_nav_enabled(False)
@@ -174,7 +173,10 @@ class ReaderPage(QWidget):
             return
         ch = self.book.chapters[self._index]
         body = ch.html or "<p>This chapter is not on this PC yet.</p>"
-        self.view.setHtml(wrap_reader_html(body, font_pt=self._font_pt))
+        pal = theme.current()
+        self.view.setHtml(wrap_reader_html(body, font_pt=self._font_pt, color=pal.ink,
+                                           background=pal.ground,
+                                           font_family=theme.serif_family()))
         if self._pending_scroll:
             ratio = self._pending_scroll
             self._pending_scroll = 0.0

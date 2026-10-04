@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
+from core.settings import get_setting
 from core.utils import sanitize_runtime_env
 from gui.icon import apply_app_icon, apply_windows_app_id
 from gui.main_window import MainWindow
@@ -28,9 +28,9 @@ def run():
         app.setStyle(fusion)
     app.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, True)
 
-    qss = Path(__file__).with_name("style.qss")
-    if qss.exists():
-        app.setStyleSheet(qss.read_text(encoding="utf-8"))
+    from gui import theme
+
+    theme.apply_look(app, get_setting("ui_look") or "auto")
 
     win = MainWindow()
     apply_app_icon(app, win)

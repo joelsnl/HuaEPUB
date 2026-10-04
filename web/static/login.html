@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HuaEPUB · Sign in</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@500&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/theme.js"></script>
+</head>
+<body>
+<main class="gate">
+  <div class="gate-seal" aria-hidden="true">华</div>
+  <div class="brand">
+    <span class="brand-name">HuaEPUB</span>
+    <span class="label brand-tag">Server</span>
+  </div>
+  <form class="gate-form" id="gate-form" novalidate>
+    <label class="label" for="secret" id="secret-label">Access code</label>
+    <input id="secret" class="field mono" type="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required>
+    <p class="muted small" id="gate-hint">Find the code on the HuaEPUB window on your PC, or scan its QR code.</p>
+    <p class="range-error small" id="gate-error" role="alert" hidden></p>
+    <button type="submit" class="btn btn-main" id="gate-go">Sign in</button>
+  </form>
+</main>
+<script src="/static/login.js" defer></script>
+</body>
+</html>

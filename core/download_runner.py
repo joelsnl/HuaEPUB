@@ -116,7 +116,8 @@ def format_completion_notes(
             parts.append(f"  • … and {format_count(extra)} more")
     if translation_warnings:
         parts.append(
-            f"{plural(len(translation_warnings), 'chapter')} still have significant Chinese."
+            f"{plural(len(translation_warnings), 'chapter')} still "
+            f"{'has' if len(translation_warnings) == 1 else 'have'} significant Chinese."
         )
         for title, count in translation_warnings[:8]:
             label = (title[:50] + "…") if len(title) > 50 else title

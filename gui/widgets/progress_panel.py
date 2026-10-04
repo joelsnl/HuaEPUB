@@ -4,9 +4,10 @@ from __future__ import annotations
 import re
 
 from PySide6.QtCore import QThread, Qt, QTimer, Signal, Slot
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from gui.icon import load_app_pixmap
+from gui.widgets.slips import SealMark, SlipStrip
 
 _COUNT_RE = re.compile(r"\d+\s*/\s*\d+")
 
@@ -16,6 +17,20 @@ def _status_has_work_count(status: str) -> bool:
     if not status or "Starting download" in status:
         return False
     return bool(_COUNT_RE.search(status))
+
+
+def phase_of(status: str) -> str:
+    """The pipeline phase a status line names (Fetching / Translating / Polishing / Writing)."""
+    text = (status or "").lower()
+    if "polish" in text:
+        return "polishing"
+    if "writing epub" in text or text.startswith("writing"):
+        return "writing"
+    if "translat" in text:
+        return "translating"
+    if "fetch" in text or "chapter" in text or "download" in text:
+        return "fetching"
+    return ""
 
 
 class ProgressPanel(QWidget):
@@ -28,10 +43,21 @@ class ProgressPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
 
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setValue(0)
-        self.bar.setTextVisible(False)
+        self._value = 0
+        self._phase = ""
+        self.slips = SlipStrip(height=46)
+        self.percent = QLabel("")
+        self.percent.setObjectName("eyebrow")
+        self.percent.setMinimumWidth(48)
+        self.percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.seal = SealMark(size=34)
+        self.seal.hide()
+        strip_row = QHBoxLayout()
+        strip_row.setContentsMargins(0, 0, 0, 0)
+        strip_row.setSpacing(12)
+        strip_row.addWidget(self.slips, 1)
+        strip_row.addWidget(self.percent)
+        strip_row.addWidget(self.seal)
         self.logo = QLabel()
         self.logo.setObjectName("appLogo")
         self.logo.setFixedSize(20, 20)
@@ -48,7 +74,7 @@ class ProgressPanel(QWidget):
         status_row.setSpacing(8)
         status_row.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignTop)
         status_row.addWidget(self.status, 1)
-        lay.addWidget(self.bar)
+        lay.addLayout(strip_row)
         lay.addLayout(status_row)
 
         btns = QHBoxLayout()
@@ -99,24 +125,43 @@ class ProgressPanel(QWidget):
         scaled = max(0.0, min(1.0, fraction)) * 1000
         value = int(scaled)
         # Multi-download maps one chapter of four 500-ch books to ~0.00025
-        # (int → 0). Show a sliver once work has started so the bar moves.
+        # (int → 0). Show a sliver once work has started so the strip moves.
         if scaled > 0 and value == 0:
             value = 1
         if value == 0 and status and _status_has_work_count(status):
             value = 1
-        self.bar.setValue(value)
-        # Range is 0–1000, so the default %p text shows 0% until the bar
-        # is already 1% full. Paint the percent from the value on screen.
-        pct = value / 10.0
-        self.bar.setTextVisible(value > 0)
+        self._value = value
+        if status:
+            phase = phase_of(status)
+            if phase:
+                self._phase = phase
         if value <= 0:
-            self.bar.setFormat("%p%")
-        elif pct < 10:
-            self.bar.setFormat(f"{pct:.1f}%")
-        else:
-            self.bar.setFormat(f"{pct:.0f}%")
+            self._phase = phase_of(status or "") if status else ""
+        self.seal.hide()
+        self.slips.set_progress(value / 1000.0, self._phase)
+        self.percent.setText(self.percent_text())
         if status:
             self.status.setText(status)
+
+    def value(self) -> int:
+        """Progress in tenths of a percent (0–1000)."""
+        return self._value
+
+    def percent_text(self) -> str:
+        """The percent painted next to the slips: '' at 0, one decimal under 10%."""
+        pct = self._value / 10.0
+        if self._value <= 0:
+            return ""
+        if pct < 10:
+            return f"{pct:.1f}%"
+        return f"{pct:.0f}%"
+
+    def mark_finished(self, *, translated: bool, flagged: bool = False) -> None:
+        """All slips filled; the 译 seal when the build was translated."""
+        self._value = 1000
+        self.slips.set_finished(flagged=flagged)
+        self.percent.setText("")
+        self.seal.setVisible(bool(translated))
 
     @Slot(str)
     def set_status(self, text: str):

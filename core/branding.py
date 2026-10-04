@@ -4,6 +4,8 @@
 APP_NAME = "HuaEPUB"
 APP_TITLE = "HuaEPUB"
 APP_DESCRIPTION = "Download Chinese web novels and build English EPUBs"
+# Server mode: the app served to browsers on your network or the internet
+SERVER_TITLE = "HuaEPUB Server"
 
 APP_AUTHOR = "Joel Sunil"
 APP_AUTHOR_HANDLE = "joelsnl"

@@ -41,10 +41,11 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*", "gui*", "parsers*"]
+include = ["core*", "gui*", "parsers*", "web*"]
 
 [tool.setuptools.package-data]
-gui = ["style.qss", "assets/*"]
+gui = ["style.qss", "assets/*", "assets/fonts/*"]
+web = ["static/*"]
 parsers = ["sites.json"]
 "core.translation" = ["data/*.json"]
 "core.polish" = ["data/*.json"]
