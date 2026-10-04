@@ -98,6 +98,18 @@ DEFAULTS: Dict[str, Any] = {
     'window_y': 0,
     'window_w': 0,
     'window_h': 0,
+    # Server mode: serve the app to browsers. Remembered across restarts.
+    'server_enabled': False,
+    # 'lan' (this network, access code) | 'remote' (anywhere, HTTPS + password)
+    'server_mode': 'lan',
+    'server_port': 8765,
+    # Optional public name or address shown for remote mode (DDNS host, public IP)
+    'server_hostname': '',
+    # Optional own certificate for remote mode; empty = generated self-signed
+    'server_cert_path': '',
+    'server_key_path': '',
+    # Look: 'auto' (follow system) | 'dark' | 'light' | a palette name | 'random'
+    'ui_look': 'auto',
 }
 
 _lock = threading.Lock()

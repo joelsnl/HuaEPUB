@@ -10,6 +10,8 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 ## Features
 
 - **In-app reader** — **Read** tab (Library **Read** / double-click, or Single **Read** after fetch). Prefers the local EPUB (translated/polished English if that is what you downloaded). If the file is only on Drive, it is pulled into the books folder first. Otherwise it reads cached chapter HTML (usually the original site text) and fetches a missing chapter on demand — no EPUB rebuild, no translation/polish. Reading position stays in `~/.huaepub/reading.json` on this PC (not Drive).
+- **Server mode** — use HuaEPUB from a web browser on your phone, another computer or this PC. **This network** signs in with an access code (or a QR code); **Anywhere** uses HTTPS and a password. Single, Multi, Library, Read and Settings all work in the browser on the same library, cache and reading position. See [Server mode](#server-mode).
+- **Looks** — View → **Look**: Auto follows your system (dark Graphite & Cyan, light Celadon Day), or pick Indigo & Jade, Ink & Gold, Cinnabar Night, Blue Mist, or Surprise me. The browser pages use the same palettes.
 - **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site; if a configured site’s content selector misses, the same heuristic is used and the completion dialog warns you
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
@@ -211,6 +213,32 @@ Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` 
 
 Use **Prev** / **Next** and **A-** / **A+** (or the slider) in the reader. Font size is remembered as `reader_font_pt`.
 
+### Server mode
+
+Server mode turns HuaEPUB into a small web app you open in a browser. Click **SERVE** at the right end of the tab bar (or **File → Server mode…**) and pick where to serve:
+
+| | This network | Anywhere |
+|---|---|---|
+| Who can reach it | Devices on your home or office network only | Any device on the internet (your router must forward the port to this PC) |
+| Connection | HTTP | HTTPS only |
+| Sign-in | 8-character access code, or scan the QR code | A password you set (at least 10 characters) |
+| Session length | 30 days | 7 days |
+
+While serving, the desktop window shows the addresses, the code or password status, a QR code, what the browser is doing right now, **Open in browser** (signs this PC's browser in with a one-time link) and **Stop serving**. The desktop tabs are paused so the browser and the window never run jobs on the same library at once; on this PC you use the browser too.
+
+In the browser you get **Single**, **Multi**, **Library** (check, update, update all, remove, download EPUB, read), **Read** (the same `reading.json` position as the desktop reader) and **Settings** (translate, clean, cache, translator, glossary, workers, Polish). Finished EPUBs are saved in the books folder on the PC and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. One job runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
+
+Things that stay in the desktop app: Google Drive sign-in, the save folder, app updates, and installing Polish, Offline NMT or Ollama. A browser job still uses Polish or Offline NMT if their models are already on this PC; it never starts those downloads.
+
+HuaEPUB remembers that server mode was on and starts serving again the next time it opens. If the port is taken, it says so and opens the desktop app instead.
+
+**Security.** Everything is built in; there is no account or outside service.
+
+- This network: only loopback and private-network addresses are answered, and the `Host` header must be an IP address or `localhost` (stops DNS-rebinding tricks). **New code** signs every device out.
+- Anywhere: HTTPS with a certificate HuaEPUB makes for you (browsers warn the first time; compare the SHA-256 fingerprint shown on the PC) or your own certificate and key. The password is stored as a salted scrypt hash. Changing it signs every device out.
+- Sessions are signed cookies (HttpOnly, SameSite=Strict, Secure over HTTPS). Every change needs a same-origin request with a custom header. After five wrong codes or passwords one address waits up to 15 minutes, and 30 failures from anywhere within 10 minutes pause all sign-ins for 10 minutes.
+- **Find my public address** in the dialog asks `api.ipify.org` once, only when you click it.
+
 ### Google Drive sync (optional)
 
 Use this only if you want the same library list (and optionally EPUBs) on more than one PC.
@@ -253,6 +281,7 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/active_download.json` | Incomplete download resume point (if any; never Drive-synced) |
 | `~/.huaepub/reading.json` | In-app reader position (chapter + scroll; never Drive-synced) |
 | `~/.huaepub/settings.json` | App options (atomic tmp+replace writes) |
+| `~/.huaepub/server/` | Server mode: signing key, access code, password hash and the generated HTTPS certificate (owner-only; never Drive-synced) |
 | `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
 | `~/.huaepub/google_token.json` | Drive refresh token (owner-only when the OS allows) |
 | `~/.huaepub/logs/huaepub.log` | Diagnostics (1 MB rotate during a session; keep `.log.1`) |
@@ -322,7 +351,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 ```
 .
 ├── app.py              # Entry → gui.app.run()
-├── gui/                # PySide6 UI (main window, pages, workers)
+├── gui/                # PySide6 UI (main window, pages, workers, Slips theme)
+├── web/                # Server mode: FastAPI app, sign-in, TLS, browser pages (web/static)
 ├── requirements.txt    # Python dependencies
 ├── requirements-dev.txt # pytest, ruff, pinned PyInstaller
 ├── build.py            # PyInstaller build (regenerates HuaEPUB.spec; do not commit a stale spec)
@@ -336,6 +366,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── polish/         # llama.cpp serve + span copy-edit (pinned hosts + hashes)
 │   ├── epub_builder.py # EPUB creation (atomic write; skip second clean after translate)
 │   ├── download_runner.py  # Pause/cancel/chapter download + translate_then_build
+│   ├── tasks.py        # Single / Multi / Library update / Drive sync jobs shared by desktop and server
+│   ├── session.py      # Shared app state (settings, cache, library, download control)
 │   ├── settings.py     # Persistent app settings (atomic tmp+replace)
 │   ├── cache.py        # Chapter + translation + cover + TOC caches (SQLite, 2 GB LRU)
 │   ├── download_job.py # Local incomplete-download resume (not Drive)

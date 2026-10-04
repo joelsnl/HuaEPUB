@@ -30,3 +30,9 @@ packaging>=21.0
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0
 google-auth-httplib2>=0.2.0
+
+# Server mode (serve the app to browsers on your network or the internet)
+fastapi>=0.110
+uvicorn>=0.29
+qrcode>=7.4
+cryptography>=42.0

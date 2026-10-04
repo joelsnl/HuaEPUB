@@ -1,41 +1,46 @@
-// HuaEPUB Simple: one-screen state machine. No framework, no inline script (CSP: script-src 'self').
+// HuaEPUB server mode: shared helpers, page switching, the job dock and the live state stream.
+// No framework and no inline script (CSP: script-src 'self'). Each page lives in its own file.
 (function () {
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
-  var app = $('app');
 
   var ERRORS = {
-    blocked_url: 'Blocked URL. Use a full http(s) link to a public novel page.',
+    blocked_url: 'Blocked link. Use a full http(s) link to a public novel page.',
     no_parser: 'No parser handles that site.',
     fetch_failed: 'Could not reach the site.',
     no_chapters: 'No chapters found at that link.',
-    busy: 'A book is already being built. Cancel it or wait for it to finish.',
-    preview_expired: 'That chapter list expired. Press Look again.',
+    busy: 'Another job is running. Wait for it or cancel it first.',
+    preview_expired: 'That chapter list expired. Read the link again.',
     bad_range: 'Check the chapter range.',
-    access_code_required: 'Open the link printed in the terminal to get in.',
-    network: 'Lost contact with HuaEPUB Simple. Is it still running?'
+    sign_in_required: 'You were signed out. Reload the page to sign in again.',
+    no_links: 'Paste at least one link.',
+    too_many_links: 'Paste 50 links or fewer at a time.',
+    unknown_book: 'That book is no longer in the Library.',
+    nothing_to_update: 'No books have new chapters. Check for updates first.',
+    empty_library: 'The Library is empty.',
+    no_epub: 'No EPUB for this book on the PC or in Google Drive.',
+    drive_failed: 'Google Drive did not send the file.',
+    nothing_to_read: 'Nothing to read yet.',
+    cannot_resume: 'That download cannot be resumed.',
+    bad_setting: 'That setting was not saved.',
+    network: 'Lost contact with the PC. Is server mode still on?'
   };
 
-  var preview = null;     // {preview_id, title, author, chapter_count, chapters}
-  var jobId = null;
-  var lookAbort = null;
-  var stream = null;
-  var poller = null;
-  var fileHandle = null;  // set when the user chose "Choose…"
-  var deliveryNote = '';
-  var flagged = [];
-  var frozen = { fetched: 0, done: 0, cur: -1, step: -1 };
-  var state = 'idle';
-  var compactMQ = window.matchMedia('(max-width: 719px)');
-  var canPick = typeof window.showSaveFilePicker === 'function';
+  // ---------- small DOM helpers ----------
+  function setText(id, text) { var el = typeof id === 'string' ? $(id) : id; if (el) el.textContent = text; }
+  function show(id, on) { var el = typeof id === 'string' ? $(id) : id; if (el) el.hidden = !on; }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
 
-  // ---------- helpers ----------
-  function setText(id, text) { $(id).textContent = text; }
-  function show(id, on) { $(id).hidden = !on; }
-
+  // ---------- API ----------
   function api(method, path, body, signal) {
-    var opts = { method: method, headers: {}, signal: signal };
+    var opts = { method: method, headers: { 'X-HuaEPUB': '1' }, signal: signal, credentials: 'same-origin' };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -44,6 +49,9 @@
       return r.text().then(function (t) {
         var data = null;
         try { data = t ? JSON.parse(t) : null; } catch (e) { data = null; }
+        if (r.status === 401 && data && data.error === 'sign_in_required') {
+          window.location.href = '/login';
+        }
         return { ok: r.ok, status: r.status, data: data };
       });
     });
@@ -52,481 +60,235 @@
   function errorText(data, fallback) {
     var key = data && data.error;
     var text = ERRORS[key] || fallback || 'Something went wrong.';
-    if (key === 'fetch_failed' && data.detail) text += ' ' + data.detail;
+    if (key === 'busy' && data.label) text = 'Busy: ' + data.label + '. Wait for it or cancel it first.';
+    if ((key === 'fetch_failed' || key === 'drive_failed' || key === 'cannot_resume' ||
+         key === 'bad_setting' || key === 'nothing_to_read') && data.detail) text += ' ' + data.detail;
     return text;
   }
 
-  function range() {
-    var n = preview ? preview.chapter_count : 0;
-    var from = parseInt($('from').value, 10);
-    var to = parseInt($('to').value, 10);
-    var ok = n > 0 && from >= 1 && to <= n && from <= to;
-    return { from: from, to: to, ok: ok, count: ok ? to - from + 1 : 0 };
-  }
-
-  // ---------- slips ----------
-  var slipCount = 0;
-  function maxSlips() { return compactMQ.matches ? 22 : 44; }
-
-  function ensureSlips(n) {
-    var host = $('slips');
-    if (slipCount === n && host.firstChild) return;
-    slipCount = n;
-    host.textContent = '';
-    var row = document.createElement('div');
-    row.className = 'slips-row';
-    for (var i = 0; i < n; i++) {
-      var slip = document.createElement('div');
-      slip.className = 'slip';
-      slip.appendChild(document.createElement('b'));
-      slip.appendChild(document.createElement('i'));
-      row.appendChild(slip);
-    }
-    host.appendChild(row);
-  }
-
-  // total = chapters in the selected range; fetched/done are strip counts
-  function drawSlips(total, fetched, done, cur) {
-    var n = Math.min(maxSlips(), total || maxSlips());
-    ensureSlips(n);
-    var per = total ? Math.ceil(total / n) : 1;
-    var flags = {};
-    flagged.forEach(function (pos) { flags[Math.min(n - 1, Math.floor(pos / per))] = true; });
-    var slips = $('slips').querySelectorAll('.slip');
-    for (var i = 0; i < slips.length; i++) {
-      var cls = 'slip';
-      if (i < done) cls += ' is-done';
-      else if (i < fetched) cls += ' is-fetched';
-      if (i === cur) cls += ' is-cur';
-      if (flags[i]) cls += ' is-flag';
-      slips[i].className = cls;
-    }
-    frozen.fetched = fetched; frozen.done = done; frozen.cur = cur;
-  }
-
-  function slipsFor(snap) {
-    var total = snap.total || (range().count) || 0;
-    var n = Math.min(maxSlips(), total || maxSlips());
-    var per = total ? Math.ceil(total / n) : 1;
-    if (snap.state === 'fetching') {
-      var f = Math.min(n, Math.floor(snap.current / per));
-      drawSlips(total, f, 0, f < n ? f : -1);
-    } else if (snap.state === 'translating') {
-      var d = Math.min(n, Math.floor(snap.fraction * n));
-      drawSlips(total, n, d, d < n ? d : -1);
-    } else if (snap.state === 'writing' || snap.state === 'done') {
-      drawSlips(total, n, n, -1);
-    }
-  }
-
-  function setSteps(active, complete) {
-    var items = $('steps').querySelectorAll('li');
-    for (var i = 0; i < items.length; i++) {
-      var cls = '';
-      if (complete) cls = 'is-past';
-      else if (i < active) cls = 'is-past';
-      else if (i === active) cls = 'is-now';
-      if (complete && i === 3) cls = 'is-now';
-      items[i].className = cls;
-    }
-  }
-
-  // ---------- render ----------
-  function set(next, info) {
-    info = info || {};
-    state = next;
-    app.setAttribute('data-state', next);
-    var busy = next === 'resolving' || next === 'fetching' || next === 'translating' || next === 'writing';
-    var terminal = next === 'done' || next === 'error' || next === 'cancelled';
-    var titles = {
-      idle: 'Ready when you are.', resolving: 'Reading the page', fetching: 'Fetching chapters',
-      translating: 'Translating', writing: 'Writing the EPUB', done: 'Saved', error: 'Failed',
-      cancelled: 'Cancelled'
-    };
-    var title = titles[next] || '';
-    var line = info.line || '';
-    var mono = false;
-
-    if (next === 'idle') {
-      line = 'Paste a novel link. Nothing is downloaded until you press Build.';
-    } else if (next === 'resolving') {
-      line = 'Loading the chapter list. Long books can take a minute.';
-    } else if (next === 'preview') {
-      var r = range();
-      title = preview.chapter_count + ' chapter' + (preview.chapter_count === 1 ? '' : 's') + ' found.';
-      var per = r.ok ? Math.ceil(r.count / Math.min(maxSlips(), r.count)) : 1;
-      line = r.ok
-        ? 'Each strip is about ' + per + (per === 1 ? ' chapter' : ' chapters') + '. Change the range on the left, or build the whole book.'
-        : 'Check the chapter range on the left.';
-    } else if (busy) {
-      mono = true;
-    } else if (next === 'done') {
-      if (info.warnings) title = 'Saved with warnings';
-      mono = true;
-      line = info.summary || '';
-    } else if (next === 'error') {
-      line = info.line || ERRORS.network;
-    } else if (next === 'cancelled') {
-      line = info.line || 'Stopped before the EPUB was written. Nothing was saved. Fetched chapters stay cached.';
-    }
-
-    setText('title', title);
-    setText('status', line);
-    $('status').classList.toggle('mono', mono);
-    show('seal', next === 'done');
-
-    // rail
-    var hasBook = !!preview && next !== 'idle' && next !== 'resolving';
-    show('book-empty', !hasBook);
-    show('book-full', hasBook);
-    $('url').disabled = !(next === 'idle' || next === 'preview');
-    $('btn-look').disabled = $('url').disabled;
-    $('from').disabled = $('to').disabled = next !== 'preview';
-    document.querySelectorAll('input[name="save"]').forEach(function (el) { el.disabled = busy || terminal; });
-    $('sec-book').classList.toggle('is-dim', busy || terminal);
-    $('sec-output').classList.toggle('is-dim', busy || terminal);
-    show('sec-saved', next === 'done');
-    show('btn-build', next === 'preview');
-    show('btn-cancel', busy);
-    show('btn-again', next === 'done');
-    show('btn-restart', terminal);
-    setText('btn-restart', next === 'error' ? 'Try again' : 'Start over');
-    $('btn-build').disabled = next === 'preview' && !range().ok;
-
-    // slips and steps
-    if (next === 'idle') { flagged = []; drawSlips(0, 0, 0, -1); setSteps(-1, false); }
-    else if (next === 'resolving') { drawSlips(0, 0, 0, -1); setSteps(-1, false); }
-    else if (next === 'preview') { flagged = []; drawSlips(range().count, 0, 0, -1); setSteps(-1, false); }
-    else if (next === 'fetching') setSteps(0, false);
-    else if (next === 'translating') setSteps(1, false);
-    else if (next === 'writing') setSteps(2, false);
-    else if (next === 'done') setSteps(3, true);
-    else if (next === 'error' || next === 'cancelled') {
-      drawSlips(info.total || range().count, frozen.fetched, frozen.done, -1);
-    }
-    if (next === 'fetching') frozen.step = 0;
-    if (next === 'translating') frozen.step = 1;
-    if (next === 'writing') frozen.step = 2;
-    if ((next === 'error' || next === 'cancelled') && frozen.step >= 0) setSteps(frozen.step, false);
-    if ((next === 'error' || next === 'cancelled') && frozen.step < 0) setSteps(-1, false);
-  }
-
-  function fillBook() {
-    var title = preview.title_en || preview.title;
-    var author = preview.author_en || preview.author || 'Unknown author';
-    setText('book-title', title);
-    var showOrig = !!preview.title_en && preview.title_en !== preview.title;
-    show('book-title-orig', showOrig);
-    if (showOrig) setText('book-title-orig', preview.title);
-    setText('book-meta', author + ' · ' + preview.chapter_count +
-      ' chapter' + (preview.chapter_count === 1 ? '' : 's'));
-    var cover = $('book-cover');
-    if (preview.has_cover) {
-      cover.src = '/api/preview/' + preview.preview_id + '/cover';
-      cover.hidden = false;
-      cover.onerror = function () { cover.hidden = true; };
-    } else {
-      cover.hidden = true;
-      cover.removeAttribute('src');
-    }
-    $('from').value = '1';
-    $('to').value = String(preview.chapter_count);
-    rangeChanged();
-  }
-
-  function chapterTitle(pos) {
-    // pos is 1-based; preview.chapters[] holds {title, title_en}
-    var ch = preview && pos >= 1 && pos <= preview.chapter_count ? preview.chapters[pos - 1] : null;
-    return ch ? (ch.title_en || ch.title) : '';
-  }
-
-  function rangeChanged() {
-    if (!preview) return;
-    var r = range();
-    setText('from-title', chapterTitle(r.from));
-    setText('to-title', chapterTitle(r.to));
-    var bad = !r.ok;
-    show('range-error', bad);
-    if (bad) setText('range-error', 'Use numbers from 1 to ' + preview.chapter_count + ', with From not above To.');
-    if (state === 'preview') set('preview');
-  }
-
-  // ---------- actions ----------
-  function look(ev) {
-    if (ev) ev.preventDefault();
-    if (state !== 'idle' && state !== 'preview') return;
-    var url = $('url').value.trim();
-    if (!/^https?:\/\/[^\s\/]+\.[^\s\/]+/i.test(url)) {
-      preview = null;
-      set('error', { line: ERRORS.blocked_url });
-      return;
-    }
-    preview = null;
-    set('resolving');
-    lookAbort = new AbortController();
-    api('POST', '/api/preview', { url: url }, lookAbort.signal).then(function (res) {
-      lookAbort = null;
-      if (!res.ok) { set('error', { line: errorText(res.data, ERRORS.fetch_failed) }); return; }
-      preview = res.data;
-      fillBook();
-      set('preview');
-    }).catch(function (err) {
-      lookAbort = null;
-      if (err && err.name === 'AbortError') return;
-      set('error', { line: ERRORS.network });
-    });
-  }
-
-  function build() {
-    var r = range();
-    if (!preview || !r.ok) { rangeChanged(); return; }
-    var wantsPicker = canPick && document.querySelector('input[name="save"]:checked').value === 'choose';
-    var picked = wantsPicker
-      ? window.showSaveFilePicker({
-          suggestedName: suggestedName(r),
-          types: [{ description: 'EPUB book', accept: { 'application/epub+zip': ['.epub'] } }]
-        })
-      : Promise.resolve(null);
-    // The picker must start inside this click; everything else waits for it.
-    picked.then(function (handle) {
-      fileHandle = handle;
-      return api('POST', '/api/jobs', {
-        preview_id: preview.preview_id, chapter_from: r.from, chapter_to: r.to
-      });
-    }).then(function (res) {
-      if (!res.ok) { set('error', { line: errorText(res.data) }); return; }
-      jobId = res.data.job_id;
-      flagged = [];
-      frozen = { fetched: 0, done: 0, cur: -1, step: -1 };
-      set('fetching', { total: r.count });
-      setText('status', 'Starting…');
-      listen(jobId);
-    }).catch(function (err) {
-      if (err && err.name === 'AbortError') {
-        set('preview', {});
-        setText('status', 'Save cancelled. Press Build EPUB to choose again.');
-        return;
-      }
-      set('error', { line: ERRORS.network });
-    });
-  }
-
-  function suggestedName(r) {
-    var base = (preview.title || 'book').replace(/[\\/:*?"<>|]+/g, '').trim() || 'book';
-    var part = (r.from === 1 && r.to === preview.chapter_count) ? '' : ' (' + r.from + '-' + r.to + ')';
-    return base + part + '.epub';
-  }
-
-  function cancel() {
-    if (state === 'resolving') {
-      if (lookAbort) lookAbort.abort();
-      lookAbort = null;
-      set('cancelled', { line: 'Stopped. Nothing was downloaded.' });
-      return;
-    }
-    if (!jobId) return;
-    $('btn-cancel').disabled = true;
-    api('POST', '/api/jobs/' + jobId + '/cancel').then(function (res) {
-      $('btn-cancel').disabled = false;
-      if (res.status === 409) pollOnce();
-    }).catch(function () { $('btn-cancel').disabled = false; });
-  }
-
-  function restart() {
-    stopListening();
-    var old = jobId;
-    jobId = null;
-    fileHandle = null;
-    if (old) api('DELETE', '/api/jobs/' + old).catch(function () {});
-    if (preview) { set('preview'); } else { set('idle'); }
-    if (state === 'idle') $('url').focus();
-  }
-
-  // ---------- job updates ----------
-  function listen(id) {
-    stopListening();
-    if (window.EventSource) {
-      stream = new EventSource('/api/jobs/' + id + '/events');
-      stream.onmessage = function (ev) { try { onSnapshot(JSON.parse(ev.data)); } catch (e) { /* ignore */ } };
-      stream.onerror = function () {
-        // Fall back to polling; a finished job closes the stream on its own.
-        if (stream) { stream.close(); stream = null; }
-        startPolling(id);
-      };
-    } else {
-      startPolling(id);
-    }
-  }
-
-  function startPolling(id) {
-    if (poller) return;
-    poller = setInterval(function () { pollOnce(id); }, 1000);
-  }
-
-  function pollOnce(id) {
-    id = id || jobId;
-    if (!id) return;
-    api('GET', '/api/jobs/' + id).then(function (res) {
-      if (res.ok) onSnapshot(res.data);
-    }).catch(function () {});
-  }
-
-  function stopListening() {
-    if (stream) { stream.close(); stream = null; }
-    if (poller) { clearInterval(poller); poller = null; }
-  }
-
-  function onSnapshot(s) {
-    if (s.job_id !== jobId) return;
-    flagged = s.flagged || [];
-    var mid = s.state === 'fetching' || s.state === 'translating' || s.state === 'writing';
-    if (mid) {
-      if (state !== s.state) set(s.state, { total: s.total });
-      slipsFor(s);
-      setText('status', statusLine(s));
-      return;
-    }
-    stopListening();
-    if (s.state === 'done') {
-      slipsFor(s);
-      var summary = s.total + ' chapter' + (s.total === 1 ? '' : 's');
-      set('done', { warnings: s.warnings, summary: summary });
-      slipsFor(s);
-      setText('file-name', s.filename || 'book.epub');
-      setText('file-note', 'Sending the file to your browser…');
-      setText('notes', s.notes || '');
-      show('notes-wrap', !!s.notes);
-      deliver(s);
-    } else if (s.state === 'cancelled') {
-      set('cancelled', { total: s.total });
-    } else if (s.state === 'error') {
-      set('error', { line: s.error ? 'Could not finish: ' + s.error : ERRORS.network, total: s.total });
-    }
-  }
-
-  function statusLine(s) {
-    var head = s.state === 'fetching'
-      ? s.current + ' of ' + s.total + ' chapters'
-      : Math.round(s.fraction * 100) + '%';
-    var msg = (s.message || '').replace(/\s+/g, ' ').trim();
-    return msg ? head + ' · ' + msg : head;
-  }
-
-  // ---------- delivery ----------
-  function triggerDownload(s) {
+  // ---------- downloads ----------
+  function fileUrl(file) { return '/api/files/' + encodeURIComponent(file.token); }
+  function triggerDownload(file) {
     var a = document.createElement('a');
-    a.href = '/api/jobs/' + s.job_id + '/epub';
-    a.download = s.filename || 'book.epub';
+    a.href = fileUrl(file);
+    a.download = file.name || 'book.epub';
     document.body.appendChild(a);
     a.click();
     a.remove();
   }
 
-  function deliver(s) {
-    if (fileHandle) {
-      fetch('/api/jobs/' + s.job_id + '/epub')
-        .then(function (r) { if (!r.ok) throw new Error('fetch'); return r.blob(); })
-        .then(function (blob) {
-          return fileHandle.createWritable().then(function (w) {
-            return w.write(blob).then(function () { return w.close(); });
-          });
-        })
-        .then(function () { setText('file-note', 'Written to the file you chose.'); })
-        .catch(function () {
-          setText('file-note', 'Could not write that file. Press Download EPUB again.');
-        });
-    } else {
-      triggerDownload(s);
-      setText('file-note', 'Sent to your Downloads folder. Your browser may have asked first.');
+  // ---------- slips ----------
+  // Draw n strips into host: [0, done) translated, [done, fetched) fetched, cur outlined.
+  function drawSlips(host, n, fetched, done, cur, flags) {
+    if (host.childElementCount !== 1 || host.firstChild.childElementCount !== n) {
+      host.textContent = '';
+      var row = el('div', 'slips-row');
+      for (var i = 0; i < n; i++) {
+        var slip = el('div', 'slip');
+        slip.appendChild(document.createElement('b'));
+        slip.appendChild(document.createElement('i'));
+        row.appendChild(slip);
+      }
+      host.appendChild(row);
+    }
+    var slips = host.firstChild.children;
+    for (var j = 0; j < slips.length; j++) {
+      var cls = 'slip';
+      if (j < done) cls += ' is-done';
+      else if (j < fetched) cls += ' is-fetched';
+      if (j === cur) cls += ' is-cur';
+      if (flags && flags[j]) cls += ' is-flag';
+      slips[j].className = cls;
     }
   }
 
-  function downloadAgain() {
-    if (!jobId) return;
-    triggerDownload({ job_id: jobId, filename: $('file-name').textContent });
+  // Strip counts for a task snapshot (current novel only).
+  function slipCounts(task, n) {
+    if (!task) return { fetched: 0, done: 0, cur: -1 };
+    if (task.state === 'done') return { fetched: n, done: n, cur: -1 };
+    var translating = task.result && task.result.translated;
+    var fetched = Math.min(n, Math.floor((task.fetched || 0) * n));
+    var built = Math.min(n, Math.floor((task.built || 0) * n));
+    var done = translating || task.phase === 'writing' ? built : 0;
+    if (!translating && task.built > 0) { fetched = n; done = built; }
+    var cur = task.phase === 'fetching' ? fetched : (task.phase === 'translating' ? done : -1);
+    if (cur >= n) cur = -1;
+    return { fetched: fetched, done: done, cur: cur };
   }
+
+  // ---------- shared state + subscribers ----------
+  var listeners = [];
+  var latest = { task: null, busy: false, resume: null };
+  function onState(fn) { listeners.push(fn); fn(latest); }
+  function publish(payload) {
+    latest = payload || latest;
+    listeners.forEach(function (fn) { try { fn(latest); } catch (e) { if (window.console) console.error(e); } });
+  }
+
+  var stream = null;
+  var poller = null;
+  function connect() {
+    if (window.EventSource) {
+      stream = new EventSource('/api/events');
+      stream.onmessage = function (ev) { try { publish(JSON.parse(ev.data)); } catch (e) { /* ignore */ } };
+      stream.onerror = function () {
+        if (stream) { stream.close(); stream = null; }
+        startPolling();
+        setTimeout(function () { if (!stream) { stopPolling(); connect(); } }, 15000);
+      };
+    } else {
+      startPolling();
+    }
+  }
+  function startPolling() {
+    if (poller) return;
+    poller = setInterval(refresh, 1500);
+  }
+  function stopPolling() { if (poller) { clearInterval(poller); poller = null; } }
+  function refresh() {
+    return api('GET', '/api/state').then(function (res) { if (res.ok) publish(res.data); }).catch(function () {});
+  }
+
+  // ---------- views ----------
+  var VIEWS = ['single', 'multi', 'library', 'read', 'settings'];
+  var current = null;
+  var viewHooks = {};
+  function onView(name, fn) { viewHooks[name] = fn; }
+  function go(name, arg) {
+    if (VIEWS.indexOf(name) < 0) name = 'single';
+    current = name;
+    $('shell').setAttribute('data-view', name);
+    VIEWS.forEach(function (v) { show('view-' + v, v === name); });
+    document.querySelectorAll('.nav a').forEach(function (a) {
+      var on = a.getAttribute('data-view') === name;
+      a.classList.toggle('is-on', on);
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    if (viewHooks[name]) viewHooks[name](arg);
+    renderDock(latest);
+  }
+  function view() { return current; }
+
+  // ---------- resume banner ----------
+  function renderResume(s) {
+    var r = s.resume;
+    show('resume-banner', !!r && !s.busy);
+    if (r) setText('resume-title', r.title + (r.status === 'paused' ? ' (paused)' : ''));
+  }
+
+  // ---------- job dock ----------
+  var dismissed = null;
+  try { dismissed = sessionStorage.getItem('huaepub-dock-dismissed'); } catch (e) { dismissed = null; }
+  var KIND_ON_STAGE = { single: true };
+
+  function renderDock(s) {
+    var t = s && s.task;
+    var onStage = t && current === 'single' && KIND_ON_STAGE[t.kind];
+    var finished = t && (t.state === 'done' || t.state === 'error' || t.state === 'cancelled');
+    var visible = !!t && !onStage && !(finished && dismissed === t.id);
+    show('dock', visible);
+    if (!visible) return;
+    $('dock').setAttribute('data-state', t.state);
+    var phase = t.state === 'done' ? (t.result && t.result.warnings ? 'Saved with warnings' : 'Finished')
+      : t.state === 'error' ? 'Failed' : t.state === 'cancelled' ? 'Cancelled' : t.phase_label;
+    setText('dock-phase', phase);
+    setText('dock-title', t.label);
+    var line = t.state === 'error' ? t.error : (finished ? firstLine(t.result && t.result.notes) : t.message);
+    if (!finished && t.novels > 1) line = 'Book ' + (t.novel + 1) + ' of ' + t.novels + (line ? ' · ' + line : '');
+    setText('dock-line', line || '');
+    var n = window.matchMedia('(max-width: 719px)').matches ? 16 : 30;
+    var c = slipCounts(t, n);
+    drawSlips($('dock-slips'), n, c.fetched, c.done, c.cur);
+    var running = !finished;
+    show('dock-pause', running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'sync');
+    setText('dock-pause', t.state === 'paused' ? 'Resume' : 'Pause');
+    show('dock-cancel', running && t.kind !== 'sync');
+    show('dock-close', finished);
+    var files = $('dock-files');
+    files.textContent = '';
+    var list = (finished && t.result && t.result.files) || [];
+    list.slice(0, 12).forEach(function (f) {
+      var b = el('button', 'btn-link small mono', f.name);
+      b.type = 'button';
+      b.addEventListener('click', function () { triggerDownload(f); });
+      files.appendChild(b);
+    });
+  }
+  function firstLine(text) { return (text || '').split('\n').filter(Boolean)[0] || ''; }
+
+  function pauseTask() { return api('POST', '/api/task/pause').then(refresh); }
+  function cancelTask() { return api('POST', '/api/task/cancel').then(refresh); }
 
   // ---------- look switch ----------
   function buildLookMenu() {
     var menu = $('look-menu');
     var order = ['auto', 'dark', 'light', '-', 'indigo', 'gold', 'cinnabar', 'mist', '-', 'surprise'];
-    var current = window.HuaTheme ? window.HuaTheme.get() : 'auto';
+    var cur = window.HuaTheme ? window.HuaTheme.get() : 'auto';
     menu.textContent = '';
     order.forEach(function (id) {
       var li = document.createElement('li');
       if (id === '-') { li.appendChild(document.createElement('hr')); menu.appendChild(li); return; }
-      var b = document.createElement('button');
+      var b = el('button', '', window.HuaTheme.names[id]);
       b.type = 'button';
       b.setAttribute('role', 'menuitemradio');
-      b.setAttribute('aria-checked', id === current ? 'true' : 'false');
-      b.textContent = window.HuaTheme.names[id];
+      b.setAttribute('aria-checked', id === cur ? 'true' : 'false');
       b.addEventListener('click', function () {
         window.HuaTheme.set(id);
-        setText('look-btn', 'Look: ' + window.HuaTheme.names[id]);
-        closeMenu();
+        closeLook();
         buildLookMenu();
       });
       li.appendChild(b);
       menu.appendChild(li);
     });
-    setText('look-btn', 'Look: ' + window.HuaTheme.names[current]);
+    setText('look-btn', 'Look: ' + window.HuaTheme.names[cur]);
   }
-  function closeMenu() { show('look-menu', false); $('look-btn').setAttribute('aria-expanded', 'false'); }
-  function toggleMenu() {
+  function closeLook() { show('look-menu', false); $('look-btn').setAttribute('aria-expanded', 'false'); }
+  function toggleLook() {
     var open = $('look-menu').hidden;
     show('look-menu', open);
     $('look-btn').setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) { var first = $('look-menu').querySelector('button'); if (first) first.focus(); }
   }
 
-  // ---------- save choice ----------
-  function initSave() {
-    var note = $('save-note');
-    if (!canPick) {
-      show('save-choose-wrap', false);
-      note.textContent = 'This browser saves to Downloads.';
-      return;
-    }
-    note.textContent = 'Downloads is your browser’s own download folder.';
-    var saved = null;
-    try { saved = localStorage.getItem('huaepub-simple-save'); } catch (e) { saved = null; }
-    if (saved === 'choose') document.querySelector('input[name="save"][value="choose"]').checked = true;
-    document.querySelectorAll('input[name="save"]').forEach(function (el) {
-      el.addEventListener('change', function () {
-        var v = document.querySelector('input[name="save"]:checked').value;
-        try { localStorage.setItem('huaepub-simple-save', v); } catch (e) { /* ignore */ }
-        note.textContent = v === 'choose'
-          ? 'Build EPUB asks where to save first.'
-          : 'Downloads is your browser’s own download folder.';
+  function init() {
+    $('look-btn').addEventListener('click', toggleLook);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && !$('look-menu').hidden) { closeLook(); $('look-btn').focus(); }
+    });
+    document.addEventListener('click', function (ev) { if (!ev.target.closest('.look')) closeLook(); });
+    document.querySelectorAll('.nav a').forEach(function (a) {
+      a.addEventListener('click', function (ev) { ev.preventDefault(); go(a.getAttribute('data-view')); });
+    });
+    $('dock-pause').addEventListener('click', pauseTask);
+    $('dock-cancel').addEventListener('click', cancelTask);
+    $('dock-close').addEventListener('click', function () {
+      var t = latest.task;
+      dismissed = t ? t.id : null;
+      try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
+      renderDock(latest);
+    });
+    $('btn-resume').addEventListener('click', function () {
+      api('POST', '/api/resume').then(function (res) {
+        if (!res.ok) { setText('resume-title', errorText(res.data)); return; }
+        refresh();
       });
     });
+    $('btn-discard').addEventListener('click', function () {
+      api('POST', '/api/resume/discard').then(refresh);
+    });
+    buildLookMenu();
+    onState(renderResume);
+    onState(renderDock);
   }
 
-  // ---------- wiring ----------
-  $('look-form').addEventListener('submit', look);
-  $('btn-build').addEventListener('click', build);
-  $('btn-cancel').addEventListener('click', cancel);
-  $('btn-restart').addEventListener('click', restart);
-  $('btn-again').addEventListener('click', downloadAgain);
-  $('from').addEventListener('input', rangeChanged);
-  $('to').addEventListener('input', rangeChanged);
-  $('look-btn').addEventListener('click', toggleMenu);
-  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') { closeMenu(); $('look-btn').focus(); } });
-  document.addEventListener('click', function (ev) {
-    if (!ev.target.closest('.look')) closeMenu();
-  });
-  compactMQ.addEventListener('change', function () {
-    slipCount = 0;
-    if (state === 'idle' || state === 'resolving') drawSlips(0, 0, 0, -1);
-    else if (state === 'preview') drawSlips(range().count, 0, 0, -1);
-    else drawSlips(range().count, frozen.fetched, frozen.done, frozen.cur);
-  });
-
-  buildLookMenu();
-  initSave();
-  set('idle');
-  fetch('/api/health').then(function (r) { return r.json(); }).then(function (h) {
-    setText('version', h.version || '');
-    if (h.name) document.title = h.name;
-  }).catch(function () {});
+  window.Hua = {
+    $: $, el: el, setText: setText, show: show, plural: plural,
+    api: api, errorText: errorText, ERRORS: ERRORS,
+    fileUrl: fileUrl, triggerDownload: triggerDownload,
+    drawSlips: drawSlips, slipCounts: slipCounts,
+    onState: onState, refresh: refresh, connect: connect, state: function () { return latest; },
+    onView: onView, go: go, view: view, VIEWS: VIEWS,
+    pauseTask: pauseTask, cancelTask: cancelTask, init: init
+  };
 })();

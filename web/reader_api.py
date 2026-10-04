@@ -1,0 +1,283 @@
+# Author: joelsnl and Anthropic Claude
+"""Read in the browser: the same book resolution and position file as the desktop.
+
+A local EPUB wins; otherwise cached chapter HTML. A missing cached chapter is
+fetched once (honouring the site's ``request_delay``), live-translated when
+Translate is on, and the next chapter is prefetched in the background. The
+position goes to the same ``reading.json`` the desktop Read tab uses.
+"""
+
+from __future__ import annotations
+
+import secrets
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Optional
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from core.parser import Chapter, get_parser_for_url
+from core.reader import (
+    KIND_CACHE,
+    html_needs_live_translate,
+    next_cache_prefetch_index,
+    resolve_reader_book,
+    resume_index,
+    sanitize_reader_html,
+)
+from core.reading import get_position, set_position
+from web.tasks import Busy
+
+MAX_OPEN_BOOKS = 6
+
+
+@dataclass
+class OpenBook:
+    id: str
+    book: object
+    last_fetch: float = 0.0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class ReaderStore:
+    def __init__(self, limit: int = MAX_OPEN_BOOKS):
+        self._limit = limit
+        self._items: "OrderedDict[str, OpenBook]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def put(self, book) -> OpenBook:
+        item = OpenBook(id=secrets.token_urlsafe(9), book=book)
+        with self._lock:
+            self._items[item.id] = item
+            while len(self._items) > self._limit:
+                self._items.popitem(last=False)
+        return item
+
+    def get(self, book_id: str) -> Optional[OpenBook]:
+        with self._lock:
+            item = self._items.get(book_id)
+            if item is not None:
+                self._items.move_to_end(book_id)
+            return item
+
+
+class OpenIn(BaseModel):
+    url: str = ""
+    preview_id: str = ""
+
+
+class PositionIn(BaseModel):
+    index: int
+    scroll: float = 0.0
+
+
+def _site_delay(url: str, source_url: str) -> float:
+    parser = get_parser_for_url(url) or get_parser_for_url(source_url)
+    try:
+        return float(getattr(parser, "request_delay", 2.0) or 2.0)
+    except (TypeError, ValueError):
+        return 2.0
+
+
+def build_router(ctx) -> APIRouter:
+    r = APIRouter(prefix="/api/read")
+    session = ctx.session
+
+    def fetch_chapter(item: OpenBook, index: int) -> str:
+        """Fetch one chapter body from the site, waiting out the site delay."""
+        book = item.book
+        ch = book.chapters[index]
+        delay = _site_delay(ch.url, book.source_url)
+        if item.last_fetch:
+            wait = delay - (time.monotonic() - item.last_fetch)
+            if wait > 0:
+                time.sleep(min(wait, 10.0))
+        parser = get_parser_for_url(ch.url) or get_parser_for_url(book.source_url)
+        if not parser:
+            raise RuntimeError("Unsupported site")
+        html = parser.get_chapter_content(Chapter(title=ch.title or "", url=ch.url))
+        item.last_fetch = time.monotonic()
+        if not html or not str(html).strip():
+            raise RuntimeError("Chapter came back empty.")
+        try:
+            session.cache.put_chapter(book.source_url, ch.url, ch.title or "", html)
+        except Exception:
+            pass
+        ch.html = html
+        return html
+
+    def live_translate(book, index: int) -> None:
+        from types import SimpleNamespace
+
+        from core.cleaner import ContentCleaner
+        from core.download_runner import make_translator, translator_backend_kwargs
+        from web.options import job_options
+
+        options = job_options(session.settings)
+        if not options.get("translate"):
+            return
+        ch = book.chapters[index]
+        if not html_needs_live_translate(ch.html or ""):
+            return
+        kw = translator_backend_kwargs({}, options)
+        translator = make_translator(cache=session.cache,
+                                     max_workers=int(options.get("workers", 200) or 200), **kw)
+        cfg = getattr(translator, "configure_glossary", None)
+        if callable(cfg):
+            cfg(SimpleNamespace(title=book.title or "", description=""),
+                mode=kw.get("glossary_mode", "auto"),
+                detect_text=" ".join([book.title or ""] + [c.title or "" for c in book.chapters[:40]]))
+        cleaner = ContentCleaner() if options.get("clean", True) else None
+        out = translator.translate_and_apply_html(ch.html or "", cleaner=cleaner)
+        if out:
+            ch.html = out
+
+    def prefetch_next(item: OpenBook, index: int) -> None:
+        nxt = next_cache_prefetch_index(item.book, index)
+        if nxt is None:
+            return
+
+        def run():
+            try:
+                with ctx.tasks.exclusive("Prefetching"):
+                    with item.lock:
+                        if (item.book.chapters[nxt].html or "").strip():
+                            return
+                        fetch_chapter(item, nxt)
+            except Busy:
+                pass
+            except Exception as exc:
+                print(f"Reader prefetch skipped: {exc}")
+
+        threading.Thread(target=run, name="reader-prefetch", daemon=True).start()
+
+    @r.post("/open")
+    def open_book(body: OpenIn):
+        url = (body.url or "").strip()
+        extra = None
+        title = ""
+        if body.preview_id:
+            preview = ctx.previews.get(body.preview_id)
+            if preview is None:
+                return JSONResponse({"error": "preview_expired"}, status_code=404)
+            url = preview.info.source_url or preview.url
+            extra = preview.chapters
+            title = preview.title_en or preview.info.title
+        if not url:
+            return JSONResponse({"error": "no_book"}, status_code=400)
+        entry = session.library_store.get_library_entry(url)
+        if entry is not None:
+            title = entry.translated_title or entry.title or title
+        kwargs = dict(
+            source_url=url,
+            title=title,
+            output_path=(entry.output_path if entry else "") or "",
+            epub_filename=(entry.epub_filename if entry else "") or "",
+            output_dir=session.output_dir or "",
+            cache=session.cache,
+            extra_chapters=extra,
+        )
+        drive_id = (entry.drive_file_id if entry else "") or ""
+        result = resolve_reader_book(drive_file_id=drive_id, **kwargs)
+        if result.need_drive:
+            result = _from_drive(ctx, entry, kwargs) or resolve_reader_book(drive_file_id="", **kwargs)
+        if result.error or result.book is None:
+            return JSONResponse({"error": "nothing_to_read",
+                                 "detail": result.error or "Nothing to read yet."}, status_code=404)
+        book = result.book
+        item = ctx.readers.put(book)
+        pos = get_position(book.source_url, data_dir=session.data_dir)
+        idx = resume_index(book, pos)
+        return {
+            "book_id": item.id,
+            "url": book.source_url,
+            "title": book.title,
+            "kind": book.kind,
+            "index": idx,
+            "scroll": float((pos or {}).get("scroll") or 0.0) if pos else 0.0,
+            "chapters": [{"index": c.index, "title": c.title, "ready": bool((c.html or "").strip())}
+                         for c in book.chapters],
+        }
+
+    @r.get("/{book_id}/chapter/{index}")
+    def chapter(book_id: str, index: int):
+        item = ctx.readers.get(book_id)
+        if item is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        book = item.book
+        if not 0 <= index < len(book.chapters):
+            return JSONResponse({"error": "bad_index"}, status_code=400)
+        ch = book.chapters[index]
+        note = ""
+        if not (ch.html or "").strip():
+            if book.kind != KIND_CACHE or not ch.url:
+                return JSONResponse({"error": "not_in_epub",
+                                     "detail": "This chapter is not in the EPUB."}, status_code=404)
+            try:
+                with ctx.tasks.exclusive("Reading"):
+                    with item.lock:
+                        if not (ch.html or "").strip():
+                            fetch_chapter(item, index)
+            except Busy as exc:
+                return JSONResponse({"error": "busy", "label": exc.label,
+                                     "detail": "Busy. Wait for the current job to finish."},
+                                    status_code=409)
+            except Exception as exc:
+                return JSONResponse({"error": "fetch_failed", "detail": str(exc)[:200]},
+                                    status_code=502)
+        if book.kind == KIND_CACHE and html_needs_live_translate(ch.html or ""):
+            try:
+                with ctx.tasks.exclusive("Translating chapter"):
+                    with item.lock:
+                        live_translate(book, index)
+            except Busy:
+                note = "Shown untranslated while another job runs."
+            except Exception as exc:
+                note = f"Translation failed: {str(exc)[:120]}"
+        prefetch_next(item, index)
+        return {"index": index, "title": ch.title, "html": sanitize_reader_html(ch.html or ""),
+                "note": note}
+
+    @r.post("/{book_id}/position")
+    def position(book_id: str, body: PositionIn):
+        item = ctx.readers.get(book_id)
+        if item is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        book = item.book
+        if not book.source_url or not 0 <= body.index < len(book.chapters):
+            return JSONResponse({"error": "bad_index"}, status_code=400)
+        ch = book.chapters[body.index]
+        set_position(book.source_url, chapter_url=(ch.url or ch.key), chapter_index=body.index,
+                     scroll=min(1.0, max(0.0, float(body.scroll or 0.0))),
+                     data_dir=session.data_dir)
+        return {"ok": True}
+
+    return r
+
+
+def _from_drive(ctx, entry, kwargs):
+    """Pull the Drive EPUB into the books folder first (Drive must be connected)."""
+    if entry is None or not entry.drive_file_id:
+        return None
+    ds = getattr(ctx.session, "drive_sync", None)
+    try:
+        if ds is None or not ds.is_connected():
+            return None
+    except Exception:
+        return None
+    from core.download_runner import downloads_folder, epub_path
+
+    folder = downloads_folder(ctx.session.output_dir or "")
+    dest = epub_path(folder, kwargs.get("title") or "book",
+                     preferred_name=kwargs.get("epub_filename") or "",
+                     preferred_path=kwargs.get("output_path") or "")
+    try:
+        with ctx.tasks.exclusive("Downloading from Drive"):
+            saved = ds.download_epub(entry.drive_file_id, dest, allowed_root=folder)
+    except Exception:
+        return None
+    return resolve_reader_book(drive_file_id="", extra_epub_path=str(saved), **kwargs)

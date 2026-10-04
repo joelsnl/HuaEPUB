@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HuaEPUB Simple</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HuaEPUB</title>
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,117 +12,307 @@
 <script src="/static/theme.js"></script>
 </head>
 <body>
-<div class="app" id="app" data-state="idle">
+<div class="shell" id="shell" data-view="single">
 
   <header class="head">
     <div class="brand">
       <span class="brand-name">HuaEPUB</span>
-      <span class="label brand-tag">Simple</span>
+      <span class="label brand-tag" id="brand-tag">Server</span>
     </div>
-    <span class="grow"></span>
-    <span class="label" id="version"></span>
-    <div class="look">
-      <button type="button" class="look-btn label" id="look-btn" aria-haspopup="true" aria-expanded="false">Look: Auto</button>
-      <ul class="look-menu" id="look-menu" hidden></ul>
+    <nav class="nav" aria-label="Pages">
+      <a href="#single" data-view="single">Single</a>
+      <a href="#multi" data-view="multi">Multi</a>
+      <a href="#library" data-view="library">Library</a>
+      <a href="#read" data-view="read">Read</a>
+      <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <div class="head-end">
+      <span class="label" id="version"></span>
+      <div class="look">
+        <button type="button" class="look-btn label" id="look-btn" aria-haspopup="true" aria-expanded="false">Look: Auto</button>
+        <ul class="look-menu" id="look-menu" hidden></ul>
+      </div>
     </div>
   </header>
 
-  <main class="stage" aria-live="polite">
-    <div class="stage-top">
-      <div class="stage-text">
-        <h1 class="status-title" id="title">Ready when you are.</h1>
-        <p class="status-line" id="status">Paste a novel link. Nothing is downloaded until you press Build.</p>
-      </div>
-      <div class="seal" id="seal" role="img" aria-label="Translated" hidden>译</div>
+  <div class="banner" id="resume-banner" role="status" hidden>
+    <div class="banner-text">
+      <span class="label">Unfinished download</span>
+      <span id="resume-title"></span>
     </div>
-
-    <div class="slips" id="slips" aria-hidden="true"></div>
-
-    <div class="legend label">
-      <span><i class="key key-wait"></i>Waiting</span>
-      <span><i class="key key-fetch"></i>Fetched</span>
-      <span><i class="key key-done"></i>Translated</span>
-      <span><i class="key key-flag"></i>Needs a look</span>
-    </div>
-
-    <ol class="steps label" id="steps">
-      <li data-step="0">Fetch</li>
-      <li data-step="1">Translate</li>
-      <li data-step="2">Write</li>
-      <li data-step="3">Save</li>
-    </ol>
-  </main>
-
-  <div class="rail" id="rail">
-    <section class="block" id="sec-source">
-      <label class="label" for="url">Novel link</label>
-      <form class="row" id="look-form" novalidate>
-        <input id="url" class="field mono" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://twkan.com/book/…">
-        <button type="submit" class="btn btn-outline" id="btn-look">Look</button>
-      </form>
-    </section>
-
-    <section class="block" id="sec-book">
-      <span class="label">Book</span>
-      <div class="book-empty" id="book-empty">The title, author and chapter count appear here once the page has been read.</div>
-      <div id="book-full" hidden>
-        <div class="book-head">
-          <img id="book-cover" class="book-cover" alt="" hidden>
-          <div class="book-head-text">
-            <div class="book-title" id="book-title"></div>
-            <div class="muted small" id="book-title-orig" hidden></div>
-            <div class="muted" id="book-meta"></div>
-          </div>
-        </div>
-        <div class="range">
-          <div class="range-cell">
-            <label class="label" for="from">From chapter</label>
-            <input id="from" class="field mono" type="text" inputmode="numeric" autocomplete="off">
-            <span class="muted small" id="from-title"></span>
-          </div>
-          <div class="range-cell">
-            <label class="label" for="to">To chapter</label>
-            <input id="to" class="field mono" type="text" inputmode="numeric" autocomplete="off">
-            <span class="muted small" id="to-title"></span>
-          </div>
-        </div>
-        <p class="range-error small" id="range-error" role="alert" hidden></p>
-      </div>
-    </section>
-
-    <section class="block" id="sec-output">
-      <span class="label">Output</span>
-      <div class="kv"><span class="muted">Translator</span><span>Google</span></div>
-      <div class="kv"><span class="muted">Names glossary</span><span>Automatic</span></div>
-      <div class="kv">
-        <span class="muted" id="save-label">Save to</span>
-        <div class="seg" role="radiogroup" aria-labelledby="save-label">
-          <label><input type="radio" name="save" value="downloads" checked><span>Downloads</span></label>
-          <label id="save-choose-wrap"><input type="radio" name="save" value="choose"><span>Choose…</span></label>
-        </div>
-      </div>
-      <p class="muted small" id="save-note"></p>
-    </section>
-
-    <section class="block" id="sec-saved" hidden>
-      <span class="label">Saved file</span>
-      <div class="file mono" id="file-name"></div>
-      <p class="muted" id="file-note"></p>
-      <div id="notes-wrap" hidden>
-        <span class="label flag">Check these chapters</span>
-        <pre class="notes" id="notes"></pre>
-      </div>
-    </section>
-
-    <div class="actions">
-      <button type="button" class="btn btn-main" id="btn-build" hidden>Build EPUB</button>
-      <button type="button" class="btn btn-main" id="btn-again" hidden>Download EPUB again</button>
-      <button type="button" class="btn btn-outline btn-wide" id="btn-cancel" hidden>Cancel</button>
-      <button type="button" class="btn-link" id="btn-restart" hidden>Start over</button>
+    <div class="banner-actions">
+      <button type="button" class="btn btn-outline" id="btn-resume">Resume</button>
+      <button type="button" class="btn-link" id="btn-discard">Discard</button>
     </div>
   </div>
 
+  <div class="dock" id="dock" hidden>
+    <div class="dock-slips" id="dock-slips" aria-hidden="true"></div>
+    <div class="dock-text">
+      <span class="label" id="dock-phase"></span>
+      <span class="dock-title" id="dock-title"></span>
+      <span class="muted small mono" id="dock-line"></span>
+      <div class="dock-files" id="dock-files"></div>
+    </div>
+    <div class="dock-actions">
+      <button type="button" class="btn btn-outline" id="dock-pause">Pause</button>
+      <button type="button" class="btn btn-quiet" id="dock-cancel">Cancel</button>
+      <button type="button" class="btn-link" id="dock-close" hidden>Dismiss</button>
+    </div>
+  </div>
+
+  <!-- ============ SINGLE ============ -->
+  <section class="view view-single" id="view-single" data-state="idle">
+    <main class="stage" aria-live="polite">
+      <div class="stage-top">
+        <div class="stage-text">
+          <h1 class="status-title" id="title">Ready when you are.</h1>
+          <p class="status-line" id="status">Paste a novel link. Nothing is downloaded until you press Build.</p>
+        </div>
+        <div class="seal" id="seal" role="img" aria-label="Translated" hidden>译</div>
+      </div>
+
+      <div class="slips" id="slips" aria-hidden="true"></div>
+
+      <div class="legend label">
+        <span><i class="key key-wait"></i>Waiting</span>
+        <span><i class="key key-fetch"></i>Fetched</span>
+        <span><i class="key key-done"></i>Translated</span>
+        <span><i class="key key-flag"></i>Needs a look</span>
+      </div>
+
+      <ol class="steps label" id="steps">
+        <li data-step="0">Fetch</li>
+        <li data-step="1">Translate</li>
+        <li data-step="2">Write</li>
+        <li data-step="3">Save</li>
+      </ol>
+    </main>
+
+    <div class="rail" id="rail">
+      <section class="block" id="sec-source">
+        <div class="block-head">
+          <label class="label" for="url">Novel link</label>
+          <button type="button" class="btn-link small" id="btn-recent" aria-haspopup="true" aria-expanded="false">Recent</button>
+        </div>
+        <ul class="pop" id="recent-menu" hidden></ul>
+        <form class="row" id="look-form" novalidate>
+          <input id="url" class="field mono" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://twkan.com/book/…">
+          <button type="submit" class="btn btn-outline" id="btn-look">Look</button>
+        </form>
+      </section>
+
+      <section class="block" id="sec-book">
+        <span class="label">Book</span>
+        <div class="book-empty" id="book-empty">The title, author and chapter count appear here once the page has been read.</div>
+        <div id="book-full" hidden>
+          <div class="book-head">
+            <img id="book-cover" class="book-cover" alt="" hidden>
+            <div class="book-head-text">
+              <div class="book-title" id="book-title"></div>
+              <div class="muted small" id="book-title-orig" hidden></div>
+              <div class="muted" id="book-meta"></div>
+              <button type="button" class="btn-link small" id="btn-read-preview">Read here</button>
+            </div>
+          </div>
+          <div class="range">
+            <div class="range-cell">
+              <label class="label" for="from">From chapter</label>
+              <input id="from" class="field mono" type="text" inputmode="numeric" autocomplete="off">
+              <span class="muted small" id="from-title"></span>
+            </div>
+            <div class="range-cell">
+              <label class="label" for="to">To chapter</label>
+              <input id="to" class="field mono" type="text" inputmode="numeric" autocomplete="off">
+              <span class="muted small" id="to-title"></span>
+            </div>
+          </div>
+          <p class="range-error small" id="range-error" role="alert" hidden></p>
+        </div>
+      </section>
+
+      <section class="block" id="sec-output">
+        <span class="label">Output</span>
+        <div class="kv"><span class="muted">Translator</span><span id="out-translator">Google (New)</span></div>
+        <div class="kv"><span class="muted">Library</span><span>Saved on the PC and added to Library</span></div>
+        <div class="kv kv-wrap">
+          <span class="muted" id="save-label">This device</span>
+          <div class="seg" role="radiogroup" aria-labelledby="save-label">
+            <label><input type="radio" name="save" value="downloads" checked><span>Downloads</span></label>
+            <label id="save-choose-wrap"><input type="radio" name="save" value="choose"><span>Choose…</span></label>
+            <label><input type="radio" name="save" value="none"><span>Don’t copy</span></label>
+          </div>
+        </div>
+        <p class="muted small" id="save-note"></p>
+      </section>
+
+      <section class="block" id="sec-saved" hidden>
+        <span class="label">Saved file</span>
+        <div class="file mono" id="file-name"></div>
+        <p class="muted" id="file-note"></p>
+        <div id="notes-wrap" hidden>
+          <span class="label flag">Check these chapters</span>
+          <pre class="notes" id="notes"></pre>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button type="button" class="btn btn-main" id="btn-build" hidden>Build EPUB</button>
+        <button type="button" class="btn btn-main" id="btn-again" hidden>Download EPUB again</button>
+        <div class="actions-row" id="run-actions" hidden>
+          <button type="button" class="btn btn-outline" id="btn-pause">Pause</button>
+          <button type="button" class="btn btn-quiet" id="btn-cancel">Cancel</button>
+        </div>
+        <button type="button" class="btn-link" id="btn-read-done" hidden>Read it here</button>
+        <button type="button" class="btn-link" id="btn-restart" hidden>Start over</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MULTI ============ -->
+  <section class="view view-multi" id="view-multi" hidden>
+    <div class="page-head">
+      <h1 class="page-title">Several books</h1>
+      <p class="muted page-lede">Paste one link per line (up to 50). Each book is read first, then built one after another with the site’s own delay between chapters.</p>
+    </div>
+    <div class="multi-grid">
+      <div class="block">
+        <label class="label" for="multi-urls">Novel links</label>
+        <textarea id="multi-urls" class="area mono" rows="9" spellcheck="false" placeholder="https://…&#10;https://…"></textarea>
+        <div class="actions-row">
+          <button type="button" class="btn btn-outline" id="btn-multi-look">Read links</button>
+          <button type="button" class="btn btn-main btn-auto" id="btn-multi-build" disabled>Build all</button>
+        </div>
+        <p class="muted small" id="multi-note"></p>
+      </div>
+      <div class="block">
+        <span class="label">Books</span>
+        <div class="table-wrap">
+          <table class="table" id="multi-table">
+            <thead><tr><th>Title</th><th class="num">Chapters</th><th>Status</th></tr></thead>
+            <tbody id="multi-rows"><tr class="empty"><td colspan="3">Nothing read yet.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LIBRARY ============ -->
+  <section class="view view-library" id="view-library" hidden>
+    <div class="page-head">
+      <h1 class="page-title">Library</h1>
+      <p class="muted page-lede" id="lib-lede">Books you have downloaded on this PC.</p>
+    </div>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <button type="button" class="btn btn-outline" id="lib-check">Check for updates</button>
+        <button type="button" class="btn btn-outline" id="lib-update-all" disabled>Update all</button>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Show">
+        <label><input type="radio" name="lib-filter" value="all" checked><span>All</span></label>
+        <label><input type="radio" name="lib-filter" value="updates"><span>Updates</span></label>
+      </div>
+    </div>
+    <div class="toolbar toolbar-sel">
+      <span class="label" id="lib-count">0 selected</span>
+      <button type="button" class="btn-link small" id="lib-all">All</button>
+      <button type="button" class="btn-link small" id="lib-none">None</button>
+      <button type="button" class="btn-link small" id="lib-invert">Invert</button>
+      <span class="grow"></span>
+      <button type="button" class="btn btn-quiet" id="lib-read" disabled>Read</button>
+      <button type="button" class="btn btn-quiet" id="lib-update" disabled>Update</button>
+      <button type="button" class="btn btn-quiet" id="lib-epub" disabled>Download EPUB</button>
+      <button type="button" class="btn btn-quiet" id="lib-open" disabled>Open link</button>
+      <button type="button" class="btn btn-quiet btn-danger" id="lib-remove" disabled>Remove</button>
+    </div>
+    <div class="confirm" id="lib-confirm" role="alertdialog" aria-labelledby="lib-confirm-text" hidden>
+      <p id="lib-confirm-text"></p>
+      <div class="actions-row">
+        <button type="button" class="btn btn-danger-solid" id="lib-confirm-yes">Remove</button>
+        <button type="button" class="btn btn-quiet" id="lib-confirm-no">Keep</button>
+      </div>
+    </div>
+    <ul class="shelf" id="shelf"></ul>
+    <p class="muted shelf-empty" id="shelf-empty" hidden>No books yet. Build one from Single or Multi and it appears here.</p>
+    <div class="lib-foot">
+      <button type="button" class="btn-link small" id="lib-reset">Reset library…</button>
+    </div>
+  </section>
+
+  <!-- ============ READ ============ -->
+  <section class="view view-read" id="view-read" hidden>
+    <div id="read-pick">
+      <div class="page-head">
+        <h1 class="page-title">Read</h1>
+        <p class="muted page-lede">Pick a book. Your place is shared with the desktop app on this PC.</p>
+      </div>
+      <ul class="pick-list" id="read-list"></ul>
+      <p class="muted" id="read-empty" hidden>Nothing to read yet. Download a book first.</p>
+    </div>
+    <div id="read-book" hidden>
+      <div class="reader-bar">
+        <button type="button" class="btn-link small" id="read-back">All books</button>
+        <div class="reader-title">
+          <span class="reader-book" id="read-title"></span>
+          <span class="label" id="read-kind"></span>
+        </div>
+        <div class="reader-tools">
+          <button type="button" class="btn btn-quiet btn-sq" id="read-smaller" aria-label="Smaller text">A−</button>
+          <button type="button" class="btn btn-quiet btn-sq" id="read-larger" aria-label="Larger text">A+</button>
+        </div>
+      </div>
+      <div class="reader-nav">
+        <button type="button" class="btn btn-quiet" id="read-prev">Previous</button>
+        <select id="read-toc" class="select" aria-label="Chapter"></select>
+        <button type="button" class="btn btn-quiet" id="read-next">Next</button>
+      </div>
+      <p class="muted small mono" id="read-status" aria-live="polite"></p>
+      <article class="reader-text" id="read-text"></article>
+      <div class="reader-nav reader-nav-foot">
+        <button type="button" class="btn btn-quiet" id="read-prev2">Previous</button>
+        <span class="grow"></span>
+        <button type="button" class="btn btn-outline" id="read-next2">Next chapter</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SETTINGS ============ -->
+  <section class="view view-settings" id="view-settings" hidden>
+    <div class="page-head">
+      <h1 class="page-title">Settings</h1>
+      <p class="muted page-lede">These are the same settings the desktop app uses on this PC.</p>
+    </div>
+    <form class="settings" id="settings-form" novalidate>
+      <fieldset class="block">
+        <legend class="label">Chapters</legend>
+        <label class="check"><input type="checkbox" id="set-clean"><span>Remove watermarks and ads</span></label>
+        <label class="check"><input type="checkbox" id="set-cache"><span>Use chapter cache (resume)</span></label>
+      </fieldset>
+      <fieldset class="block">
+        <legend class="label">Translation</legend>
+        <label class="check"><input type="checkbox" id="set-translate"><span>Translate to English</span></label>
+        <div class="kv kv-wrap"><label class="muted" for="set-backend">Translator</label><select id="set-backend" class="select"></select></div>
+        <div class="kv kv-wrap"><label class="muted" for="set-glossary">Names glossary</label><select id="set-glossary" class="select"></select></div>
+        <div class="kv kv-wrap"><label class="muted" for="set-workers">Workers</label><input id="set-workers" class="field field-num mono" type="number" min="1" max="500" step="1"></div>
+        <label class="check"><input type="checkbox" id="set-polish"><span>Polish English</span></label>
+        <p class="muted small" id="set-polish-note"></p>
+      </fieldset>
+      <p class="muted small" id="set-status" aria-live="polite"></p>
+    </form>
+    <div class="block desk-only">
+      <span class="label">On the PC only</span>
+      <p class="muted">Google Drive sign-in, the save folder, app updates and installing Polish, Offline NMT or Ollama stay in the desktop app. Turn off server mode on the PC to change them.</p>
+      <button type="button" class="btn-link" id="btn-signout">Sign out of this device</button>
+    </div>
+  </section>
+
 </div>
 <script src="/static/app.js" defer></script>
+<script src="/static/single.js" defer></script>
+<script src="/static/multi.js" defer></script>
+<script src="/static/library.js" defer></script>
+<script src="/static/read.js" defer></script>
+<script src="/static/settings.js" defer></script>
+<script src="/static/boot.js" defer></script>
 </body>
 </html>

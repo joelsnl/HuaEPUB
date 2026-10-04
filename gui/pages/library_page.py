@@ -79,7 +79,7 @@ class LibraryPage(QWidget):
             header.addWidget(w)
         root.addLayout(header)
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color:#aaa;")
+        self.status_label.setObjectName("mutedLabel")
         root.addWidget(self.status_label)
 
         # Drive panel
@@ -112,7 +112,7 @@ class LibraryPage(QWidget):
         btns.addStretch(1)
         drive_lay.addLayout(btns)
         self.drive_status = QLabel("")
-        self.drive_status.setStyleSheet("color:#aaa;")
+        self.drive_status.setObjectName("mutedLabel")
         self.drive_status.setWordWrap(True)
         drive_lay.addWidget(self.drive_status)
         self.drive_connect_btn.clicked.connect(self.drive_connect.emit)

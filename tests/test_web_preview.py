@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -186,25 +184,3 @@ def test_store_keeps_only_the_newest_few(monkeypatch):
         time.sleep(0.002)
     assert store.get(items[0].id) is None
     assert store.get(items[2].id) is items[2]
-
-
-def test_web_never_loads_qt_and_core_never_loads_web():
-    code = (
-        "import sys, web.server, web.jobs, web.pipeline, web.preview\n"
-        "bad = [m for m in sys.modules if m.split('.')[0] in ('PySide6', 'gui')]\n"
-        "assert not bad, bad\n"
-    )
-    done = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr
-
-    for folder in ("core", "gui", "parsers"):
-        for path in (ROOT / folder).rglob("*.py"):
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            assert "import web" not in text and "from web" not in text, path
-
-
-def test_desktop_build_and_packaging_do_not_know_about_web():
-    assert "web" not in (ROOT / "build.py").read_text(encoding="utf-8").lower().replace("website", "")
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'include = ["core*", "gui*", "parsers*"]' in pyproject
-    assert "fastapi" not in (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()

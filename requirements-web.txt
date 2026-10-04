@@ -1,9 +1,0 @@
-# HuaEPUB Simple (localhost web companion). Not part of the desktop app.
-# Install from a checkout: pip install -r requirements.txt -r requirements-web.txt
-# Run: python3 -m web          (this computer only)
-#      python3 -m web --lan    (a phone on the same Wi-Fi, with an access code)
-fastapi>=0.110
-uvicorn>=0.29
-
-# Optional: shows a QR code for --lan in the terminal
-qrcode>=7.4

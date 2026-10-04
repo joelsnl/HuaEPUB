@@ -134,12 +134,20 @@ def sanitize_reader_html(html: str) -> str:
         return raw
 
 
-def wrap_reader_html(body: str, *, font_pt: int = 18) -> str:
+_CSS_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{3,8}$")
+_CSS_FAMILY_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+
+
+def wrap_reader_html(body: str, *, font_pt: int = 18, color: str = "#e8e8e8",
+                     background: str = "#2b2b2b", font_family: str = "") -> str:
     size = max(12, min(36, int(font_pt or 18)))
     inner = sanitize_reader_html(body)
+    color = color if _CSS_COLOR_RE.match(color or "") else "#e8e8e8"
+    background = background if _CSS_COLOR_RE.match(background or "") else "#2b2b2b"
+    family = f"font-family:'{font_family}'; " if _CSS_FAMILY_RE.match(font_family or "") else ""
     return (
         "<html><head><meta charset='utf-8'><style>"
-        f"body {{ color:#e8e8e8; background:#2b2b2b; font-size:{size}pt; "
+        f"body {{ color:{color}; background:{background}; {family}font-size:{size}pt; "
         "line-height:1.65; padding:8px 16px; }}"
         "h1,h2,h3 { font-weight:600; }"
         "p { margin: 0.7em 0; }"

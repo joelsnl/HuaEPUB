@@ -114,13 +114,13 @@ def _novel(n: int, parser):
 def test_progress_bar_shows_sliver_for_tiny_fraction(qapp):
     panel = ProgressPanel()
     panel.set_progress(0.00025, None)
-    assert panel.bar.value() == 1
-    assert panel.bar.format() == "0.1%"
+    assert panel.value() == 1
+    assert panel.percent.text() == "0.1%"
     panel.set_progress(0.5, None)
-    assert panel.bar.format() == "50%"
+    assert panel.percent.text() == "50%"
     panel.set_progress(0.0, None)
-    assert panel.bar.value() == 0
-    assert not panel.bar.isTextVisible()
+    assert panel.value() == 0
+    assert panel.percent.text() == ""
 
 
 def test_set_progress_replaces_starting_download(qapp):
@@ -131,7 +131,7 @@ def test_set_progress_replaces_starting_download(qapp):
     panel.set_progress(0.0, "Google · Translating: 0/51399 · 8 in flight")
     assert "Starting download" not in panel.status.text()
     assert "Google · Translating:" in panel.status.text()
-    assert panel.bar.value() > 0
+    assert panel.value() > 0
 
 
 def test_on_progress_from_pool_thread_updates_footer(qapp, tmp_path):
@@ -159,7 +159,7 @@ def test_on_progress_from_pool_thread_updates_footer(qapp, tmp_path):
         qapp.processEvents()
         assert "Starting download" not in host.progress.status.text()
         assert "Google · Translating:" in host.progress.status.text()
-        assert host.progress.bar.value() > 0
+        assert host.progress.value() > 0
     finally:
         t.join(2)
         _cleanup_host(qapp, host)
@@ -185,7 +185,7 @@ def test_set_downloading_enables_pause_and_replaces_fetch_status(qapp, tmp_path)
         assert host.progress.pause_btn.text() == "Pause"
         assert host.progress.pause_btn.objectName() != "secondaryBtn"
         assert host.progress.status.text() == "Starting download…"
-        assert host.progress.bar.value() == 0
+        assert host.progress.value() == 0
         assert not host.multi.download_btn.isEnabled()
     finally:
         host._set_downloading(False)
@@ -504,7 +504,7 @@ def test_multi_footer_shows_translate_before_first_http(
         assert "Starting download" not in host.progress.status.text()
         assert "Google · Translating:" in host.progress.status.text()
         assert "in flight" in host.progress.status.text()
-        assert host.progress.bar.value() > 0
+        assert host.progress.value() > 0
         assert any("Novel 1/2 —" in s for _f, s in host.got_progress if s)
     finally:
         release.set()

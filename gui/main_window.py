@@ -13,7 +13,7 @@ from PySide6.QtCore import QRect, QThread, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QProgressDialog,
-    QTabWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from core.branding import (
@@ -37,6 +37,7 @@ from core.updater import (
 )
 from core.utils import extract_urls, format_ratio, looks_like_url, sanitize_runtime_env
 
+from gui import theme
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
     CloseWhileSyncingDialog, ask_accept_glossary_proposals, ask_yes_no,
@@ -56,7 +57,9 @@ from gui.workers.fetch_worker import FetchWorker
 from gui.workers.glossary_worker import GlossaryQwenWorker
 from gui.window.drive_actions import DriveActionsMixin
 from gui.window.library_actions import LibraryActionsMixin
+from gui.window.look_actions import LookActionsMixin
 from gui.window.reader_actions import ReaderActionsMixin
+from gui.window.server_actions import ServerActionsMixin
 from gui.window.worker_host import WorkerHostMixin
 
 import parsers  # noqa: F401 — register site parsers
@@ -67,6 +70,8 @@ class MainWindow(
     ReaderActionsMixin,
     DriveActionsMixin,
     LibraryActionsMixin,
+    ServerActionsMixin,
+    LookActionsMixin,
     QMainWindow,
 ):
     # Cross-thread marshaling for plain threading.Thread callbacks (updater, etc.)
@@ -118,8 +123,11 @@ class MainWindow(
             self._set_status_safe, Qt.ConnectionType.QueuedConnection
         )
 
+        # Page 0: the desktop tabs. Page 1: the server screen (server mode).
+        stack = QStackedWidget()
+        self.setCentralWidget(stack)
         central = QWidget()
-        self.setCentralWidget(central)
+        stack.addWidget(central)
         layout = QVBoxLayout(central)
 
         self.resume_banner = ResumeBanner()
@@ -144,10 +152,13 @@ class MainWindow(
         self.progress = ProgressPanel()
         layout.addWidget(self.progress)
 
+        self._build_server_ui(stack)
         self._build_menu()
         self._wire()
         self._restore_window_geometry()
 
+        if self.session.settings.get("server_enabled"):
+            QTimer.singleShot(0, self._maybe_start_server_on_launch)
         QTimer.singleShot(400, self._check_resume_job)
         if get_auto_check_updates():
             QTimer.singleShot(2000, self._auto_check_updates)
@@ -155,7 +166,7 @@ class MainWindow(
         self._clipboard_timer.timeout.connect(self._poll_clipboard)
         self._clipboard_timer.start(3000)
         if self.session.settings.get("drive_sync_enabled"):
-            QTimer.singleShot(2500, self._start_drive_sync_silent)
+            QTimer.singleShot(2500, self._startup_drive_sync)
         if self.session.library_store.get_library():
             QTimer.singleShot(4000, self.library.refresh)
         QTimer.singleShot(3500, self._maybe_offer_glossary_qwen)
@@ -167,7 +178,12 @@ class MainWindow(
         file_m.addAction("Open data folder", self._open_data)
         file_m.addAction("Open log file", self._open_log)
         file_m.addSeparator()
+        server_act = file_m.addAction("Server mode…", self._open_server_dialog)
+        file_m.addSeparator()
         file_m.addAction("Exit", self.close)
+
+        view_m = mb.addMenu("View")
+        self._build_look_menu(view_m)
 
         lib_m = mb.addMenu("Library")
         lib_m.addAction("Check for updates", lambda: self.library.check_requested.emit())
@@ -181,10 +197,12 @@ class MainWindow(
         act.toggled.connect(set_auto_check_updates)
         help_m.addAction(act)
         help_m.addAction("How translation works…", self._translation_help)
-        help_m.addAction("Polish glossaries with Qwen…", self._menu_glossary_qwen)
-        help_m.addAction("Cache…", self._cache_dialog)
+        glossary_act = help_m.addAction("Polish glossaries with Qwen…", self._menu_glossary_qwen)
+        cache_act = help_m.addAction("Cache…", self._cache_dialog)
         help_m.addAction("About", self._about)
         help_m.addAction("Drive OAuth setup…", self._drive_setup_help)
+        # Off while serving: the browser owns jobs, the library and the cache then.
+        self._server_locked_actions = [server_act, lib_m.menuAction(), glossary_act, cache_act]
 
     def _wire(self):
         self.single.fetch_requested.connect(self._start_fetch)
@@ -266,7 +284,7 @@ class MainWindow(
         return books
 
     def _maybe_offer_glossary_qwen(self):
-        if self._worker_busy or self.session.control.is_downloading:
+        if self._worker_busy or self.session.control.is_downloading or self._serving():
             return
         if load_job(self.session.data_dir):
             return
@@ -460,6 +478,7 @@ class MainWindow(
         self._finalize_close(event)
 
     def _finalize_close(self, event):
+        self._shutdown_server_for_close()
         self._save_reader_position()
         self._persist_settings()
         self._save_window_geometry()
@@ -492,7 +511,7 @@ class MainWindow(
         event.accept()
 
     def _check_resume_job(self):
-        if self.session.control.is_downloading:
+        if self.session.control.is_downloading or self._serving():
             return
         job = load_job(self.session.data_dir)
         if not job:
@@ -717,6 +736,11 @@ class MainWindow(
         DriveActionsMixin._start_drive_sync_silent(self)
 
     @Slot()
+    def _startup_drive_sync(self):
+        # While serving, the browser's jobs own Drive sync (after library changes).
+        if not self._serving():
+            self._start_drive_sync_silent()
+
     def _drive_sync_now(self):
         DriveActionsMixin._drive_sync_now(self)
 
@@ -782,6 +806,8 @@ class MainWindow(
         notes = format_completion_notes(
             failed, warnings or [], polish_cancelled, heuristic or [],
         )
+        self.progress.mark_finished(translated=bool(self.options.snapshot().get("translate")),
+                                    flagged=bool(notes))
         msg = f"EPUB saved to:\n{path}"
         if notes:
             msg += "\n\n" + notes
@@ -939,6 +965,8 @@ class MainWindow(
     def _multi_done(self, summary: str, previews: list = None):
         self._set_downloading(False)
         self.progress.set_progress(1.0, "Multi-download complete")
+        self.progress.mark_finished(translated=bool(self.options.snapshot().get("translate")),
+                                    flagged="warning" in (summary or "").lower())
         books = [
             p for p in (previews or [])
             if isinstance(p, dict) and p.get("path") and Path(p["path"]).is_file()
@@ -970,7 +998,7 @@ class MainWindow(
             self.tabs.setCurrentWidget(self.single)
 
     def _poll_clipboard(self):
-        if not self.options.clipboard_cb.isChecked():
+        if not self.options.clipboard_cb.isChecked() or self._serving():
             return
         try:
             text = QApplication.clipboard().text() or ""
@@ -1088,7 +1116,7 @@ class MainWindow(
             "<b>UI:</b> PySide6 (Qt)<br>"
             "<b>Data folder:</b> ~/.huaepub/"
             "</p>"
-            "<p style='color:#aaa;font-size:11px;'>"
+            f"<p style='color:{theme.current().muted};font-size:11px;'>"
             "Inspired by "
             "<a href='https://github.com/dteviot/WebToEpub'>WebToEpub</a> "
             "(dteviot), which this project started from, and by fixTranslate.py.<br>"

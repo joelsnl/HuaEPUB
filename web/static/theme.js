@@ -1,9 +1,10 @@
-// HuaEPUB Simple: colour theme. Runs in <head> so the page never flashes the wrong palette.
+// HuaEPUB server mode: colour theme. Runs in <head> so the page never flashes the wrong palette.
 // Auto follows the system (dark = Graphite & Cyan, light = Celadon Day).
 // The choice lives in this browser's localStorage only.
 (function () {
   'use strict';
-  var KEY = 'huaepub-simple-look';
+  var KEY = 'huaepub-look';
+  var OLD_KEY = 'huaepub-simple-look';
   // id -> data-theme value (null = follow the system)
   var THEMES = {
     auto: null, dark: 'graphite', light: 'celadon',
@@ -16,7 +17,10 @@
   var SURPRISE = ['graphite', 'celadon', 'indigo', 'gold', 'cinnabar', 'mist'];
 
   function read() {
-    try { var v = localStorage.getItem(KEY); if (v && (v in NAMES)) return v; } catch (e) {}
+    try {
+      var v = localStorage.getItem(KEY) || localStorage.getItem(OLD_KEY);
+      if (v && (v in NAMES)) return v;
+    } catch (e) {}
     return 'auto';
   }
   function write(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }

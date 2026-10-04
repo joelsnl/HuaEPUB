@@ -50,7 +50,7 @@ from core.security import (
 from core.settings import get_app_dir, is_frozen
 
 SOURCE_UPDATE_ITEMS = [
-    'app.py', 'core', 'gui', 'parsers', 'requirements.txt', 'README.md', 'build.py',
+    'app.py', 'core', 'gui', 'parsers', 'web', 'requirements.txt', 'README.md', 'build.py',
     'VERSION',
 ]
 
