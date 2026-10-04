@@ -39,3 +39,10 @@ _update_helper.py
 _update_helper.json
 google_oauth_client.json
 google_token.json
+
+# Local scratch work and research notes (not shipped)
+scratch/
+archify/
+.archify/
+POLISH_CONTEXT_RESEARCH.md
+POLISH_RESEARCH_CANVAS.html

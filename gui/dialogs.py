@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from core.branding import APP_TITLE
 from core.utils import format_bytes, format_count
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -302,6 +303,63 @@ def pick_recent_download(parent, history) -> str | None:
 
 
 _SYNC_COUNT_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+class UpdateProgressDialog(QDialog):
+    """Blocks the app while an update downloads. No cancel, no close."""
+
+    def __init__(self):
+        super().__init__(None)
+        self._allow_close = False
+        self.setWindowTitle(f"Updating {APP_TITLE}")
+        self.setWindowFlags(
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setMinimumWidth(440)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        self.label = QLabel("Downloading update…")
+        self.label.setWordWrap(True)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.bar.setFormat("%p%")
+        self.bar.setTextVisible(True)
+        layout.addWidget(self.label)
+        layout.addWidget(self.bar)
+
+    def set_progress(self, current: int, total: int, text: str) -> None:
+        if text:
+            self.label.setText(text)
+        total = int(total or 0)
+        current = max(0, int(current or 0))
+        if total <= 0:
+            self.bar.setRange(0, 0)
+            return
+        self.bar.setRange(0, total)
+        self.bar.setValue(min(current, total))
+
+    def allow_close(self) -> None:
+        self._allow_close = True
+
+    def closeEvent(self, event) -> None:
+        if self._allow_close:
+            event.accept()
+            return
+        event.ignore()
+
+    def reject(self) -> None:
+        return
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
 
 
 class CloseWhileSyncingDialog(QDialog):

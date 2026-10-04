@@ -59,6 +59,18 @@ class DriveActionsMixin:
         if not self.library.drive_enabled.isChecked():
             self._pending_drive_sync = False
             return
+        # An offered or in-progress app update owns the window. Silent library
+        # sync waits; it runs only after the user declines, or if there is no update.
+        if getattr(self, "_app_update_installing", False):
+            self._pending_drive_sync = False
+            return
+        if silent and (
+            getattr(self, "_app_update_checking", False)
+            or getattr(self, "_app_update_pending", False)
+        ):
+            self._pending_drive_sync = True
+            self._drive_sync_silent = True
+            return
         self._drive_sync_silent = silent
         if self._worker_busy and self._thread and self._thread.isRunning():
             self._pending_drive_sync = True
@@ -118,6 +130,18 @@ class DriveActionsMixin:
             return dlg.choice
         finally:
             self._close_sync_dialog = None
+
+    def _release_deferred_drive_sync(self):
+        """Start a silent sync that waited on the app-update check or prompt."""
+        if getattr(self, "_app_update_installing", False):
+            return
+        if getattr(self, "_app_update_checking", False) or getattr(
+            self, "_app_update_pending", False
+        ):
+            return
+        if not getattr(self, "_pending_drive_sync", False):
+            return
+        self._start_drive_sync_silent()
 
     def _queue_drive_sync(self):
         """Silent Drive push after Library Update / Update All / Connect (no tab switch)."""

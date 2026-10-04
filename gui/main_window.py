@@ -40,8 +40,8 @@ from core.utils import extract_urls, format_ratio, looks_like_url, sanitize_runt
 from gui import theme
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
-    CloseWhileSyncingDialog, ask_accept_glossary_proposals, ask_yes_no,
-    ask_yes_not_now_dont_ask, pick_recent_download, show_cache_dialog,
+    CloseWhileSyncingDialog, UpdateProgressDialog, ask_accept_glossary_proposals,
+    ask_yes_no, ask_yes_not_now_dont_ask, pick_recent_download, show_cache_dialog,
     show_error, show_info, show_info_with_preview, show_rich_info, show_warning,
 )
 from gui.pages.library_page import LibraryPage
@@ -77,6 +77,7 @@ class MainWindow(
     # Cross-thread marshaling for plain threading.Thread callbacks (updater, etc.)
     _sig_update_check = Signal(bool, str, str)
     _sig_update_done = Signal(bool, str)
+    _sig_update_progress = Signal(int, int, str)
     _sig_status = Signal(str)
 
     def __init__(self):
@@ -102,6 +103,9 @@ class MainWindow(
         self._force_close = False
         self._close_sync_dialog = None
         self._app_update_checking = False
+        self._app_update_pending = False
+        self._app_update_installing = False
+        self._update_progress_dlg = None
         self._update_check_notify = False
         self._last_app_update_check = None
         self._clipboard_last = ""
@@ -118,6 +122,9 @@ class MainWindow(
         )
         self._sig_update_done.connect(
             self._on_update_download_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._sig_update_progress.connect(
+            self._on_update_progress, Qt.ConnectionType.QueuedConnection
         )
         self._sig_status.connect(
             self._set_status_safe, Qt.ConnectionType.QueuedConnection
@@ -453,6 +460,9 @@ class MainWindow(
     def closeEvent(self, event):
         update_exit = bool(getattr(self, "_exiting_for_update", False))
         force_close = bool(getattr(self, "_force_close", False))
+        if getattr(self, "_app_update_installing", False) and not update_exit:
+            event.ignore()
+            return
         if (
             not force_close
             and not update_exit
@@ -1101,50 +1111,95 @@ class MainWindow(
         key = (bool(has_update), str(latest), str(message))
         prev = getattr(self, "_last_app_update_check", None)
         if prev is not None and prev[0] == key and (now - prev[1]) < 2.0:
+            self._app_update_checking = False
+            if not self._app_update_pending and not self._app_update_installing:
+                self._release_deferred_drive_sync()
             return
         self._last_app_update_check = (key, now)
         notify = bool(getattr(self, "_update_check_notify", False))
         self._update_check_notify = False
-        self._app_update_checking = False
 
         failed = (message or "").startswith("Failed to check")
         if has_update:
+            self._app_update_pending = True
+            self._app_update_checking = False
             self.progress.set_status(f"Update available: {latest}")
-            if ask_yes_no(
+            accepted = ask_yes_no(
                 self, "Update available",
                 f"{message}\n\nDownload and install?",
-            ):
-                self.progress.set_status("Downloading update…")
-                download_update_async(
-                    progress_callback=lambda _c, _t, s: self._sig_status.emit(
-                        s or "Downloading update…"
-                    ),
-                    completion_callback=lambda ok, msg: self._sig_update_done.emit(
-                        bool(ok), str(msg or "")
-                    ),
-                )
-            return
-        self.progress.set_status(message or "App is up to date")
-        if not notify:
-            return
-        if failed:
-            show_warning(self, "Updates", message or "Failed to check for updates.")
-        else:
-            show_info(
-                self, "Updates",
-                message or f"You're running the latest version ({get_current_version()}).",
             )
+            self._app_update_pending = False
+            if accepted:
+                self._begin_app_update()
+                return
+            self._release_deferred_drive_sync()
+            return
+        self._app_update_checking = False
+        self.progress.set_status(message or "App is up to date")
+        if notify:
+            if failed:
+                show_warning(self, "Updates", message or "Failed to check for updates.")
+            else:
+                show_info(
+                    self, "Updates",
+                    message or f"You're running the latest version ({get_current_version()}).",
+                )
+        self._release_deferred_drive_sync()
+
+    def _begin_app_update(self):
+        """Hide the main window and download. Library sync does not run."""
+        self._app_update_installing = True
+        self._pending_drive_sync = False
+        self._open_update_progress("Connecting to GitHub…")
+        download_update_async(
+            progress_callback=lambda c, t, s: self._sig_update_progress.emit(
+                int(c or 0), int(t or 0), s or "Downloading update…"
+            ),
+            completion_callback=lambda ok, msg: self._sig_update_done.emit(
+                bool(ok), str(msg or "")
+            ),
+        )
+
+    def _open_update_progress(self, text: str) -> None:
+        dlg = UpdateProgressDialog()
+        dlg.set_progress(0, 100, text)
+        center = self.frameGeometry().center()
+        self.hide()
+        dlg.adjustSize()
+        dlg.move(center.x() - dlg.width() // 2, center.y() - dlg.height() // 2)
+        self._update_progress_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _close_update_progress(self) -> None:
+        dlg = self._update_progress_dlg
+        self._update_progress_dlg = None
+        if dlg is None:
+            return
+        dlg.allow_close()
+        dlg.close()
+        dlg.deleteLater()
+
+    @Slot(int, int, str)
+    def _on_update_progress(self, current: int, total: int, text: str):
+        dlg = self._update_progress_dlg
+        if dlg is not None:
+            dlg.set_progress(current, total, text)
 
     @Slot(bool, str)
     def _on_update_download_done(self, ok: bool, message: str):
         if ok:
-            self.progress.set_status("Update ready — closing to apply…")
+            dlg = self._update_progress_dlg
+            if dlg is not None:
+                dlg.set_progress(100, 100, "Update ready — closing to apply…")
             show_info(
-                self,
+                dlg or self,
                 "Update ready",
                 message
                 or "Update installed.\nThe application will now close and reopen.",
             )
+            self._close_update_progress()
             self._exiting_for_update = True
             self.close()
             app = QApplication.instance()
@@ -1160,6 +1215,11 @@ class MainWindow(
 
             threading.Thread(target=_exit_soon, daemon=True).start()
             return
+        self._app_update_installing = False
+        self._close_update_progress()
+        self.show()
+        self.raise_()
+        self.activateWindow()
         self.progress.set_status(message or "Update failed")
         show_warning(
             self, "Update failed", message or "Update failed."
