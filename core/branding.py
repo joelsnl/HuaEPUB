@@ -4,6 +4,8 @@
 APP_NAME = "HuaEPUB"
 APP_TITLE = "HuaEPUB"
 APP_DESCRIPTION = "Download Chinese web novels and build English EPUBs"
+# Localhost web companion (python3 -m web)
+SIMPLE_TITLE = "HuaEPUB Simple"
 
 APP_AUTHOR = "Joel Sunil"
 APP_AUTHOR_HANDLE = "joelsnl"

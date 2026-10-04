@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HuaEPUB Simple</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@500&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/theme.js"></script>
+</head>
+<body>
+<div class="app" id="app" data-state="idle">
+
+  <header class="head">
+    <div class="brand">
+      <span class="brand-name">HuaEPUB</span>
+      <span class="label brand-tag">Simple</span>
+    </div>
+    <span class="grow"></span>
+    <span class="label" id="version"></span>
+    <div class="look">
+      <button type="button" class="look-btn label" id="look-btn" aria-haspopup="true" aria-expanded="false">Look: Auto</button>
+      <ul class="look-menu" id="look-menu" hidden></ul>
+    </div>
+  </header>
+
+  <main class="stage" aria-live="polite">
+    <div class="stage-top">
+      <div class="stage-text">
+        <h1 class="status-title" id="title">Ready when you are.</h1>
+        <p class="status-line" id="status">Paste a novel link. Nothing is downloaded until you press Build.</p>
+      </div>
+      <div class="seal" id="seal" role="img" aria-label="Translated" hidden>译</div>
+    </div>
+
+    <div class="slips" id="slips" aria-hidden="true"></div>
+
+    <div class="legend label">
+      <span><i class="key key-wait"></i>Waiting</span>
+      <span><i class="key key-fetch"></i>Fetched</span>
+      <span><i class="key key-done"></i>Translated</span>
+      <span><i class="key key-flag"></i>Needs a look</span>
+    </div>
+
+    <ol class="steps label" id="steps">
+      <li data-step="0">Fetch</li>
+      <li data-step="1">Translate</li>
+      <li data-step="2">Write</li>
+      <li data-step="3">Save</li>
+    </ol>
+  </main>
+
+  <div class="rail" id="rail">
+    <section class="block" id="sec-source">
+      <label class="label" for="url">Novel link</label>
+      <form class="row" id="look-form" novalidate>
+        <input id="url" class="field mono" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://twkan.com/book/…">
+        <button type="submit" class="btn btn-outline" id="btn-look">Look</button>
+      </form>
+    </section>
+
+    <section class="block" id="sec-book">
+      <span class="label">Book</span>
+      <div class="book-empty" id="book-empty">The title, author and chapter count appear here once the page has been read.</div>
+      <div id="book-full" hidden>
+        <div class="book-title" id="book-title"></div>
+        <div class="muted" id="book-meta"></div>
+        <div class="range">
+          <div class="range-cell">
+            <label class="label" for="from">From chapter</label>
+            <input id="from" class="field mono" type="text" inputmode="numeric" autocomplete="off">
+            <span class="muted small" id="from-title"></span>
+          </div>
+          <div class="range-cell">
+            <label class="label" for="to">To chapter</label>
+            <input id="to" class="field mono" type="text" inputmode="numeric" autocomplete="off">
+            <span class="muted small" id="to-title"></span>
+          </div>
+        </div>
+        <p class="range-error small" id="range-error" role="alert" hidden></p>
+      </div>
+    </section>
+
+    <section class="block" id="sec-output">
+      <span class="label">Output</span>
+      <div class="kv"><span class="muted">Translator</span><span>Google</span></div>
+      <div class="kv"><span class="muted">Names glossary</span><span>Automatic</span></div>
+      <div class="kv">
+        <span class="muted" id="save-label">Save to</span>
+        <div class="seg" role="radiogroup" aria-labelledby="save-label">
+          <label><input type="radio" name="save" value="downloads" checked><span>Downloads</span></label>
+          <label id="save-choose-wrap"><input type="radio" name="save" value="choose"><span>Choose…</span></label>
+        </div>
+      </div>
+      <p class="muted small" id="save-note"></p>
+    </section>
+
+    <section class="block" id="sec-saved" hidden>
+      <span class="label">Saved file</span>
+      <div class="file mono" id="file-name"></div>
+      <p class="muted" id="file-note"></p>
+      <div id="notes-wrap" hidden>
+        <span class="label flag">Check these chapters</span>
+        <pre class="notes" id="notes"></pre>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="button" class="btn btn-main" id="btn-build" hidden>Build EPUB</button>
+      <button type="button" class="btn btn-main" id="btn-again" hidden>Download EPUB again</button>
+      <button type="button" class="btn btn-outline btn-wide" id="btn-cancel" hidden>Cancel</button>
+      <button type="button" class="btn-link" id="btn-restart" hidden>Start over</button>
+    </div>
+  </div>
+
+</div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>
