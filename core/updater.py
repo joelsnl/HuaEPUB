@@ -988,13 +988,15 @@ def _download_release_asset(
             return response.content, name
         total = _asset_total_bytes(asset, response)
         data = bytearray()
-        last_report = 0.0
+        last_report: Optional[float] = None  # first chunk always reports
         for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
             if not chunk:
                 continue
             data += chunk
             now = time.monotonic()
-            if on_bytes and now - last_report >= DOWNLOAD_PROGRESS_INTERVAL:
+            if on_bytes and (
+                last_report is None or now - last_report >= DOWNLOAD_PROGRESS_INTERVAL
+            ):
                 last_report = now
                 on_bytes(len(data), total)
         if on_bytes:

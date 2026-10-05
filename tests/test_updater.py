@@ -610,6 +610,8 @@ class TestStreamedAssetDownload:
 
     def test_progress_is_throttled(self, monkeypatch):
         monkeypatch.setattr(updater, "DOWNLOAD_PROGRESS_INTERVAL", 3600)
+        # A just-booted CI runner: the monotonic clock is still below the interval.
+        monkeypatch.setattr(updater.time, "monotonic", lambda: 1.0)
         resp = _StreamResponse([b"x"] * 500)
         seen = []
         updater._download_release_asset(
