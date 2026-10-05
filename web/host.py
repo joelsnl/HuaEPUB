@@ -111,10 +111,10 @@ class ServerHost:
             return self.status
         import uvicorn
 
-        from web.books import drive_sync_after_change
+        from web.books import drive_sync_after_change, start_drive_sync
         from web.context import ServerContext, book_roots
         from web.server import create_app
-        from web.tasks import TaskManager
+        from web.tasks import Busy, TaskManager
 
         if mode not in ("lan", "remote"):
             raise ServerStartError("Unknown server mode")
@@ -182,6 +182,12 @@ class ServerHost:
         self._thread = thread
         where = "your network" if mode == "lan" else "anywhere (HTTPS)"
         self.log(f"Server mode on: port {port}, reachable from {where}")
+        # The desktop skips its startup sync while serving: pull other devices' changes now.
+        if self.session.settings.get("drive_sync_enabled"):
+            try:
+                start_drive_sync(manager)
+            except Busy:
+                pass
         return status
 
     def stop(self, timeout: float = 15.0) -> None:
