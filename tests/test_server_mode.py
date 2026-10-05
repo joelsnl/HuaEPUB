@@ -606,6 +606,77 @@ def test_library_update_epub_and_remove(session, monkeypatch):
     assert not epub.exists()
 
 
+def _recording_manager(session):
+    from web.context import book_roots
+    from web.tasks import TaskManager
+
+    synced = []
+    manager = TaskManager(session, file_roots=lambda: book_roots(session),
+                          after_library_change=lambda ctx: synced.append(ctx.task.kind))
+    return manager, synced
+
+
+def _wait_task(manager, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snap = manager.snapshot()
+        if snap and snap["state"] in ("done", "error", "cancelled"):
+            return snap
+        time.sleep(0.02)
+    raise AssertionError(f"task did not finish: {manager.snapshot()}")
+
+
+def test_site_single_download_syncs_drive_afterwards(session, monkeypatch):
+    from core import tasks as core_tasks
+    from web import books
+
+    def fake_run_single(sess, parser, info, chapters, output_path, translated_title, options,
+                        *, emit, detail=None):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"PK epub")
+        return core_tasks.SingleResult(path=str(output_path))
+
+    monkeypatch.setattr(core_tasks, "run_single", fake_run_single)
+    session.settings["translate"] = False
+    manager, synced = _recording_manager(session)
+    books.start_single(manager, _preview(), 1, 2)
+    assert _wait_task(manager)["state"] == "done"
+    assert synced == ["single"]
+
+
+def test_site_multi_download_syncs_drive_afterwards(session, monkeypatch):
+    from core import tasks as core_tasks
+    from web import books
+
+    def fake_run_multi(sess, novels, options, *, emit, on_novel_status=None, detail=None):
+        return core_tasks.MultiResult(summary="2 novels saved.")
+
+    monkeypatch.setattr(core_tasks, "run_multi", fake_run_multi)
+    session.settings["translate"] = False
+    manager, synced = _recording_manager(session)
+    previews = [_preview(url="https://example.com/book/1"),
+                _preview(url="https://example.com/book/2")]
+    books.start_multi(manager, previews)
+    assert _wait_task(manager)["state"] == "done"
+    assert synced == ["multi"]
+
+
+def test_cancelled_site_download_does_not_sync_drive(session, monkeypatch):
+    from core import tasks as core_tasks
+    from core.download_runner import DownloadCancelled
+    from web import books
+
+    def cancelled_run_single(*_a, **_k):
+        raise DownloadCancelled()
+
+    monkeypatch.setattr(core_tasks, "run_single", cancelled_run_single)
+    session.settings["translate"] = False
+    manager, synced = _recording_manager(session)
+    books.start_single(manager, _preview(), 1, 2)
+    assert _wait_task(manager)["state"] == "cancelled"
+    assert synced == []
+
+
 # ----------------------------------------------------------------------
 # Running the real server
 # ----------------------------------------------------------------------
@@ -640,6 +711,27 @@ def test_server_host_starts_and_stops(session):
     assert not host.running
     with pytest.raises(ServerStartError):
         host.start(mode="remote", port=_free_port())  # no password yet
+
+
+def test_server_start_syncs_drive_only_when_enabled(session, monkeypatch):
+    pytest.importorskip("uvicorn")
+    from web import books
+    from web.host import ServerHost
+
+    synced = []
+    monkeypatch.setattr(books, "drive_sync_after_change", lambda ctx: synced.append(ctx.task.kind))
+    for enabled in (False, True):
+        session.settings["drive_sync_enabled"] = enabled
+        host = ServerHost(session, version="1.0", log=lambda _m: None)
+        host.start(mode="lan", port=_free_port())
+        try:
+            if enabled:
+                assert _wait_task(host.ctx.tasks)["kind"] == "sync"
+            else:
+                assert host.ctx.tasks.snapshot() is None
+        finally:
+            host.stop()
+    assert synced == ["sync"]
 
 
 def test_remote_server_speaks_https_only(session):

@@ -91,7 +91,9 @@ def _start_single_job(manager, parser, info, chapters, out, translated_title, jo
         )
         return _single_result(ctx, result, chapters)
 
-    return manager.start("single", label, body, chapters=len(chapters))
+    # Site downloads add the book to the Library, and the browser has no Sync button:
+    # sync Drive afterwards, like a Library update.
+    return manager.start("single", label, body, chapters=len(chapters), library_change=True)
 
 
 # ----------------------------------------------------------------------
@@ -180,7 +182,7 @@ def _start_multi_job(manager, novels, job):
         }
 
     return manager.start("multi", f"Multi-download ({len(novels)} novels)", body,
-                         rows=rows, novels=len(novels))
+                         rows=rows, novels=len(novels), library_change=True)
 
 
 # ----------------------------------------------------------------------
