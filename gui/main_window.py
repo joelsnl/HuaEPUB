@@ -106,11 +106,6 @@ class MainWindow(
         self._app_update_pending = False
         self._app_update_installing = False
         self._update_progress_dlg = None
-        self._app_update_version = ""
-        # Startup work that waits while an update is offered or installing (see
-        # _defer_for_update). Runs after Decline or a failed download, never after
-        # a successful one (the app restarts).
-        self._deferred_startup = []
         self._update_check_notify = False
         self._last_app_update_check = None
         self._clipboard_last = ""
@@ -173,14 +168,16 @@ class MainWindow(
             QTimer.singleShot(0, self._maybe_start_server_on_launch)
         QTimer.singleShot(400, self._check_resume_job)
         if get_auto_check_updates():
-            QTimer.singleShot(2000, self._auto_check_updates)
+            # After the startup burst below (Library covers at 4 s, glossary GPU probe
+            # at 3.5 s): fired inside the Update prompt, they froze its Yes button.
+            QTimer.singleShot(5000, self._auto_check_updates)
         self._clipboard_timer = QTimer(self)
         self._clipboard_timer.timeout.connect(self._poll_clipboard)
         self._clipboard_timer.start(3000)
         if self.session.settings.get("drive_sync_enabled"):
             QTimer.singleShot(2500, self._startup_drive_sync)
         if self.session.library_store.get_library():
-            QTimer.singleShot(4000, self._startup_library_refresh)
+            QTimer.singleShot(4000, self.library.refresh)
         QTimer.singleShot(3500, self._maybe_offer_glossary_qwen)
 
     def _build_menu(self):
@@ -295,30 +292,7 @@ class MainWindow(
             })
         return books
 
-    def _startup_library_refresh(self):
-        if not self._defer_for_update(self._startup_library_refresh):
-            self.library.refresh()
-
-    def _defer_for_update(self, fn) -> bool:
-        """Hold startup work while an update is offered or installing.
-
-        These timers fire inside the Update prompt's event loop. Cover loading and
-        GPU probes there froze the prompt and its Yes button. True when deferred.
-        """
-        if not (self._app_update_pending or self._app_update_installing):
-            return False
-        if fn not in self._deferred_startup:
-            self._deferred_startup.append(fn)
-        return True
-
-    def _run_deferred_startup(self):
-        pending, self._deferred_startup = self._deferred_startup, []
-        for fn in pending:
-            fn()
-
     def _maybe_offer_glossary_qwen(self):
-        if self._defer_for_update(self._maybe_offer_glossary_qwen):
-            return
         if self._worker_busy or self.session.control.is_downloading or self._serving():
             return
         if load_job(self.session.data_dir):
@@ -1161,7 +1135,6 @@ class MainWindow(
                 self._begin_app_update(latest)
                 return
             self._release_deferred_drive_sync()
-            self._run_deferred_startup()
             return
         self._app_update_checking = False
         self.progress.set_status(message or "App is up to date")
@@ -1178,9 +1151,8 @@ class MainWindow(
     def _begin_app_update(self, version: str = ""):
         """Hide the main window and download. Library sync does not run."""
         self._app_update_installing = True
-        self._app_update_version = version or ""
         self._pending_drive_sync = False
-        self._open_update_progress("Connecting to GitHub…")
+        self._open_update_progress("Connecting to GitHub…", version)
         download_update_async(
             progress_callback=lambda c, t, s: self._sig_update_progress.emit(
                 int(c or 0), int(t or 0), s or "Downloading update…"
@@ -1190,8 +1162,8 @@ class MainWindow(
             ),
         )
 
-    def _open_update_progress(self, text: str) -> None:
-        dlg = UpdateProgressDialog(self._app_update_version)
+    def _open_update_progress(self, text: str, version: str = "") -> None:
+        dlg = UpdateProgressDialog(version)
         dlg.restart_requested.connect(self._restart_for_update)
         dlg.set_progress(0, 100, text)
         center = self.frameGeometry().center()
@@ -1228,15 +1200,9 @@ class MainWindow(
             self.activateWindow()
             self.progress.set_status(message or "Update failed")
             show_warning(self, "Update failed", message or "Update failed.")
-            self._release_deferred_drive_sync()
-            self._run_deferred_startup()
-            return
-        dlg = self._update_progress_dlg
-        if dlg is None:
-            self._restart_for_update()
             return
         # Same window, ready state: no second box stacked on the progress dialog.
-        dlg.show_ready(
+        self._update_progress_dlg.show_ready(
             f"{APP_TITLE} will close and reopen to finish installing. "
             "Your library and downloads are kept."
         )
@@ -1244,8 +1210,6 @@ class MainWindow(
     @Slot()
     def _restart_for_update(self):
         """Quit so the staged helper can swap the binary and relaunch."""
-        if self._exiting_for_update:
-            return
         self._close_update_progress()
         self._exiting_for_update = True
         self.close()

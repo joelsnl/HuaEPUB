@@ -633,5 +633,5 @@ class TestStreamedAssetDownload:
         assert [c for c, _t, _s in calls] == [20, 40, 60]
         assert "150 MB of 300 MB" in calls[1][2]
         report(5, 0)
-        assert calls[-1][0] == 20 and " of " not in calls[-1][2]
+        assert calls[-1][0] == 20
         assert updater._download_progress(None, "a", 20, 60) is None

@@ -330,8 +330,8 @@ class UpdateProgressDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(10)
-        target = f"{APP_TITLE} {version}".strip() if version else APP_TITLE
-        self.heading = QLabel(f"Updating to {target}" if version else f"Updating {APP_TITLE}")
+        self.heading = QLabel(f"Updating to {APP_TITLE} {version}" if version
+                              else f"Updating {APP_TITLE}")
         font = self.heading.font()
         font.setPointSizeF(font.pointSizeF() * 1.15)
         font.setBold(True)
@@ -348,13 +348,10 @@ class UpdateProgressDialog(QDialog):
         self.restart_button.setDefault(True)
         self.restart_button.clicked.connect(self.restart_requested)
         self.restart_button.hide()
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(self.restart_button)
         layout.addWidget(self.heading)
         layout.addWidget(self.label)
         layout.addWidget(self.bar)
-        layout.addLayout(buttons)
+        layout.addWidget(self.restart_button, 0, Qt.AlignmentFlag.AlignRight)
 
     def set_progress(self, current: int, total: int, text: str) -> None:
         if text:

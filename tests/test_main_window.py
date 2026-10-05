@@ -265,60 +265,20 @@ def test_successful_update_shows_ready_state_in_the_same_window(window, qapp, mo
         window._close_update_progress()
 
 
-def test_startup_work_waits_while_the_update_prompt_is_open(window, monkeypatch):
+def test_update_check_starts_after_the_startup_jobs(qapp, tmp_path, monkeypatch):
+    """Fired inside the Update prompt, the cover refresh and GPU probe froze Yes."""
     import gui.main_window as mw
 
-    refreshed = []
-    monkeypatch.setattr(window.library, "refresh", lambda: refreshed.append(True))
-
-    def prompt_while_timers_fire(*_a, **_k):
-        # The 4 s Library timer fires inside the prompt event loop.
-        window._startup_library_refresh()
-        window._startup_library_refresh()
-        assert refreshed == []
-        return False
-
-    monkeypatch.setattr(mw, "ask_yes_no", prompt_while_timers_fire)
-    window._on_update_check_ready(True, "9.9.9", "A new version is available.")
-    assert refreshed == [True]
-    assert window._deferred_startup == []
-
-
-def test_startup_work_runs_after_a_failed_update_only(window, qapp, monkeypatch):
-    import gui.main_window as mw
-
-    captured = {}
-    refreshed = []
-    monkeypatch.setattr(window.library, "refresh", lambda: refreshed.append(True))
-
-    def fake_download(progress_callback=None, completion_callback=None):
-        captured["done"] = completion_callback
-
-    monkeypatch.setattr(mw, "download_update_async", fake_download)
-    monkeypatch.setattr(mw, "show_warning", lambda *a, **k: None)
-
-    def accept_while_timers_fire(*_a, **_k):
-        window._startup_library_refresh()
-        return True
-
-    monkeypatch.setattr(mw, "ask_yes_no", accept_while_timers_fire)
-    try:
-        window._on_update_check_ready(True, "9.9.9", "A new version is available.")
-        window._startup_library_refresh()  # still installing: keeps waiting
-        assert refreshed == []
-        captured["done"](False, "checksum mismatch")
-        qapp.processEvents()
-        assert refreshed == [True]
-    finally:
-        window._app_update_installing = False
-        window._close_update_progress()
-
-
-def test_glossary_offer_waits_while_an_update_installs(window):
-    window._app_update_installing = True
-    try:
-        window._maybe_offer_glossary_qwen()
-        assert window._deferred_startup == [window._maybe_offer_glossary_qwen]
-    finally:
-        window._app_update_installing = False
-        window._deferred_startup = []
+    scheduled = {}
+    monkeypatch.setattr("core.settings.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("core.library.LibraryStore.get_library", lambda _self: [object()])
+    monkeypatch.setattr(mw, "get_auto_check_updates", lambda: True)
+    monkeypatch.setattr(mw, "setup_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        mw.QTimer, "singleShot", lambda ms, fn, *_a: scheduled.__setitem__(fn.__name__, ms)
+    )
+    win = mw.MainWindow()
+    win._clipboard_timer.stop()
+    check = scheduled["_auto_check_updates"]
+    assert check > scheduled["refresh"]
+    assert check > scheduled["_maybe_offer_glossary_qwen"]

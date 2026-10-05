@@ -23,6 +23,7 @@ import os
 import sys
 import json
 import shutil
+import contextlib
 import hashlib
 import tempfile
 import subprocess
@@ -982,11 +983,9 @@ def _download_release_asset(
         )
     except UnsafeURLError as e:
         return None, f"Update download blocked: {e}"
-    try:
+    with contextlib.closing(response):
         response.raise_for_status()
-        if not hasattr(response, "iter_content"):
-            return response.content, name
-        total = _asset_total_bytes(asset, response)
+        total = int(asset.get('size') or 0)  # GitHub's API always sends it
         data = bytearray()
         last_report: Optional[float] = None  # first chunk always reports
         for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
@@ -1002,21 +1001,6 @@ def _download_release_asset(
         if on_bytes:
             on_bytes(len(data), total)
         return data, name
-    finally:
-        close = getattr(response, "close", None)
-        if callable(close):
-            close()
-
-
-def _asset_total_bytes(asset: dict, response) -> int:
-    headers = getattr(response, "headers", None) or {}
-    for value in (asset.get('size'), headers.get("Content-Length")):
-        try:
-            if int(value or 0) > 0:
-                return int(value)
-        except (TypeError, ValueError):
-            continue
-    return 0
 
 
 def _download_progress(
@@ -1030,14 +1014,11 @@ def _download_progress(
         return None
 
     def report(received: int, total: int) -> None:
-        if total > 0:
-            share = min(received, total) / total
-            pct = start + int((end - start) * share)
-            text = f"Downloading {name}… {format_bytes(received)} of {format_bytes(total)}"
-        else:
-            pct = start
-            text = f"Downloading {name}… {format_bytes(received)}"
-        progress_callback(pct, 100, text)
+        share = min(received, total) / total if total else 0
+        progress_callback(
+            start + int((end - start) * share), 100,
+            f"Downloading {name}… {format_bytes(received)} of {format_bytes(total)}",
+        )
 
     return report
 
