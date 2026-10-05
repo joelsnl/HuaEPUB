@@ -13,7 +13,7 @@ import re
 
 from core.branding import APP_TITLE
 from core.utils import format_bytes, format_count
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractButton, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
@@ -306,9 +306,16 @@ _SYNC_COUNT_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 
 class UpdateProgressDialog(QDialog):
-    """Blocks the app while an update downloads. No cancel, no close."""
+    """Stands in for the app while an update downloads, then offers the restart.
 
-    def __init__(self):
+    No cancel and no close while downloading. When the update is staged, the same
+    window switches to a ready state with one **Restart now** button, so no second
+    message box opens on top of it.
+    """
+
+    restart_requested = Signal()
+
+    def __init__(self, version: str = ""):
         super().__init__(None)
         self._allow_close = False
         self.setWindowTitle(f"Updating {APP_TITLE}")
@@ -319,18 +326,32 @@ class UpdateProgressDialog(QDialog):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        self.label = QLabel("Downloading update…")
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(10)
+        self.heading = QLabel(f"Updating to {APP_TITLE} {version}" if version
+                              else f"Updating {APP_TITLE}")
+        font = self.heading.font()
+        font.setPointSizeF(font.pointSizeF() * 1.15)
+        font.setBold(True)
+        self.heading.setFont(font)
+        self.label = QLabel("Connecting to GitHub…")
+        self.label.setObjectName("hintLabel")
         self.label.setWordWrap(True)
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setFormat("%p%")
         self.bar.setTextVisible(True)
+        self.restart_button = QPushButton("Restart now")
+        self.restart_button.setDefault(True)
+        self.restart_button.clicked.connect(self.restart_requested)
+        self.restart_button.hide()
+        layout.addWidget(self.heading)
         layout.addWidget(self.label)
         layout.addWidget(self.bar)
+        layout.addWidget(self.restart_button, 0, Qt.AlignmentFlag.AlignRight)
 
     def set_progress(self, current: int, total: int, text: str) -> None:
         if text:
@@ -342,6 +363,17 @@ class UpdateProgressDialog(QDialog):
             return
         self.bar.setRange(0, total)
         self.bar.setValue(min(current, total))
+
+    def show_ready(self, text: str) -> None:
+        """Download staged: full bar, the restart note, and the one button."""
+        self.setWindowTitle(f"{APP_TITLE} update ready")
+        self.heading.setText("Update ready")
+        self.bar.setRange(0, 100)
+        self.bar.setValue(100)
+        self.label.setText(text)
+        self.restart_button.show()
+        self.restart_button.setFocus()
+        self.adjustSize()
 
     def allow_close(self) -> None:
         self._allow_close = True

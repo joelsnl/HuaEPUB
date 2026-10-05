@@ -23,6 +23,7 @@ import os
 import sys
 import json
 import shutil
+import contextlib
 import hashlib
 import tempfile
 import subprocess
@@ -48,6 +49,7 @@ from core.security import (
     write_update_helper_config,
 )
 from core.settings import get_app_dir, is_frozen
+from core.utils import format_bytes
 
 SOURCE_UPDATE_ITEMS = [
     'app.py', 'core', 'gui', 'parsers', 'web', 'requirements.txt', 'README.md', 'build.py',
@@ -91,6 +93,9 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # (connect, read) — fail faster than a 15s hang (broken IPv6, stalled TLS).
 CHECK_TIMEOUT = (4, 8)
 DOWNLOAD_API_TIMEOUT = 15
+DOWNLOAD_CHUNK_BYTES = 256 * 1024
+# Progress updates at most this often, so the GUI event queue is never flooded.
+DOWNLOAD_PROGRESS_INTERVAL = 0.15
 CHECK_CACHE_TTL = 45.0
 
 _check_lock = threading.Lock()
@@ -954,7 +959,13 @@ def _require_checksum(session, release_data: dict, asset_name: str, data: bytes)
     return True, actual
 
 
-def _download_release_asset(session, asset: dict) -> Tuple[Optional[bytes], str]:
+def _download_release_asset(
+    session,
+    asset: dict,
+    on_bytes: Optional[Callable[[int, int], None]] = None,
+) -> Tuple[Optional[bytes], str]:
+    """Download one release asset. ``on_bytes(received, total)`` reports progress
+    (``total`` is 0 when GitHub did not say how big the file is)."""
     url = asset.get('browser_download_url') or ''
     name = asset.get('name') or 'asset'
     if not url:
@@ -968,11 +979,48 @@ def _download_release_asset(session, asset: dict) -> Tuple[Optional[bytes], str]
             resolve_dns=False,
             extra_check=validate_github_asset_host,
             timeout=300,
+            stream=True,
         )
-        response.raise_for_status()
-        return response.content, name
     except UnsafeURLError as e:
         return None, f"Update download blocked: {e}"
+    with contextlib.closing(response):
+        response.raise_for_status()
+        total = int(asset.get('size') or 0)  # GitHub's API always sends it
+        data = bytearray()
+        last_report: Optional[float] = None  # first chunk always reports
+        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+            if not chunk:
+                continue
+            data += chunk
+            now = time.monotonic()
+            if on_bytes and (
+                last_report is None or now - last_report >= DOWNLOAD_PROGRESS_INTERVAL
+            ):
+                last_report = now
+                on_bytes(len(data), total)
+        if on_bytes:
+            on_bytes(len(data), total)
+        return data, name
+
+
+def _download_progress(
+    progress_callback: Optional[Callable[[int, int, str], None]],
+    name: str,
+    start: int,
+    end: int,
+) -> Optional[Callable[[int, int], None]]:
+    """Map downloaded bytes onto the ``start``–``end`` slice of the 0–100 bar."""
+    if not progress_callback:
+        return None
+
+    def report(received: int, total: int) -> None:
+        share = min(received, total) / total if total else 0
+        progress_callback(
+            start + int((end - start) * share), 100,
+            f"Downloading {name}… {format_bytes(received)} of {format_bytes(total)}",
+        )
+
+    return report
 
 
 def download_update(
@@ -1038,7 +1086,9 @@ def _update_frozen_from_asset(
     if progress_callback:
         progress_callback(20, 100, f"Downloading {asset.get('name', '')}...")
 
-    data, asset_name = _download_release_asset(session, asset)
+    data, asset_name = _download_release_asset(
+        session, asset, _download_progress(progress_callback, asset.get('name', ''), 20, 60)
+    )
     if data is None:
         return (False, asset_name)
 
@@ -1436,7 +1486,9 @@ def _update_source_from_asset(
     if progress_callback:
         progress_callback(20, 100, f"Downloading {SOURCE_ASSET_NAME}...")
 
-    data, asset_name = _download_release_asset(session, asset)
+    data, asset_name = _download_release_asset(
+        session, asset, _download_progress(progress_callback, SOURCE_ASSET_NAME, 20, 50)
+    )
     if data is None:
         return (False, asset_name)
 

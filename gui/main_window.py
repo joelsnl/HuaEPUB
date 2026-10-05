@@ -168,7 +168,9 @@ class MainWindow(
             QTimer.singleShot(0, self._maybe_start_server_on_launch)
         QTimer.singleShot(400, self._check_resume_job)
         if get_auto_check_updates():
-            QTimer.singleShot(2000, self._auto_check_updates)
+            # After the startup burst below (Library covers at 4 s, glossary GPU probe
+            # at 3.5 s): fired inside the Update prompt, they froze its Yes button.
+            QTimer.singleShot(5000, self._auto_check_updates)
         self._clipboard_timer = QTimer(self)
         self._clipboard_timer.timeout.connect(self._poll_clipboard)
         self._clipboard_timer.start(3000)
@@ -1130,7 +1132,7 @@ class MainWindow(
             )
             self._app_update_pending = False
             if accepted:
-                self._begin_app_update()
+                self._begin_app_update(latest)
                 return
             self._release_deferred_drive_sync()
             return
@@ -1146,11 +1148,11 @@ class MainWindow(
                 )
         self._release_deferred_drive_sync()
 
-    def _begin_app_update(self):
+    def _begin_app_update(self, version: str = ""):
         """Hide the main window and download. Library sync does not run."""
         self._app_update_installing = True
         self._pending_drive_sync = False
-        self._open_update_progress("Connecting to GitHub…")
+        self._open_update_progress("Connecting to GitHub…", version)
         download_update_async(
             progress_callback=lambda c, t, s: self._sig_update_progress.emit(
                 int(c or 0), int(t or 0), s or "Downloading update…"
@@ -1160,8 +1162,9 @@ class MainWindow(
             ),
         )
 
-    def _open_update_progress(self, text: str) -> None:
-        dlg = UpdateProgressDialog()
+    def _open_update_progress(self, text: str, version: str = "") -> None:
+        dlg = UpdateProgressDialog(version)
+        dlg.restart_requested.connect(self._restart_for_update)
         dlg.set_progress(0, 100, text)
         center = self.frameGeometry().center()
         self.hide()
@@ -1189,38 +1192,37 @@ class MainWindow(
 
     @Slot(bool, str)
     def _on_update_download_done(self, ok: bool, message: str):
-        if ok:
-            dlg = self._update_progress_dlg
-            if dlg is not None:
-                dlg.set_progress(100, 100, "Update ready — closing to apply…")
-            show_info(
-                dlg or self,
-                "Update ready",
-                message
-                or "Update installed.\nThe application will now close and reopen.",
-            )
+        if not ok:
+            self._app_update_installing = False
             self._close_update_progress()
-            self._exiting_for_update = True
-            self.close()
-            app = QApplication.instance()
-            if app is None:
-                os._exit(0)
-            app.quit()
-            # Helpers wait for this PID. Qt may tear down timers with the
-            # window; a daemon thread still force-exits if something hangs.
-            def _exit_soon():
-                import time
-                time.sleep(2.5)
-                os._exit(0)
-
-            threading.Thread(target=_exit_soon, daemon=True).start()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.progress.set_status(message or "Update failed")
+            show_warning(self, "Update failed", message or "Update failed.")
             return
-        self._app_update_installing = False
-        self._close_update_progress()
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self.progress.set_status(message or "Update failed")
-        show_warning(
-            self, "Update failed", message or "Update failed."
+        # Same window, ready state: no second box stacked on the progress dialog.
+        self._update_progress_dlg.show_ready(
+            f"{APP_TITLE} will close and reopen to finish installing. "
+            "Your library and downloads are kept."
         )
+
+    @Slot()
+    def _restart_for_update(self):
+        """Quit so the staged helper can swap the binary and relaunch."""
+        self._close_update_progress()
+        self._exiting_for_update = True
+        self.close()
+        app = QApplication.instance()
+        if app is None:
+            os._exit(0)
+        app.quit()
+
+        # Helpers wait for this PID. Qt may tear down timers with the
+        # window; a daemon thread still force-exits if something hangs.
+        def _exit_soon():
+            import time
+            time.sleep(2.5)
+            os._exit(0)
+
+        threading.Thread(target=_exit_soon, daemon=True).start()
