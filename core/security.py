@@ -455,6 +455,10 @@ def safe_http_request(
             if not loc:
                 raise UnsafeURLError(f"Redirect {status} without Location header")
             current = urljoin(current, loc)
+            # A streamed redirect body is never read: release its connection.
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
             # Match common client behavior: 301/302/303 turn POST into GET
             if status in (301, 302, 303) and method == "POST":
                 method = "GET"

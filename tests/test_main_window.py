@@ -192,13 +192,9 @@ def test_declining_update_runs_the_deferred_drive_sync(window, monkeypatch):
     assert window._app_update_installing is False
 
 
-def test_successful_update_closes_progress_and_exits(window, qapp, monkeypatch):
+def _fake_exit_path(monkeypatch, window):
+    """Stub quit/os-exit so the restart path can run inside the test process."""
     import gui.main_window as mw
-
-    captured = {}
-
-    def fake_download(progress_callback=None, completion_callback=None):
-        captured["done"] = completion_callback
 
     class FakeApp:
         quit_calls = 0
@@ -215,29 +211,114 @@ def test_successful_update_closes_progress_and_exits(window, qapp, monkeypatch):
         def start(self):
             FakeThread.started.append(self.target)
 
-    infos = []
     closes = []
-    monkeypatch.setattr(mw, "download_update_async", fake_download)
-    monkeypatch.setattr(mw, "ask_yes_no", lambda *_a, **_k: True)
-    monkeypatch.setattr(mw, "show_info", lambda *a, **k: infos.append(a))
     monkeypatch.setattr(mw.QApplication, "instance", lambda: FakeApp())
     monkeypatch.setattr(mw.threading, "Thread", FakeThread)
     monkeypatch.setattr(window, "close", lambda: closes.append(True))
+    return FakeApp, FakeThread, closes
+
+
+def test_successful_update_shows_ready_state_in_the_same_window(window, qapp, monkeypatch):
+    import gui.main_window as mw
+
+    captured = {}
+
+    def fake_download(progress_callback=None, completion_callback=None):
+        captured["done"] = completion_callback
+
+    infos = []
+    monkeypatch.setattr(mw, "download_update_async", fake_download)
+    monkeypatch.setattr(mw, "ask_yes_no", lambda *_a, **_k: True)
+    monkeypatch.setattr(mw, "show_info", lambda *a, **k: infos.append(a))
+    fake_app, fake_thread, closes = _fake_exit_path(monkeypatch, window)
     try:
         window._on_update_check_ready(True, "9.9.9", "A new version is available.")
         qapp.processEvents()
         dlg = window._update_progress_dlg
-        assert dlg is not None
-        captured["done"](True, "Update installed.")
+        assert "9.9.9" in dlg.heading.text()
+        captured["done"](True, "Update downloaded and verified!")
         qapp.processEvents()
-        assert infos and infos[0][1] == "Update ready"
+        assert infos == []
+        assert window._update_progress_dlg is dlg and dlg.isVisible()
+        assert dlg.restart_button.isVisible()
+        assert dlg.bar.value() == 100
+        assert closes == [] and fake_app.quit_calls == 0
+        from PySide6.QtWidgets import QDialog
+
+        # No second box stacked over the progress dialog, and the app stays hidden.
+        dialogs = [w for w in mw.QApplication.topLevelWidgets()
+                   if w.isVisible() and isinstance(w, QDialog)]
+        assert dialogs == [dlg]
+        assert window.isVisible() is False
+
+        dlg.restart_button.click()
+        qapp.processEvents()
         assert window._update_progress_dlg is None
         assert dlg.isVisible() is False
         assert window._exiting_for_update is True
         assert closes == [True]
-        assert FakeApp.quit_calls == 1
-        assert len(FakeThread.started) == 1
+        assert fake_app.quit_calls == 1
+        assert len(fake_thread.started) == 1
     finally:
         window._exiting_for_update = False
         window._app_update_installing = False
         window._close_update_progress()
+
+
+def test_startup_work_waits_while_the_update_prompt_is_open(window, monkeypatch):
+    import gui.main_window as mw
+
+    refreshed = []
+    monkeypatch.setattr(window.library, "refresh", lambda: refreshed.append(True))
+
+    def prompt_while_timers_fire(*_a, **_k):
+        # The 4 s Library timer fires inside the prompt event loop.
+        window._startup_library_refresh()
+        window._startup_library_refresh()
+        assert refreshed == []
+        return False
+
+    monkeypatch.setattr(mw, "ask_yes_no", prompt_while_timers_fire)
+    window._on_update_check_ready(True, "9.9.9", "A new version is available.")
+    assert refreshed == [True]
+    assert window._deferred_startup == []
+
+
+def test_startup_work_runs_after_a_failed_update_only(window, qapp, monkeypatch):
+    import gui.main_window as mw
+
+    captured = {}
+    refreshed = []
+    monkeypatch.setattr(window.library, "refresh", lambda: refreshed.append(True))
+
+    def fake_download(progress_callback=None, completion_callback=None):
+        captured["done"] = completion_callback
+
+    monkeypatch.setattr(mw, "download_update_async", fake_download)
+    monkeypatch.setattr(mw, "show_warning", lambda *a, **k: None)
+
+    def accept_while_timers_fire(*_a, **_k):
+        window._startup_library_refresh()
+        return True
+
+    monkeypatch.setattr(mw, "ask_yes_no", accept_while_timers_fire)
+    try:
+        window._on_update_check_ready(True, "9.9.9", "A new version is available.")
+        window._startup_library_refresh()  # still installing: keeps waiting
+        assert refreshed == []
+        captured["done"](False, "checksum mismatch")
+        qapp.processEvents()
+        assert refreshed == [True]
+    finally:
+        window._app_update_installing = False
+        window._close_update_progress()
+
+
+def test_glossary_offer_waits_while_an_update_installs(window):
+    window._app_update_installing = True
+    try:
+        window._maybe_offer_glossary_qwen()
+        assert window._deferred_startup == [window._maybe_offer_glossary_qwen]
+    finally:
+        window._app_update_installing = False
+        window._deferred_startup = []

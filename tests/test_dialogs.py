@@ -140,3 +140,26 @@ def test_update_progress_stays_open_until_allowed(qapp):
     qapp.processEvents()
     assert dlg.isVisible() is False
 
+
+def test_update_progress_ready_state_offers_one_restart_button(qapp):
+    from gui.dialogs import UpdateProgressDialog
+
+    dlg = UpdateProgressDialog("9.9.9")
+    dlg.show()
+    qapp.processEvents()
+    assert "9.9.9" in dlg.heading.text()
+    assert dlg.restart_button.isVisible() is False
+    clicked = []
+    dlg.restart_requested.connect(lambda: clicked.append(True))
+    dlg.show_ready("HuaEPUB will close and reopen to finish installing.")
+    qapp.processEvents()
+    assert dlg.restart_button.isVisible()
+    assert dlg.restart_button.isDefault()
+    assert dlg.bar.value() == 100
+    dlg.close()
+    qapp.processEvents()
+    assert dlg.isVisible()
+    dlg.restart_button.click()
+    assert clicked == [True]
+    dlg.allow_close()
+    dlg.close()

@@ -560,3 +560,76 @@ class TestRelaunchEnv:
         relaunch = updater._env_for_app_relaunch()
         assert relaunch.get("PYINSTALLER_RESET_ENVIRONMENT") == "1"
         assert "_PYI_ARCHIVE_FILE" not in relaunch
+
+
+class _StreamResponse:
+    def __init__(self, chunks, headers=None):
+        self.status_code = 200
+        self.headers = headers or {}
+        self._chunks = chunks
+        self.closed = False
+        self.stream_requested = None
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size=None):
+        yield from self._chunks
+
+    def close(self):
+        self.closed = True
+
+
+class _StreamSession:
+    def __init__(self, response):
+        self.response = response
+
+    def request(self, method, url, timeout=None, allow_redirects=None, stream=False, **_k):
+        self.response.stream_requested = stream
+        return self.response
+
+
+_ASSET_URL = "https://github.com/joelsnl/HuaEPUB/releases/download/v9.9.9/HuaEPUB-windows.zip"
+
+
+class TestStreamedAssetDownload:
+    def test_streams_and_reports_bytes(self, monkeypatch):
+        monkeypatch.setattr(updater, "DOWNLOAD_PROGRESS_INTERVAL", 0)
+        resp = _StreamResponse([b"ab", b"", b"cde", b"f"])
+        seen = []
+        data, name = updater._download_release_asset(
+            _StreamSession(resp),
+            {"browser_download_url": _ASSET_URL, "name": "HuaEPUB-windows.zip", "size": 6},
+            lambda got, total: seen.append((got, total)),
+        )
+        assert bytes(data) == b"abcdef" and name == "HuaEPUB-windows.zip"
+        assert resp.stream_requested is True
+        assert seen[-1] == (6, 6)
+        assert [g for g, _t in seen] == sorted(g for g, _t in seen)
+        assert resp.closed
+
+    def test_progress_is_throttled(self, monkeypatch):
+        monkeypatch.setattr(updater, "DOWNLOAD_PROGRESS_INTERVAL", 3600)
+        resp = _StreamResponse([b"x"] * 500)
+        seen = []
+        updater._download_release_asset(
+            _StreamSession(resp),
+            {"browser_download_url": _ASSET_URL, "name": "a.zip", "size": 500},
+            lambda got, total: seen.append(got),
+        )
+        assert seen == [1, 500]
+
+    def test_progress_maps_into_the_download_slice(self):
+        calls = []
+        report = updater._download_progress(
+            lambda c, t, s: calls.append((c, t, s)), "HuaEPUB-windows.zip", 20, 60
+        )
+        mb = 1024 * 1024
+        report(0, 300 * mb)
+        report(150 * mb, 300 * mb)
+        report(300 * mb, 300 * mb)
+        assert [c for c, _t, _s in calls] == [20, 40, 60]
+        assert "150 MB of 300 MB" in calls[1][2]
+        report(5, 0)
+        assert calls[-1][0] == 20 and " of " not in calls[-1][2]
+        assert updater._download_progress(None, "a", 20, 60) is None
