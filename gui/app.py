@@ -1,21 +1,27 @@
 # Author: joelsnl and Anthropic Claude
-"""Qt application entry."""
+"""Application entry. Qt stays behind the desktop path so --headless needs no display."""
 
 from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QStyleFactory
-
-from core.settings import get_setting
 from core.utils import sanitize_runtime_env
-from gui.icon import apply_app_icon, apply_windows_app_id
-from gui.main_window import MainWindow
 
 
 def run():
     sanitize_runtime_env()
+    from web.host import headless_requested, serve_headless
+
+    if headless_requested():
+        return serve_headless()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QStyleFactory
+
+    from core.settings import get_setting
+    from gui.icon import apply_app_icon, apply_windows_app_id
+    from gui.main_window import MainWindow
+
     apply_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName("HuaEPUB")

@@ -830,6 +830,99 @@ def test_server_host_starts_and_stops(session):
         host.start(mode="remote", port=_free_port())  # no password yet
 
 
+def test_linux_without_a_display_is_headless(monkeypatch):
+    from web.host import headless_requested
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM"):
+        monkeypatch.delenv(key, raising=False)
+    assert headless_requested([])
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert not headless_requested([])
+    assert headless_requested(["--headless"])
+    monkeypatch.delenv("DISPLAY")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    assert not headless_requested([])
+
+
+def test_headless_serves_without_qt(tmp_path):
+    pytest.importorskip("uvicorn")
+    import json
+
+    import requests
+
+    port = _free_port()
+    data = tmp_path / ".huaepub"
+    data.mkdir()
+    (data / "settings.json").write_text(
+        json.dumps({"server_mode": "lan", "server_port": port}), encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env["USERPROFILE"] = str(tmp_path)
+    script = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "sys.argv = ['huaepub', '--headless']\n"
+        "import gui.app as appmod\n"
+        "import web.host as hostmod\n"
+        "real = hostmod.serve_headless\n"
+        "def wrapped():\n"
+        "    bad = [name for name in sys.modules if name == 'PySide6' or name.startswith('PySide6.')]\n"
+        "    if bad:\n"
+        "        raise SystemExit('Qt loaded before headless: ' + ', '.join(bad))\n"
+        "    return real()\n"
+        "hostmod.serve_headless = wrapped\n"
+        "raise SystemExit(appmod.run())\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    out_parts: list[str] = []
+    err_parts: list[str] = []
+
+    def _drain(stream, dest):
+        dest.append(stream.read() or "")
+
+    threads = [
+        threading.Thread(target=_drain, args=(proc.stdout, out_parts)),
+        threading.Thread(target=_drain, args=(proc.stderr, err_parts)),
+    ]
+    for thread in threads:
+        thread.start()
+    seen = None
+    try:
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline and proc.poll() is None:
+            try:
+                got = requests.get(f"http://127.0.0.1:{port}/api/session", timeout=1)
+            except requests.RequestException:
+                time.sleep(0.1)
+                continue
+            if got.status_code == 200:
+                seen = got
+                break
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        for thread in threads:
+            thread.join(timeout=5)
+    text = "".join(out_parts)
+    err = "".join(err_parts)
+    assert seen is not None and seen.json()["mode"] == "lan", (proc.returncode, text, err)
+    marker = "Access code: "
+    assert marker in text, text
+    code = text.split(marker, 1)[1].splitlines()[0].strip()
+    log = data / "logs" / "huaepub.log"
+    logged = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+    assert code and code not in logged
+
+
 def test_server_start_syncs_drive_only_when_enabled(session, monkeypatch):
     pytest.importorskip("uvicorn")
     from web import books

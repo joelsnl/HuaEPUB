@@ -1,14 +1,17 @@
 # Author: joelsnl and Anthropic Claude
 """Run the server-mode app inside the desktop process (uvicorn on a thread).
 
-The desktop window calls ``ServerHost.start`` / ``stop``; nothing here
-imports Qt. Secrets (access code, password, cookies) are never printed, so
-they never reach ``huaepub.log``.
+The desktop window calls ``ServerHost.start`` / ``stop``. ``serve_headless``
+runs the same server with no window. Nothing here imports Qt. Secrets
+(access code, password, cookies) are never printed, so they never reach
+``huaepub.log``.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
+import signal
 import socket
 import sys
 import threading
@@ -232,6 +235,79 @@ class ServerHost:
 
     def task_busy(self) -> bool:
         return bool(self.ctx is not None and self.ctx.tasks.is_busy())
+
+
+def headless_requested(argv=None) -> bool:
+    """True when this process should serve the browser app and skip Qt."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if "--headless" in args:
+        return True
+    # No display (Raspberry Pi OS Lite, or ssh). A Qt window cannot open.
+    if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORM"):
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            return True
+    return False
+
+
+def _write_terminal(text: str) -> None:
+    """The real terminal, not print(). print() is copied into huaepub.log."""
+    try:
+        os.write(1, (text.rstrip() + "\n").encode("utf-8", errors="replace"))
+    except OSError:
+        pass
+
+
+def serve_headless() -> int:
+    """Serve until Ctrl+C or SIGTERM. Uses the saved server settings."""
+    from core.logger import setup_logging
+    from core.session import AppSession
+    from core.updater import get_current_version
+
+    session = AppSession()
+    setup_logging(session.data_dir)
+    settings = session.settings
+    host = ServerHost(session, version=get_current_version())
+    stopped = threading.Event()
+
+    def _request_stop(_signum=None, _frame=None):
+        stopped.set()
+
+    signal.signal(signal.SIGINT, _request_stop)
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, _request_stop)
+    code = 0
+    try:
+        try:
+            status = host.start(
+                mode=settings.get("server_mode") or "lan",
+                port=int(settings.get("server_port") or DEFAULT_PORT),
+                hostname=settings.get("server_hostname") or "",
+                cert_path=settings.get("server_cert_path") or "",
+                key_path=settings.get("server_key_path") or "",
+            )
+        except Exception as exc:
+            host.log(f"Headless server could not start: {exc}")
+            code = 1
+        else:
+            lines = ["HuaEPUB is serving with no window.", status.local_url]
+            if status.lan_url and status.lan_url != status.local_url:
+                lines.append(status.lan_url)
+            if status.public_url:
+                lines.append(status.public_url)
+            if status.mode == "lan":
+                lines.append(f"Access code: {host.secrets.lan_code}")
+            else:
+                lines.append("Sign in with the server password.")
+            _write_terminal("\n".join(lines))
+            try:
+                stopped.wait()
+            except KeyboardInterrupt:
+                pass
+    finally:
+        if host.running:
+            host.stop()
+        session.close()
+    return code
 
 
 def find_public_address(timeout: float = 8.0) -> str:

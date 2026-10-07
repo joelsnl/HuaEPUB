@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # Author: joelsnl and Anthropic Claude
 """
-HuaEPUB — Qt (PySide6) entry point.
+HuaEPUB entry point.
+
+The desktop window is the default. ``--headless`` (or Linux with no display)
+serves the browser app and does not load Qt.
 """
 
 import os
