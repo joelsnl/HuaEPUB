@@ -4,9 +4,10 @@
 While serving, the browser is the app: the tabs are swapped for the server
 screen so the desktop and the browser never run jobs side by side on the
 same library, cache and resume file. Minimizing hides the window in the
-status area; the server keeps running until Stop serving or the window is
-closed. The choice is remembered (``server_enabled``) and serving starts
-again on the next launch.
+status area. Stop serving, or closing the window, stops the server.
+Serve without this window closes the window and leaves the server running
+until HuaEPUB is opened again. The remembered choice (``server_enabled``)
+starts serving again on the next launch.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from gui.widgets.server_screen import ServerScreen
 class ServerActionsMixin:
     _server_host = None
     _status_tray = None
+    _headless_handoff = False
 
     # -- set-up ------------------------------------------------------------
     def _build_server_ui(self, stack) -> None:
@@ -35,6 +37,7 @@ class ServerActionsMixin:
         self.server_screen.new_code.connect(self._server_new_code)
         self.server_screen.change_password.connect(self._server_change_password)
         self.server_screen.stop_serving.connect(self._stop_serving_clicked)
+        self.server_screen.go_headless.connect(self._serve_without_window)
         stack.addWidget(self.server_screen)
 
         chip = QToolButton()
@@ -260,6 +263,27 @@ class ServerActionsMixin:
 
     # -- stop --------------------------------------------------------------
     @Slot()
+    def _serve_without_window(self) -> None:
+        """Close the window and keep this process serving. Opening HuaEPUB again stops it."""
+        if not self._serving():
+            return
+        if not ask_yes_no(
+            self,
+            "Serve without this window",
+            "This window will close. HuaEPUB keeps serving at the address shown here.\n\n"
+            "Open HuaEPUB again when you want the window back. That stops this server.",
+            default_yes=False,
+        ):
+            return
+        self.session.settings["server_enabled"] = False
+        save_settings(self.session.settings)
+        self._headless_handoff = True
+        from web.host import keep_serving_after_gui
+
+        keep_serving_after_gui(self._server_host, self.session)
+        self.close()
+
+    @Slot()
     def _stop_serving_clicked(self) -> None:
         host = self._server_host
         if host is None:
@@ -324,6 +348,22 @@ class ServerActionsMixin:
         font = s.get("reader_font_pt")
         if font:
             self.reader.set_font_pt(int(font))
+
+    def _close_keeping_server(self, event) -> None:
+        """The window is going away. The server in this process stays up."""
+        self._server_timer.stop()
+        tray = self._status_tray
+        if tray is not None:
+            tray.hide()
+        try:
+            self._save_reader_position()
+        except Exception:
+            pass
+        try:
+            self._save_window_geometry()
+        except Exception:
+            pass
+        event.accept()
 
     def _shutdown_server_for_close(self) -> None:
         """Window closing: stop serving but remember it was on."""

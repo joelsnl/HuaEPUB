@@ -830,6 +830,59 @@ def test_server_host_starts_and_stops(session):
         host.start(mode="remote", port=_free_port())  # no password yet
 
 
+def test_stop_file_ends_a_headless_wait(tmp_path):
+    from web.host import (
+        pid_alive, request_headless_stop, running_headless_pid, serve_until_stopped,
+    )
+
+    assert pid_alive(os.getpid())
+
+    class _Host:
+        def __init__(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+    class _Session:
+        def __init__(self):
+            self.data_dir = tmp_path
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    host = _Host()
+    session = _Session()
+    worker = threading.Thread(
+        target=serve_until_stopped, args=(host, session, threading.Event()), daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        pid = None
+        while time.monotonic() < deadline and pid is None:
+            pid = running_headless_pid(tmp_path)
+            time.sleep(0.05)
+        assert pid == os.getpid()
+        request_headless_stop(tmp_path)
+        worker.join(5)
+        assert not worker.is_alive()
+    finally:
+        request_headless_stop(tmp_path)
+        worker.join(5)
+    assert not host.running and session.closed
+    assert running_headless_pid(tmp_path) is None
+
+    gone = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    gone.kill()
+    gone.wait(timeout=5)
+    folder = tmp_path / "server"
+    folder.mkdir(exist_ok=True)
+    (folder / "headless.pid").write_text(str(gone.pid), encoding="utf-8")
+    assert running_headless_pid(tmp_path) is None
+    assert not (folder / "headless.pid").exists()
+
+
 def test_linux_without_a_display_is_headless(monkeypatch):
     from web.host import headless_requested
 

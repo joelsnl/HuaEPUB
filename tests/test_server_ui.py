@@ -102,6 +102,7 @@ def test_server_screen_shows_code_or_password(qapp):
     screen = ServerScreen()
     assert "status area" in screen.minimize_note.text()
     assert not screen.minimize_note.isHidden()
+    assert screen.headless_btn.text() == "Serve without this window"
     lan = ServerStatus(running=True, mode="lan", port=8765, lan_ip="192.168.1.20")
     screen.show_status(lan, code="abcd2345", qr_text="http://192.168.1.20:8765/?code=abcd2345")
     assert screen.code.text() == "abcd 2345"
@@ -151,6 +152,39 @@ def window(qapp, tmp_path, monkeypatch):
 def test_serve_chip_sits_on_the_tab_bar(window):
     assert window.tabs.cornerWidget() is window.serve_chip
     assert window.serve_chip.text() == "SERVE"
+
+
+def test_serve_without_window_keeps_the_server(window, qapp, monkeypatch):
+    from web import host as hostmod
+
+    s = window.session.settings
+    s["server_port"] = _free_port()
+    assert window._start_serving(announce_errors=False)
+    monkeypatch.setattr("gui.window.server_actions.ask_yes_no", lambda *_a, **_k: False)
+    window._serve_without_window()
+    assert not window._headless_handoff and window._serving()
+    assert s["server_enabled"] is True
+
+    closed = []
+    monkeypatch.setattr(window, "close", lambda: closed.append(1))
+    monkeypatch.setattr("gui.window.server_actions.ask_yes_no", lambda *_a, **_k: True)
+    window._serve_without_window()
+    assert closed == [1]
+    assert window._headless_handoff and window._serving()
+    assert s["server_enabled"] is False
+    window._headless_handoff = False
+    hostmod._HANDOFF = None
+
+
+def test_headless_close_does_not_stop_the_server(window, qapp):
+    s = window.session.settings
+    s["server_port"] = _free_port()
+    assert window._start_serving(announce_errors=False)
+    window._headless_handoff = True
+    window.close()
+    qapp.processEvents()
+    assert window._serving()
+    window._headless_handoff = False
 
 
 def test_serving_swaps_the_tabs_for_the_server_screen_and_remembers(window, qapp):

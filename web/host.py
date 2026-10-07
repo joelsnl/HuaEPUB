@@ -237,6 +237,140 @@ class ServerHost:
         return bool(self.ctx is not None and self.ctx.tasks.is_busy())
 
 
+_HANDOFF = None
+_PID_NAME = "headless.pid"
+_STOP_NAME = "headless.stop"
+
+
+def _server_dir(data_dir) -> Path:
+    path = Path(data_dir) / "server"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def pid_alive(pid: int) -> bool:
+    """True when ``pid`` is a running process. Does not signal or stop it."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        # os.kill(pid, 0) calls TerminateProcess on Windows.
+        import ctypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if handle:
+            code = ctypes.c_ulong()
+            ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+            kernel.CloseHandle(handle)
+            return bool(ok) and code.value == 259  # STILL_ACTIVE
+        return ctypes.get_last_error() == 5  # access denied: the process exists
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def running_headless_pid(data_dir) -> Optional[int]:
+    """Pid of a live no-window server, or None. A dead pid file is removed."""
+    path = Path(data_dir) / "server" / _PID_NAME
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    if pid_alive(pid):
+        return pid
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return None
+
+
+def request_headless_stop(data_dir) -> None:
+    """Ask the no-window server to stop. It notices within about a second."""
+    path = _server_dir(data_dir) / _STOP_NAME
+    path.write_text("stop", encoding="utf-8")
+
+
+def wait_headless_exit(pid: int, timeout: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not pid_alive(pid)
+
+
+def keep_serving_after_gui(host, session) -> None:
+    """Remember the live server so the process can drop the Qt window and keep it."""
+    global _HANDOFF
+    _HANDOFF = (host, session)
+
+
+def finish_gui_handoff() -> Optional[int]:
+    """After the window closes, block until the server is stopped. None if it did not hand off."""
+    global _HANDOFF
+    if _HANDOFF is None:
+        return None
+    host, session = _HANDOFF
+    _HANDOFF = None
+    return serve_until_stopped(host, session)
+
+
+def _install_stop_signals() -> threading.Event:
+    stopped = threading.Event()
+
+    def _request_stop(_signum=None, _frame=None):
+        stopped.set()
+
+    try:
+        signal.signal(signal.SIGINT, _request_stop)
+        if sys.platform != "win32":
+            signal.signal(signal.SIGTERM, _request_stop)
+    except ValueError:
+        pass  # only the main thread may install handlers
+    return stopped
+
+
+def serve_until_stopped(host, session, stopped: Optional[threading.Event] = None) -> int:
+    """Block until Ctrl+C, SIGTERM, or the stop file, then stop the server."""
+    if stopped is None:
+        stopped = _install_stop_signals()
+    folder = _server_dir(session.data_dir)
+    stop_path = folder / _STOP_NAME
+    pid_path = folder / _PID_NAME
+    try:
+        stop_path.unlink()
+    except OSError:
+        pass
+    pid_path.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        while not stopped.is_set():
+            if stop_path.is_file():
+                break
+            stopped.wait(0.4)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if host.running:
+            host.stop()
+        try:
+            session.close()
+        except Exception:
+            pass
+        for path in (pid_path, stop_path):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return 0
+
+
 def headless_requested(argv=None) -> bool:
     """True when this process should serve the browser app and skip Qt."""
     args = sys.argv[1:] if argv is None else list(argv)
@@ -267,47 +401,30 @@ def serve_headless() -> int:
     setup_logging(session.data_dir)
     settings = session.settings
     host = ServerHost(session, version=get_current_version())
-    stopped = threading.Event()
-
-    def _request_stop(_signum=None, _frame=None):
-        stopped.set()
-
-    signal.signal(signal.SIGINT, _request_stop)
-    if sys.platform != "win32":
-        signal.signal(signal.SIGTERM, _request_stop)
-    code = 0
+    stopped = _install_stop_signals()
     try:
-        try:
-            status = host.start(
-                mode=settings.get("server_mode") or "lan",
-                port=int(settings.get("server_port") or DEFAULT_PORT),
-                hostname=settings.get("server_hostname") or "",
-                cert_path=settings.get("server_cert_path") or "",
-                key_path=settings.get("server_key_path") or "",
-            )
-        except Exception as exc:
-            host.log(f"Headless server could not start: {exc}")
-            code = 1
-        else:
-            lines = ["HuaEPUB is serving with no window.", status.local_url]
-            if status.lan_url and status.lan_url != status.local_url:
-                lines.append(status.lan_url)
-            if status.public_url:
-                lines.append(status.public_url)
-            if status.mode == "lan":
-                lines.append(f"Access code: {host.secrets.lan_code}")
-            else:
-                lines.append("Sign in with the server password.")
-            _write_terminal("\n".join(lines))
-            try:
-                stopped.wait()
-            except KeyboardInterrupt:
-                pass
-    finally:
-        if host.running:
-            host.stop()
+        status = host.start(
+            mode=settings.get("server_mode") or "lan",
+            port=int(settings.get("server_port") or DEFAULT_PORT),
+            hostname=settings.get("server_hostname") or "",
+            cert_path=settings.get("server_cert_path") or "",
+            key_path=settings.get("server_key_path") or "",
+        )
+    except Exception as exc:
+        host.log(f"Headless server could not start: {exc}")
         session.close()
-    return code
+        return 1
+    lines = ["HuaEPUB is serving with no window.", status.local_url]
+    if status.lan_url and status.lan_url != status.local_url:
+        lines.append(status.lan_url)
+    if status.public_url:
+        lines.append(status.public_url)
+    if status.mode == "lan":
+        lines.append(f"Access code: {host.secrets.lan_code}")
+    else:
+        lines.append("Sign in with the server password.")
+    _write_terminal("\n".join(lines))
+    return serve_until_stopped(host, session, stopped)
 
 
 def find_public_address(timeout: float = 8.0) -> str:

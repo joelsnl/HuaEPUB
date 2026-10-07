@@ -460,6 +460,9 @@ class MainWindow(
         save_settings(self.session.settings)
 
     def closeEvent(self, event):
+        if getattr(self, "_headless_handoff", False):
+            self._close_keeping_server(event)
+            return
         update_exit = bool(getattr(self, "_exiting_for_update", False))
         force_close = bool(getattr(self, "_force_close", False))
         if getattr(self, "_app_update_installing", False) and not update_exit:

@@ -74,6 +74,7 @@ class ServerScreen(QWidget):
     new_code = Signal()
     change_password = Signal()
     stop_serving = Signal()
+    go_headless = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -177,16 +178,24 @@ class ServerScreen(QWidget):
         root.addWidget(_rule())
         foot = QHBoxLayout()
         self.note = QLabel("The desktop tabs are paused while serving. "
-                           "Closing HuaEPUB stops the server.")
+                           "Closing HuaEPUB stops the server. "
+                           "Serve without this window leaves it running.")
         self.note.setObjectName("hintLabel")
         self.note.setWordWrap(True)
         self.open_btn = QPushButton("Open in browser")
         self.open_btn.clicked.connect(self.open_browser.emit)
+        self.headless_btn = QPushButton("Serve without this window")
+        self.headless_btn.setObjectName("secondaryBtn")
+        self.headless_btn.setToolTip(
+            "Close this window and keep serving. Open HuaEPUB again to stop it "
+            "and get the window back.")
+        self.headless_btn.clicked.connect(self.go_headless.emit)
         self.stop_btn = QPushButton("Stop serving")
         self.stop_btn.setObjectName("dangerBtn")
         self.stop_btn.clicked.connect(self.stop_serving.emit)
         foot.addWidget(self.note, 1)
         foot.addWidget(self.open_btn)
+        foot.addWidget(self.headless_btn)
         foot.addWidget(self.stop_btn)
         root.addLayout(foot)
 

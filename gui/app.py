@@ -38,7 +38,42 @@ def run():
 
     theme.apply_look(app, get_setting("ui_look") or "auto")
 
+    if _yield_to_headless_server():
+        return 0
+
     win = MainWindow()
     apply_app_icon(app, win)
     win.show()
-    return app.exec()
+    code = app.exec()
+    from web.host import finish_gui_handoff
+
+    held = finish_gui_handoff()
+    return code if held is None else held
+
+
+def _yield_to_headless_server() -> bool:
+    """True when a no-window server should keep this launch from opening a second window."""
+    from core.settings import get_data_dir
+    from gui.dialogs import ask_yes_no, show_error
+    from web.host import request_headless_stop, running_headless_pid, wait_headless_exit
+
+    data_dir = get_data_dir()
+    pid = running_headless_pid(data_dir)
+    if not pid:
+        return False
+    if not ask_yes_no(
+        None,
+        "HuaEPUB is serving",
+        "HuaEPUB is already serving with no window.\n\n"
+        "Stop it and open the desktop app?",
+    ):
+        return True
+    request_headless_stop(data_dir)
+    if wait_headless_exit(pid):
+        return False
+    show_error(
+        None,
+        "HuaEPUB is serving",
+        "That server did not stop. End the HuaEPUB process, then open the app again.",
+    )
+    return True
