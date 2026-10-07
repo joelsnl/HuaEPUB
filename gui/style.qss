@@ -195,6 +195,13 @@ QFrame#resumeBanner {
 
 /* Server screen */
 QLabel#serverTitle { font-family: "${serif}"; font-size: 26px; }
+QLabel#serverNotice {
+    font-size: 16px;
+    color: ${ink};
+    background: ${surface};
+    border: 1px solid ${accent};
+    padding: 10px 12px;
+}
 QLabel#bookTitle { font-family: "${serif}"; font-size: 20px; }
 QLabel#serverCode {
     font-family: "${mono}";

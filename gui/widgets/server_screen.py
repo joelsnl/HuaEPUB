@@ -88,8 +88,14 @@ class ServerScreen(QWidget):
         self.subtitle = QLabel("")
         self.subtitle.setObjectName("mutedLabel")
         self.subtitle.setWordWrap(True)
+        self.minimize_note = QLabel(
+            "Minimize this window to keep HuaEPUB in the status area. The server stays on."
+        )
+        self.minimize_note.setObjectName("serverNotice")
+        self.minimize_note.setWordWrap(True)
         root.addWidget(self.title)
         root.addWidget(self.subtitle)
+        root.addWidget(self.minimize_note)
         root.addWidget(_rule())
 
         body = QHBoxLayout()

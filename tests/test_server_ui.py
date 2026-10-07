@@ -100,6 +100,8 @@ def test_server_screen_shows_code_or_password(qapp):
     from web.host import ServerStatus
 
     screen = ServerScreen()
+    assert "status area" in screen.minimize_note.text()
+    assert not screen.minimize_note.isHidden()
     lan = ServerStatus(running=True, mode="lan", port=8765, lan_ip="192.168.1.20")
     screen.show_status(lan, code="abcd2345", qr_text="http://192.168.1.20:8765/?code=abcd2345")
     assert screen.code.text() == "abcd 2345"
@@ -176,6 +178,43 @@ def test_settings_changed_in_the_browser_show_after_stopping(window):
     window._stop_serving(remember_off=True)
     assert window.options.translate_cb.isChecked() == s["translate"]
     assert window.options.workers.value() == 77
+
+
+def test_minimize_while_serving_hides_in_the_status_area(window, qapp, monkeypatch):
+    pending = []
+    monkeypatch.setattr(
+        "gui.window.server_actions.QTimer.singleShot",
+        lambda _ms, fn: pending.append(fn),
+    )
+    monkeypatch.setattr(
+        "gui.window.server_actions.QSystemTrayIcon.isSystemTrayAvailable",
+        staticmethod(lambda: True),
+    )
+    window.session.settings["server_port"] = _free_port()
+    assert window._start_serving(announce_errors=False)
+
+    def minimize():
+        pending.clear()
+        window.showMinimized()
+        qapp.processEvents()
+        assert window.isMinimized()
+        assert pending, "minimize did not ask to hide"
+        pending[-1]()
+
+    minimize()
+    assert not window.isVisible()
+    assert window._status_tray is not None and window._status_tray.isVisible()
+    assert window._serving()
+    window._restore_from_status()
+    qapp.processEvents()
+    assert window.isVisible()
+    assert not window.isMinimized()
+    assert not window._status_tray.isVisible()
+    minimize()
+    assert not window.isVisible()
+    window._stop_serving(remember_off=True)
+    assert window.isVisible()
+    assert window._server_stack.currentIndex() == 0
 
 
 def test_closing_while_serving_keeps_it_on_for_next_launch(window):

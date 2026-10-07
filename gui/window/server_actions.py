@@ -3,15 +3,17 @@
 
 While serving, the browser is the app: the tabs are swapped for the server
 screen so the desktop and the browser never run jobs side by side on the
-same library, cache and resume file. The choice is remembered
-(``server_enabled``) and serving starts again on the next launch.
+same library, cache and resume file. Minimizing hides the window in the
+status area; the server keeps running until Stop serving or the window is
+closed. The choice is remembered (``server_enabled``) and serving starts
+again on the next launch.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, QUrl, Qt, Slot
+from PySide6.QtCore import QEvent, QTimer, QUrl, Qt, Slot
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QToolButton
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QToolButton
 
 from core.settings import save_settings
 from core.updater import get_current_version
@@ -22,6 +24,7 @@ from gui.widgets.server_screen import ServerScreen
 
 class ServerActionsMixin:
     _server_host = None
+    _status_tray = None
 
     # -- set-up ------------------------------------------------------------
     def _build_server_ui(self, stack) -> None:
@@ -58,6 +61,58 @@ class ServerActionsMixin:
     def _serving(self) -> bool:
         host = self._server_host
         return bool(host is not None and host.running)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and self._serving()
+        ):
+            # The window manager finishes the minimize after this event.
+            QTimer.singleShot(0, self._hide_server_to_status)
+
+    def _status_tray_icon(self):
+        tray = self._status_tray
+        if tray is not None:
+            return tray
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        tray = QSystemTrayIcon(self.windowIcon(), self)
+        tray.setToolTip("HuaEPUB is serving")
+        menu = QMenu(self)
+        menu.addAction("Show HuaEPUB", self._restore_from_status)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._status_tray_activated)
+        self._status_tray = tray
+        return tray
+
+    @Slot()
+    def _hide_server_to_status(self) -> None:
+        if not self._serving() or not self.isMinimized():
+            return
+        tray = self._status_tray_icon()
+        if tray is None:
+            return
+        tray.show()
+        self.hide()
+
+    @Slot(QSystemTrayIcon.ActivationReason)
+    def _status_tray_activated(self, reason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._restore_from_status()
+
+    @Slot()
+    def _restore_from_status(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        tray = self._status_tray
+        if tray is not None:
+            tray.hide()
 
     def _desktop_busy_reason(self) -> str:
         if self._worker_busy or self.session.control.is_downloading:
@@ -234,6 +289,11 @@ class ServerActionsMixin:
 
     def _leave_server_view(self) -> None:
         self._server_timer.stop()
+        tray = self._status_tray
+        if tray is not None:
+            tray.hide()
+        if not self.isVisible():
+            self.showNormal()
         self._server_stack.setCurrentIndex(0)
         for action in self._desktop_only_actions():
             action.setEnabled(True)
