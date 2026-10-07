@@ -207,7 +207,7 @@ def build_router(ctx) -> APIRouter:
                             fetch_chapter(item, index)
             except Busy as exc:
                 return JSONResponse({"error": "busy", "label": exc.label,
-                                     "detail": "Busy. Wait for the current job to finish."},
+                                     "detail": "Can't load this chapter yet."},
                                     status_code=409)
             except Exception as exc:
                 return JSONResponse({"error": "fetch_failed", "detail": str(exc)[:200]},

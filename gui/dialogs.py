@@ -21,6 +21,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+def busy_message(action: str) -> str:
+    """Name the internet job the user just tried to start."""
+    return f"Can't {action} yet. Wait for the current job to finish."
+
+
 _YES_LABELS = frozenset({"yes"})
 _NO_LABELS = frozenset({"no", "not now"})
 

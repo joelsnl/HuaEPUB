@@ -45,7 +45,7 @@
     }).then(function (res) {
       if (!res.ok) {
         setText('read-title', 'Could not open this book');
-        setText('read-status', H.errorText(res.data));
+        setText('read-status', H.errorText(res.data, '', 'open this book'));
         return;
       }
       book = res.data;
@@ -81,7 +81,7 @@
       if (seq !== loadSeq) return;
       if (!res.ok) {
         if (res.status === 404 && res.data && res.data.error === 'book_closed') { open({ url: book.url || '' }); return; }
-        setText('read-status', H.errorText(res.data));
+        setText('read-status', H.errorText(res.data, '', 'load this chapter'));
         return;
       }
       book.chapters[index].ready = true;

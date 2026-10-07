@@ -195,7 +195,7 @@
     lookAbort = new AbortController();
     H.api('POST', '/api/preview', { url: url }, lookAbort.signal).then(function (res) {
       lookAbort = null;
-      if (!res.ok) { state = 'error'; localLine = H.errorText(res.data, H.ERRORS.fetch_failed); render(null); return; }
+      if (!res.ok) { state = 'error'; localLine = H.errorText(res.data, H.ERRORS.fetch_failed, 'look up this novel'); render(null); return; }
       preview = res.data;
       state = 'preview';
       fillBook();
@@ -233,7 +233,7 @@
         preview_id: preview.preview_id, chapter_from: r.from, chapter_to: r.to
       });
     }).then(function (res) {
-      if (!res.ok) { state = 'error'; localLine = H.errorText(res.data); render(null); return; }
+      if (!res.ok) { state = 'error'; localLine = H.errorText(res.data, '', 'download this book'); render(null); return; }
       myTask = res.data.task_id;
       hiddenTask = null;
       state = 'running';

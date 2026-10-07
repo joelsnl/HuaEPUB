@@ -42,10 +42,22 @@
     return H.api('GET', '/api/settings').then(function (res) { if (res.ok) fill(res.data); });
   }
 
+  var SETTING_ACTIONS = {
+    translate: 'change translation',
+    clean: 'change cleaning',
+    use_cache: 'change the chapter cache',
+    polish: 'change Polish',
+    backend: 'change the translator',
+    glossary: 'change the glossary',
+    workers: 'change how many workers run'
+  };
+
   function save(change) {
+    var key = Object.keys(change)[0];
+    var action = SETTING_ACTIONS[key] || 'change settings';
     setText('set-status', 'Saving…');
     H.api('PUT', '/api/settings', change).then(function (res) {
-      if (!res.ok) { setText('set-status', H.errorText(res.data)); if (current) fill(current); return; }
+      if (!res.ok) { setText('set-status', H.errorText(res.data, '', action)); if (current) fill(current); return; }
       fill(res.data);
       setText('set-status', 'Saved.');
     }).catch(function () { setText('set-status', H.ERRORS.network); });

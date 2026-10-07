@@ -284,6 +284,7 @@ button, input { font: inherit; color: inherit; }
   width: min(40rem, calc(100vw - 32px)); height: min(36rem, calc(100vh - 48px));
   display: flex; flex-direction: column; overflow: hidden;
 }
+dialog.detail:not([open]) { display: none; }
 .detail::backdrop { background: color-mix(in srgb, var(--ground) 25%, #000); }
 .detail-head { display: flex; gap: 18px; align-items: flex-start; flex-shrink: 0; }
 .detail-head-text { min-width: 0; display: flex; flex-direction: column; gap: 6px; }

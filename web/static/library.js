@@ -224,9 +224,9 @@
     if (d && d.open) d.close();
   }
 
-  function post(path, body, after) {
+  function post(path, body, after, action) {
     return H.api('POST', path, body).then(function (res) {
-      if (!res.ok) { setText('lib-lede', H.errorText(res.data)); return null; }
+      if (!res.ok) { setText('lib-lede', H.errorText(res.data, '', action)); return null; }
       H.refresh();
       if (after) after(res.data);
       return res.data;
@@ -258,8 +258,11 @@
     var what = pendingRemove;
     pendingRemove = null;
     show('lib-confirm', false);
-    if (what === 'reset') { post('/api/library/reset', {}, function () { selected = {}; load(); }); return; }
-    if (what) post('/api/library/remove', { urls: what }, function () { selected = {}; load(); });
+    if (what === 'reset') {
+      post('/api/library/reset', {}, function () { selected = {}; load(); }, 'reset the library');
+      return;
+    }
+    if (what) post('/api/library/remove', { urls: what }, function () { selected = {}; load(); }, 'remove these books');
   }
 
   function downloadSelected() {
@@ -270,7 +273,9 @@
       chain = chain.then(function () {
         return H.api('POST', '/api/library/epub', { url: e.url }).then(function (res) {
           if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
-          else missing += 1;
+          else if (res.data && res.data.error === 'busy') {
+            setText('lib-lede', H.errorText(res.data, '', 'download this EPUB'));
+          } else missing += 1;
         });
       });
     });
@@ -297,10 +302,12 @@
   document.querySelectorAll('input[name="lib-filter"]').forEach(function (e) {
     e.addEventListener('change', function () { filter = e.value; draw(); });
   });
-  $('lib-check').addEventListener('click', function () { post('/api/library/check', {}); });
-  $('lib-update-all').addEventListener('click', function () { post('/api/library/update-all', {}); });
+  $('lib-check').addEventListener('click', function () { post('/api/library/check', {}, null, 'check for updates'); });
+  $('lib-update-all').addEventListener('click', function () {
+    post('/api/library/update-all', {}, null, 'update every book with new chapters');
+  });
   $('lib-update').addEventListener('click', function () {
-    post('/api/library/update', { urls: selection().map(function (e) { return e.url; }) });
+    post('/api/library/update', { urls: selection().map(function (e) { return e.url; }) }, null, 'update the selected books');
   });
   $('lib-read').addEventListener('click', function () { var s = selection()[0]; if (s) H.go('read', { url: s.url }); });
   $('lib-open').addEventListener('click', function () { var s = selection()[0]; if (s) H.go('single', { url: s.url }); });
@@ -336,14 +343,16 @@
     var e = detailEntry();
     if (!e) return;
     closeDetail();
-    post('/api/library/update', { urls: [e.url] });
+    post('/api/library/update', { urls: [e.url] }, null, 'update this book');
   });
   $('lib-detail-epub').addEventListener('click', function () {
     var e = detailEntry();
     if (!e) return;
     H.api('POST', '/api/library/epub', { url: e.url }).then(function (res) {
       if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
-      else setText('lib-lede', 'No EPUB on the PC or in Google Drive.');
+      else if (res.data && res.data.error === 'busy') {
+        setText('lib-lede', H.errorText(res.data, '', 'download this EPUB'));
+      } else setText('lib-lede', 'No EPUB on the PC or in Google Drive.');
     });
   });
   $('lib-detail-select').addEventListener('click', function () {

@@ -19,7 +19,7 @@ from core.reader import (
 )
 from core.reading import get_position, set_position
 from core.settings import set_setting
-from gui.dialogs import pick_item, show_info, show_warning
+from gui.dialogs import busy_message, pick_item, show_info, show_warning
 from gui.workers.reader_worker import (
     DriveEpubDownloadWorker,
     ReaderChapterFetchWorker,
@@ -123,9 +123,7 @@ class ReaderActionsMixin:
         )
         if result.need_drive:
             if self._worker_busy or self.session.control.is_downloading:
-                show_warning(
-                    self, "Read", "Busy — wait for the current job to finish."
-                )
+                show_warning(self, "Read", busy_message("open this book"))
                 return
             if self.session.drive_sync.is_connected() and drive_file_id:
                 self._start_drive_epub_for_reader(
@@ -189,7 +187,7 @@ class ReaderActionsMixin:
             (worker.error, self._drive_epub_for_reader_error),
         ):
             self._pending_reader_entry = None
-            show_warning(self, "Read", "Busy — wait for the current job to finish.")
+            show_warning(self, "Read", busy_message("download this EPUB from Drive"))
 
     @Slot(str)
     def _drive_epub_for_reader_done(self, dest: str):
@@ -288,8 +286,8 @@ class ReaderActionsMixin:
             self.reader.set_status("This chapter is not in the EPUB.")
             return
         if self._worker_busy or self.session.control.is_downloading:
-            self.reader.set_status("Busy — wait for the current job to finish")
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.reader.set_status(busy_message("fetch this chapter"))
+            self.progress.set_status(busy_message("fetch this chapter"))
             return
         delay = self._reader_site_delay(ch.url, book.source_url)
         worker = ReaderChapterFetchWorker(
@@ -307,7 +305,7 @@ class ReaderActionsMixin:
             (worker.finished, self._reader_chapter_fetched),
             (worker.error, self._reader_chapter_fetch_error),
         ):
-            self.reader.set_status("Busy — wait for the current job to finish")
+            self.reader.set_status(busy_message("fetch this chapter"))
 
     @Slot(str)
     def _on_reader_fetch_status(self, text: str):

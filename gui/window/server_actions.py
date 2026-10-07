@@ -116,11 +116,11 @@ class ServerActionsMixin:
 
     def _desktop_busy_reason(self) -> str:
         if self._worker_busy or self.session.control.is_downloading:
-            return "A download is running. Let it finish, or pause it, first."
+            return "Can't start server mode yet. A download is running. Let it finish, or pause it, first."
         if self._is_check_running():
-            return "Library is checking for updates. Wait for it to finish first."
+            return "Can't start server mode yet. Library is checking for updates. Wait for it to finish first."
         if self._drive_sync_running():
-            return "Google Drive is syncing. Wait for it to finish first."
+            return "Can't start server mode yet. Google Drive is syncing. Wait for it to finish first."
         return ""
 
     # -- start -------------------------------------------------------------

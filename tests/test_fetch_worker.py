@@ -166,7 +166,7 @@ def test_finish_from_background_thread_clears_busy(qapp):
 
     The regression: QTimer.singleShot(0, _stop_thread) without a context QObject
     attached the timer to the worker thread, so busy never cleared and Fetch
-    stayed on "Busy — wait for the current job to finish".
+    stayed on "Can't look up this novel yet. Wait for the current job to finish."
     """
     host = _Host()
     host._worker_busy = True

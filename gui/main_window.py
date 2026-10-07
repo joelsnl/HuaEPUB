@@ -41,7 +41,7 @@ from gui import theme
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
     CloseWhileSyncingDialog, UpdateProgressDialog, ask_accept_glossary_proposals,
-    ask_yes_no, ask_yes_not_now_dont_ask, pick_recent_download, show_cache_dialog,
+    ask_yes_no, ask_yes_not_now_dont_ask, busy_message, pick_recent_download, show_cache_dialog,
     show_error, show_info, show_info_with_preview, show_rich_info, show_warning,
 )
 from gui.pages.library_page import LibraryPage
@@ -327,7 +327,7 @@ class MainWindow(
 
     def _menu_glossary_qwen(self):
         if self._worker_busy or self.session.control.is_downloading:
-            show_warning(self, "Busy", "Wait for the current job to finish.")
+            show_warning(self, "Busy", busy_message("polish glossaries with Qwen"))
             return
         from core.translation.qwen_glossary import (
             polish_gguf_on_disk,
@@ -379,7 +379,7 @@ class MainWindow(
         ):
             dlg.close()
             self._glossary_qwen_dlg = None
-            show_warning(self, "Busy", "Wait for the current job to finish.")
+            show_warning(self, "Busy", busy_message("polish glossaries with Qwen"))
             return
         dlg.show()
 
@@ -638,7 +638,7 @@ class MainWindow(
             (worker.finished, self._fetch_done),
         ):
             self.single.set_fetch_enabled(True)
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("look up this novel"))
             return
 
     @Slot(str)
@@ -675,7 +675,7 @@ class MainWindow(
 
     def _start_single_download(self):
         if self._worker_busy or self.session.control.is_downloading:
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("download this book"))
             return
         if not self.single.novel_info or not self.single.chapters:
             return
@@ -886,7 +886,7 @@ class MainWindow(
 
     def _start_multi_download(self):
         if self._worker_busy or self.session.control.is_downloading:
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("download these books"))
             return
         novels = self.multi.fetched_novels()
         if not novels:

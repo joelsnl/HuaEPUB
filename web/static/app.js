@@ -10,7 +10,7 @@
     no_parser: 'No parser handles that site.',
     fetch_failed: 'Could not reach the site.',
     no_chapters: 'No chapters found at that link.',
-    busy: 'Another job is running. Wait for it or cancel it first.',
+    busy: "Can't do that yet. Another job is still running. Wait for it or cancel it first.",
     preview_expired: 'That chapter list expired. Read the link again.',
     bad_range: 'Check the chapter range.',
     sign_in_required: 'You were signed out. Reload the page to sign in again.',
@@ -57,10 +57,14 @@
     });
   }
 
-  function errorText(data, fallback) {
+  function errorText(data, fallback, action) {
     var key = data && data.error;
     var text = ERRORS[key] || fallback || 'Something went wrong.';
-    if (key === 'busy' && data.label) text = 'Busy: ' + data.label + '. Wait for it or cancel it first.';
+    if (key === 'busy') {
+      var trying = action || 'do that';
+      var running = (data && data.label) ? (' ' + data.label + ' is still running.') : ' Another job is still running.';
+      text = "Can't " + trying + " yet." + running + ' Wait for it or cancel it first.';
+    }
     if ((key === 'fetch_failed' || key === 'drive_failed' || key === 'cannot_resume' ||
          key === 'bad_setting' || key === 'nothing_to_read') && data.detail) text += ' ' + data.detail;
     return text;
@@ -243,7 +247,7 @@
     });
     $('btn-resume').addEventListener('click', function () {
       api('POST', '/api/resume').then(function (res) {
-        if (!res.ok) { setText('resume-title', errorText(res.data)); return; }
+        if (!res.ok) { setText('resume-title', errorText(res.data, '', 'resume this download')); return; }
         refresh();
       });
     });

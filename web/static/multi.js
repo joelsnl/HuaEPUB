@@ -69,7 +69,7 @@
     if (!urls.length) { setText('multi-note', H.ERRORS.no_links); return; }
     try { localStorage.setItem('huaepub-multi', text); } catch (e) { /* ignore */ }
     H.api('POST', '/api/multi/lookup', { urls: urls }).then(function (res) {
-      if (!res.ok) { setText('multi-note', H.errorText(res.data)); return; }
+      if (!res.ok) { setText('multi-note', H.errorText(res.data, '', 'look up these links')); return; }
       lookupTask = res.data.task_id;
       rows = [];
       H.refresh();
@@ -80,7 +80,7 @@
     var ids = readyIds();
     if (!ids.length) return;
     H.api('POST', '/api/multi/build', { preview_ids: ids }).then(function (res) {
-      if (!res.ok) { setText('multi-note', H.errorText(res.data)); return; }
+      if (!res.ok) { setText('multi-note', H.errorText(res.data, '', 'download these books')); return; }
       H.refresh();
     }).catch(function () { setText('multi-note', H.ERRORS.network); });
   }

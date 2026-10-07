@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QInputDialog
 
 from core.drive_sync import oauth_setup_instructions
 from core.utils import format_count, plural
-from gui.dialogs import CloseWhileSyncingDialog, show_error, show_info, show_warning
+from gui.dialogs import CloseWhileSyncingDialog, busy_message, show_error, show_info, show_warning
 from gui.window.worker_host import _is_gui_thread
 from gui.workers.drive_workers import (
     DRIVE_SYNC_CANCELLED, DriveConnectWorker, DriveSyncWorker,
@@ -24,7 +24,7 @@ class DriveActionsMixin:
         self.progress.set_status("Connecting to Google Drive…")
         worker = DriveConnectWorker(self.session.drive_sync)
         if not self._bind_and_run(worker, (worker.finished, self._drive_connect_done)):
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("connect to Google Drive"))
             return
 
     @Slot(bool, str, str)

@@ -13,7 +13,7 @@ from core.utils import format_count, format_ratio, plural
 from core.download_runner import completion_dialog_title, downloads_folder, epub_path
 from core.notify import notify
 from core.settings import get_default_books_dir
-from gui.dialogs import ask_yes_no, show_info, show_warning
+from gui.dialogs import ask_yes_no, busy_message, show_info, show_warning
 from gui.window.worker_host import _is_gui_thread
 from gui.workers.download_worker import (
     LibraryCheckWorker,
@@ -29,7 +29,7 @@ class LibraryActionsMixin:
             show_info(self, "Library", "No tracked novels yet.")
             return
         if self.session.control.is_downloading:
-            self.progress.set_status("Busy — wait for the current download to finish")
+            self.progress.set_status(busy_message("check for updates"))
             return
         if self._is_check_running():
             self.progress.set_status("Already checking library…")
@@ -49,7 +49,7 @@ class LibraryActionsMixin:
             (worker.finished, self._library_check_done),
         ):
             self.library.set_check_busy(False)
-            self.progress.set_status("Busy — wait for the current download to finish")
+            self.progress.set_status(busy_message("check for updates"))
             return
 
     @Slot(str, object)
@@ -107,7 +107,7 @@ class LibraryActionsMixin:
         if entry is None:
             return
         if self.session.control.is_downloading or self._worker_busy or self._is_check_running():
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("update this book"))
             return
         self._persist_settings()
         self._set_downloading(True)
@@ -155,7 +155,7 @@ class LibraryActionsMixin:
 
     def _start_library_update_all(self):
         if self._worker_busy or self.session.control.is_downloading or self._is_check_running():
-            self.progress.set_status("Busy — wait for the current job to finish")
+            self.progress.set_status(busy_message("update every book with new chapters"))
             return
         entries = [
             e for e in self.session.library_store.get_library()
@@ -172,7 +172,11 @@ class LibraryActionsMixin:
 
     def _queue_library_update_batch(self, entries, *, title: str, confirm: str):
         if self._worker_busy or self.session.control.is_downloading or self._is_check_running():
-            self.progress.set_status("Busy — wait for the current job to finish")
+            action = (
+                "update the selected books" if title == "Update"
+                else "update every book with new chapters"
+            )
+            self.progress.set_status(busy_message(action))
             return
         if not entries:
             show_info(self, title, "No novels to update.")
