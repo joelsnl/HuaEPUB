@@ -8,6 +8,7 @@ Local-only database (cache.db in ~/.huaepub/) — never synced to Drive:
 - translations: translated / polished text segments, keyed by (backend, source).
 - covers: cover image bytes, keyed by cover URL (or book source_url fallback).
 - chapter_lists: TOC snapshots for faster library update checks.
+- chapter_titles_en: English chapter titles from a translated build, keyed by chapter URL.
 
 Size cap: settings cache_max_mb (default 2048; 0 = unlimited). Nothing is
 timer-cleared. When over the cap, oldest stored chapter HTML is deleted
@@ -100,6 +101,12 @@ class NovelCache:
                     source_url TEXT PRIMARY KEY,
                     payload    TEXT,
                     fetched_at REAL
+                )
+            """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS chapter_titles_en (
+                    source_url TEXT PRIMARY KEY,
+                    payload    TEXT
                 )
             """)
             self._conn.execute(
@@ -252,11 +259,12 @@ class NovelCache:
             pass
 
     def purge_book(self, source_url: str, cover_url: str = ""):
-        """Drop chapter HTML, TOC snapshot, and cover bytes for one novel."""
+        """Drop chapter HTML, TOC snapshot, English titles, and cover bytes for one novel."""
         url = (source_url or "").strip()
         if url:
             self.clear_book(url)
             self.delete_chapter_list(url)
+            self.delete_english_chapter_titles(url)
             self.delete_cover(source_url=url)
         if cover_url:
             self.delete_cover(cover_url=cover_url)
@@ -611,6 +619,74 @@ class NovelCache:
         except Exception:
             pass
 
+    def get_english_chapter_titles(self, source_url: str) -> Optional[List[Dict[str, str]]]:
+        """English titles saved after a translated build, or None if we have not saved any.
+
+        Each row is ``{url, title}``. An empty title means that chapter stayed Chinese.
+        """
+        if not self._conn or not source_url:
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT payload FROM chapter_titles_en WHERE source_url = ?",
+                    (source_url.strip(),),
+                ).fetchone()
+            if not row:
+                return None
+            data = json.loads(row[0] or "[]")
+            if not isinstance(data, list):
+                return None
+            out: List[Dict[str, str]] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                url = (item.get("url") or "").strip()
+                if not url:
+                    continue
+                out.append({"url": url, "title": item.get("title") or ""})
+            return out
+        except Exception:
+            return None
+
+    def put_english_chapter_titles(self, source_url: str, rows: List[Any]):
+        """Replace the English title list for one book. Does not touch the site TOC."""
+        if not self._conn or not source_url:
+            return
+        try:
+            payload = []
+            for item in rows or []:
+                if isinstance(item, dict):
+                    url = (item.get("url") or "").strip()
+                    title = item.get("title") or ""
+                else:
+                    url = (getattr(item, "url", None) or "").strip()
+                    title = getattr(item, "title", "") or ""
+                if url:
+                    payload.append({"url": url, "title": title})
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO chapter_titles_en (source_url, payload) "
+                    "VALUES (?, ?)",
+                    (source_url.strip(), json.dumps(payload, ensure_ascii=False)),
+                )
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def delete_english_chapter_titles(self, source_url: str):
+        if not self._conn or not source_url:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "DELETE FROM chapter_titles_en WHERE source_url = ?",
+                    (source_url.strip(),),
+                )
+                self._conn.commit()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Size cap / LRU eviction
     # ------------------------------------------------------------------
@@ -742,7 +818,9 @@ class NovelCache:
             return
         try:
             with self._lock:
-                for table in ("chapters", "covers", "chapter_lists", "translations"):
+                for table in (
+                    "chapters", "covers", "chapter_lists", "chapter_titles_en", "translations",
+                ):
                     self._conn.execute(f"DELETE FROM {table}")
                 self._conn.commit()
                 self._pending = 0
@@ -762,3 +840,49 @@ class NovelCache:
             except Exception:
                 pass
             self._conn = None
+
+
+_LATIN = re.compile(r"[A-Za-z]")
+_PLACEHOLDER_CHAPTER = re.compile(r"^Chapter \d+$")
+
+
+def english_chapter_title(text: str) -> str:
+    """A chapter title worth showing in English, or "" when it is still Chinese.
+
+    ``Chapter 12`` with nothing after it is the placeholder used when an EPUB
+    item has no title, so it is not stored over the real Chinese name.
+    """
+    from core.cleaner import is_chinese
+
+    collapsed = " ".join((text or "").split())
+    if (
+        not collapsed
+        or is_chinese(collapsed)
+        or not _LATIN.search(collapsed)
+        or _PLACEHOLDER_CHAPTER.fullmatch(collapsed)
+    ):
+        return ""
+    return collapsed
+
+
+def remember_english_chapter_titles(cache, source_url: str, chapters) -> None:
+    """Save English chapter titles for one book. The site TOC is left unchanged."""
+    put = getattr(cache, "put_english_chapter_titles", None)
+    if not callable(put) or not (source_url or "").strip():
+        return
+    rows = []
+    for ch in chapters or []:
+        if isinstance(ch, dict):
+            url = (ch.get("url") or "").strip()
+            title = ch.get("title") or ""
+        else:
+            url = (getattr(ch, "url", None) or "").strip()
+            title = getattr(ch, "title", "") or ""
+        if url:
+            rows.append({"url": url, "title": english_chapter_title(title)})
+    if not rows:
+        return
+    try:
+        put(source_url, rows)
+    except Exception:
+        pass

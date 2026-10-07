@@ -403,6 +403,20 @@ p {
 ''' + overlay_css()
 
 
+# Title and author strings longer than this are a repeated-phrase translation,
+# not a title. Leave the source text in place.
+_META_TRANSLATION_MAX = {"title": 240, "author": 160}
+
+
+def accept_metadata_translation(kind: str, translated: str) -> str:
+    """Return a title/author translation safe to store, or "" to keep the source."""
+    text = " ".join((translated or "").split())
+    limit = _META_TRANSLATION_MAX.get(kind)
+    if not text or limit is None or len(text) > limit:
+        return ""
+    return text
+
+
 class TranslatedEPUBBuilder(EPUBBuilder):
     """
     EPUB Builder with translation support.
@@ -465,12 +479,20 @@ class TranslatedEPUBBuilder(EPUBBuilder):
                 content_pairs.setdefault(idx, []).append((original, translated_text))
                 continue
             if translated_text and translated_text != original:
-                if text_type == "title":
-                    print(f"Translated title: {novel_info.title} -> {translated_text}")
-                    novel_info.title = translated_text
-                elif text_type == "author":
-                    print(f"Translated author: {novel_info.author} -> {translated_text}")
-                    novel_info.author = translated_text
+                if text_type in ("title", "author"):
+                    cleaned = accept_metadata_translation(text_type, translated_text)
+                    if not cleaned:
+                        print(
+                            f"Skipped {text_type} translation "
+                            f"({len(translated_text)} chars) — keeping the source"
+                        )
+                        continue
+                    if text_type == "title":
+                        print(f"Translated title: {novel_info.title} -> {cleaned}")
+                        novel_info.title = cleaned
+                    else:
+                        print(f"Translated author: {novel_info.author} -> {cleaned}")
+                        novel_info.author = cleaned
                 elif text_type == "description":
                     novel_info.description = translated_text
                 elif text_type == "chapter_title":

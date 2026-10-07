@@ -50,6 +50,28 @@ class TestTranslationApplication:
         builder = TranslatedEPUBBuilder(translator=object(), polish=True)
         assert builder.polish is True
 
+    def test_runaway_title_translation_keeps_the_source(self):
+        builder = TranslatedEPUBBuilder.__new__(TranslatedEPUBBuilder)
+        info = NovelInfo(title="低调王子", author="天外", description="简介")
+        blob = "A cigarette smokes a smoke " * 40
+        builder.apply_translations(
+            info,
+            [],
+            [("title", 0, info.title), ("author", 0, info.author), ("description", 0, info.description)],
+            [blob, "Sky Outside", "A normal description. " * 20],
+        )
+        assert info.title == "低调王子"
+        assert info.author == "Sky Outside"
+        assert info.description.startswith("A normal description.")
+
+    def test_short_title_translation_is_stored(self):
+        builder = TranslatedEPUBBuilder.__new__(TranslatedEPUBBuilder)
+        info = NovelInfo(title="低调王子", author="天外")
+        builder.apply_translations(
+            info, [], [("title", 0, info.title)], ["The Low-Key Prince"],
+        )
+        assert info.title == "The Low-Key Prince"
+
 
 class TestVolumeToc:
     def make_builder(self):

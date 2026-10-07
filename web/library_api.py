@@ -9,15 +9,21 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from core.cache import english_chapter_title
+from core.cleaner import is_chinese
 from core.download_runner import downloads_folder, epub_path
 from core.parser import create_http_session
-from core.reader import find_local_epub
+from core.reader import find_local_epub, load_epub_chapters
 from core.security import fetch_cover_bytes
 from web import books
 from web.context import ServerContext
 from web.tasks import Busy
 
 MAX_SELECTION = 500
+# The card's second line is the Chinese title. Longer than this, it is a
+# blurb (or a runaway translation) and would stretch the shelf.
+_ORIGINAL_TITLE_MAX = 120
+_DESCRIPTION_MAX = 800
 
 
 class UrlsIn(BaseModel):
@@ -54,6 +60,31 @@ def sniff_image(data: bytes) -> str:
     return "image/jpeg"
 
 
+def card_original_title(title: str, translated: str) -> str:
+    """Source title for the library card, or "" when it should not be shown.
+
+    ``title`` is sometimes a second English rendering of ``translated``
+    (the pipeline translation diverged, often into a repeated paragraph).
+    That string is not the Chinese title, and drawing it opens the card
+    to the height of the whole paragraph.
+    """
+    raw = " ".join((title or "").split())
+    shown = " ".join((translated or "").split())
+    if not raw or not shown or raw == shown or not is_chinese(raw):
+        return ""
+    if len(raw) > _ORIGINAL_TITLE_MAX:
+        return raw[:_ORIGINAL_TITLE_MAX].rstrip()
+    return raw
+
+
+def card_description(text: str) -> str:
+    """Synopsis for the detail view. Capped so a runaway paragraph stays in the dialog."""
+    raw = " ".join((text or "").split())
+    if len(raw) > _DESCRIPTION_MAX:
+        return raw[:_DESCRIPTION_MAX].rstrip()
+    return raw
+
+
 def _entry_payload(ctx: ServerContext, e) -> dict:
     st = ctx.check_status.get(e.source_url) or {}
     local = find_local_epub(
@@ -64,7 +95,8 @@ def _entry_payload(ctx: ServerContext, e) -> dict:
     return {
         "url": e.source_url,
         "title": e.translated_title or e.title or e.source_url,
-        "title_original": e.title if (e.translated_title and e.title != e.translated_title) else "",
+        "title_original": card_original_title(e.title, e.translated_title or ""),
+        "description": card_description(getattr(e, "description", "") or ""),
         "author": e.author or "",
         "chapters": int(e.chapter_count or 0),
         "last_chapter": e.last_chapter_title or "",
@@ -76,6 +108,94 @@ def _entry_payload(ctx: ServerContext, e) -> dict:
         "new_count": int(st.get("new_count") or 0),
         "status_error": st.get("error") or "",
     }
+
+
+def _toc_rows(session, source_url: str) -> List[dict]:
+    try:
+        return list(session.cache.get_chapter_list(source_url) or [])
+    except Exception:
+        return []
+
+
+def _stored_english(session, source_url: str):
+    getter = getattr(session.cache, "get_english_chapter_titles", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(source_url)
+    except Exception:
+        return None
+
+
+def _epub_titles(session, entry) -> List[str]:
+    local = find_local_epub(
+        output_path=entry.output_path or "",
+        epub_filename=entry.epub_filename or "",
+        output_dir=session.output_dir or "",
+    )
+    if local is None:
+        return []
+    try:
+        return [ch.title for ch in load_epub_chapters(local, bodies=False)]
+    except Exception:
+        return []
+
+
+def _backfill_english_from_epub(session, entry, toc: List[dict]):
+    """Read a local translated EPUB once and keep its English titles by chapter URL."""
+    if not toc:
+        return None
+    local = find_local_epub(
+        output_path=entry.output_path or "",
+        epub_filename=entry.epub_filename or "",
+        output_dir=session.output_dir or "",
+    )
+    if local is None:
+        return None
+    try:
+        chapters = load_epub_chapters(local, bodies=False)
+    except Exception:
+        return None
+    if len(chapters) != len(toc):
+        return None
+    rows = []
+    for item, chapter in zip(toc, chapters):
+        url = (item.get("url") or "").strip()
+        if not url:
+            return None
+        rows.append({"url": url, "title": english_chapter_title(chapter.title)})
+    put = getattr(session.cache, "put_english_chapter_titles", None)
+    if callable(put):
+        try:
+            put(entry.source_url, rows)
+        except Exception:
+            pass
+    return rows
+
+
+def chapter_rows(session, entry) -> List[dict]:
+    """Titles for the detail list. English names when a translated build stored them."""
+    toc = _toc_rows(session, entry.source_url)
+    stored = _stored_english(session, entry.source_url)
+    if stored is None and toc:
+        stored = _backfill_english_from_epub(session, entry, toc)
+    by_url = {}
+    if stored:
+        for row in stored:
+            title = (row.get("title") or "").strip()
+            url = (row.get("url") or "").strip()
+            if url and title:
+                by_url[url] = title
+    if toc:
+        titles = [
+            by_url.get((item.get("url") or "").strip()) or (item.get("title") or "").strip()
+            for item in toc
+        ]
+    elif stored and any((row.get("title") or "").strip() for row in stored):
+        titles = [(row.get("title") or "").strip() for row in stored]
+    else:
+        titles = _epub_titles(session, entry)
+    return [{"n": i + 1, "title": title or f"Chapter {i + 1}"} for i, title in enumerate(titles)]
 
 
 def _entries_for(ctx: ServerContext, urls: List[str]):
@@ -100,6 +220,13 @@ def build_router(ctx: ServerContext) -> APIRouter:
             "checking": bool(check and check.kind == "check"),
             "drive_connected": _drive_connected(ctx),
         }
+
+    @r.get("/chapters")
+    def chapters(u: str = Query(..., max_length=2048)):
+        entry = session.library_store.get_library_entry(u)
+        if entry is None:
+            return JSONResponse({"error": "unknown_book"}, status_code=404)
+        return {"chapters": chapter_rows(session, entry)}
 
     @r.get("/cover")
     def cover(u: str = Query(..., max_length=2048)):
@@ -269,4 +396,7 @@ def _sync_drive_quietly(ctx: ServerContext) -> None:
         pass
 
 
-__all__ = ["build_router", "fetch_and_cache_cover", "sniff_image"]
+__all__ = [
+    "build_router", "card_description", "card_original_title", "chapter_rows",
+    "fetch_and_cache_cover", "sniff_image",
+]

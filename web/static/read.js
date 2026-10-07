@@ -38,7 +38,11 @@
     setText('read-kind', '');
     setText('read-status', '');
     $('read-text').textContent = '';
-    H.api('POST', '/api/read/open', arg).then(function (res) {
+    var jump = arg && typeof arg.index === 'number' ? arg.index : null;
+    H.api('POST', '/api/read/open', {
+      url: (arg && arg.url) || '',
+      preview_id: (arg && arg.preview_id) || ''
+    }).then(function (res) {
       if (!res.ok) {
         setText('read-title', 'Could not open this book');
         setText('read-status', H.errorText(res.data));
@@ -55,7 +59,7 @@
         o.textContent = (c.index + 1) + '. ' + c.title;
         toc.appendChild(o);
       });
-      load(book.index || 0, book.scroll || 0);
+      load(jump !== null ? jump : (book.index || 0), jump !== null ? 0 : (book.scroll || 0));
     }).catch(function () { setText('read-status', H.ERRORS.network); });
   }
 

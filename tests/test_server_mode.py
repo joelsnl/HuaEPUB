@@ -606,6 +606,123 @@ def test_library_update_epub_and_remove(session, monkeypatch):
     assert not epub.exists()
 
 
+def test_library_card_omits_runaway_english_subtitle(session):
+    """A repeated English rendering must not be sent as the Chinese title."""
+    runaway = "https://example.com/book/runaway"
+    normal = "https://example.com/book/normal"
+    session.library_store.upsert_library(
+        runaway,
+        title=("A cigarette smokes a smoke " * 80).strip(),
+        translated_title="The Low-Key Prince: Summoning Black and White Impermanence at the Start",
+        author="space the space the sky",
+        chapter_count=431,
+        description=("A cigarette smokes a smoke " * 80),
+    )
+    long_zh = "低调" * 80
+    session.library_store.upsert_library(
+        normal,
+        title=long_zh,
+        translated_title="The Low-Key Prince",
+        author="Otaku Landlord",
+        chapter_count=12,
+    )
+    entries = {
+        e["url"]: e
+        for e in _signed_in(_ctx(session)).get("/api/library").json()["entries"]
+    }
+    assert entries[runaway]["title"].startswith("The Low-Key Prince")
+    assert entries[runaway]["title_original"] == ""
+    assert entries[runaway]["author"] == "space the space the sky"
+    assert entries[runaway]["chapters"] == 431
+    assert entries[runaway]["description"]
+    assert len(entries[runaway]["description"]) <= 800
+    assert entries[normal]["description"] == ""
+    original = entries[normal]["title_original"]
+    assert original.startswith("低调")
+    assert len(original) <= 120
+    assert entries[normal]["title"] == "The Low-Key Prince"
+
+
+def test_library_chapter_list_returns_every_title(session):
+    url = "https://example.com/book/toc"
+    session.library_store.upsert_library(url, title="书架", translated_title="Shelf", chapter_count=40)
+    session.cache.put_chapter_list(url, [
+        Chapter(title=f"第{i}章", url=f"{url}/{i}") for i in range(1, 41)
+    ])
+    c = _signed_in(_ctx(session))
+    got = c.get("/api/library/chapters", params={"u": url})
+    assert got.status_code == 200
+    rows = got.json()["chapters"]
+    assert len(rows) == 40
+    assert rows[0] == {"n": 1, "title": "第1章"}
+    assert rows[-1]["n"] == 40
+    missing = c.get("/api/library/chapters", params={"u": "https://example.com/missing"})
+    assert missing.status_code == 404
+
+
+def test_library_chapter_list_prefers_stored_english_titles(session):
+    url = "https://example.com/book/en-titles"
+    session.library_store.upsert_library(url, title="书", translated_title="Book", chapter_count=2)
+    session.cache.put_chapter_list(url, [
+        Chapter(title="第1章 天赋剥离", url=f"{url}/1"),
+        Chapter(title="第2章 大战", url=f"{url}/2"),
+    ])
+    session.cache.put_english_chapter_titles(url, [
+        {"url": f"{url}/1", "title": "Chapter 1 Talent Stripped"},
+        {"url": f"{url}/2", "title": ""},
+    ])
+    c = _signed_in(_ctx(session))
+    rows = c.get("/api/library/chapters", params={"u": url}).json()["chapters"]
+    assert rows[0]["title"] == "Chapter 1 Talent Stripped"
+    assert rows[1]["title"] == "第2章 大战"
+    session.cache.put_chapter_list(url, [
+        Chapter(title="第1章 天赋剥离", url=f"{url}/1"),
+        Chapter(title="第2章 大战", url=f"{url}/2"),
+        Chapter(title="第3章 新", url=f"{url}/3"),
+    ])
+    rows = c.get("/api/library/chapters", params={"u": url}).json()["chapters"]
+    assert [row["title"] for row in rows] == [
+        "Chapter 1 Talent Stripped",
+        "第2章 大战",
+        "第3章 新",
+    ]
+
+
+def test_library_chapter_list_reads_english_from_local_epub_once(session, monkeypatch):
+    from types import SimpleNamespace
+
+    url = "https://example.com/book/epub-en"
+    session.library_store.upsert_library(
+        url, title="书", translated_title="Book", chapter_count=2, output_path="C:/books/book.epub",
+    )
+    session.cache.put_chapter_list(url, [
+        Chapter(title="第1章", url=f"{url}/1"),
+        Chapter(title="第2章", url=f"{url}/2"),
+    ])
+    calls = {"n": 0}
+
+    def fake_load(_path, bodies=True):
+        calls["n"] += 1
+        return [
+            SimpleNamespace(title="Chapter 1 Talent Stripped! System activated!"),
+            SimpleNamespace(title="第2章 大战"),
+        ]
+
+    monkeypatch.setattr("web.library_api.find_local_epub", lambda **_k: Path("book.epub"))
+    monkeypatch.setattr("web.library_api.load_epub_chapters", fake_load)
+    c = _signed_in(_ctx(session))
+    rows = c.get("/api/library/chapters", params={"u": url}).json()["chapters"]
+    assert rows[0]["title"] == "Chapter 1 Talent Stripped! System activated!"
+    assert rows[1]["title"] == "第2章"
+    assert calls["n"] == 1
+    again = c.get("/api/library/chapters", params={"u": url}).json()["chapters"]
+    assert again[0]["title"] == rows[0]["title"]
+    assert calls["n"] == 1
+    stored = session.cache.get_english_chapter_titles(url)
+    assert stored[0]["title"].startswith("Chapter 1 Talent")
+    assert stored[1]["title"] == ""
+
+
 def _recording_manager(session):
     from web.context import book_roots
     from web.tasks import TaskManager

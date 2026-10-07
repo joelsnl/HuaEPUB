@@ -167,7 +167,7 @@ def _title_from_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def load_epub_chapters(path: Path) -> List[ReaderChapter]:
+def load_epub_chapters(path: Path, *, bodies: bool = True) -> List[ReaderChapter]:
     from ebooklib import ITEM_DOCUMENT, epub
 
     book = epub.read_epub(str(path))
@@ -214,14 +214,19 @@ def load_epub_chapters(path: Path) -> List[ReaderChapter]:
                 continue
         except Exception:
             pass
-        raw = item.get_content() if hasattr(item, "get_content") else b""
-        if isinstance(raw, bytes):
-            html = raw.decode("utf-8", errors="replace")
-        else:
-            html = str(raw or "")
         title = (getattr(item, "title", None) or "").strip()
-        if not title:
-            title = _title_from_html(html) or f"Chapter {len(chapters) + 1}"
+        if not bodies:
+            html = ""
+            if not title:
+                title = f"Chapter {len(chapters) + 1}"
+        else:
+            raw = item.get_content() if hasattr(item, "get_content") else b""
+            if isinstance(raw, bytes):
+                html = raw.decode("utf-8", errors="replace")
+            else:
+                html = str(raw or "")
+            if not title:
+                title = _title_from_html(html) or f"Chapter {len(chapters) + 1}"
         key = name or str(getattr(item, "id", "") or len(chapters))
         chapters.append(
             ReaderChapter(title=title, key=key, index=len(chapters), html=html)

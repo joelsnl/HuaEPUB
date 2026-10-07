@@ -9,6 +9,9 @@
   var lastKey = '';
   var loading = false;
   var pendingRemove = null;
+  var detailUrl = '';
+  var tocUrl = '';
+  var tocSeq = 0;
 
   function load() {
     if (loading) return;
@@ -47,35 +50,36 @@
       var li = H.el('li', 'tile' + (selected[e.url] ? ' is-sel' : ''));
       var btn = H.el('button', 'tile-btn');
       btn.type = 'button';
-      btn.setAttribute('aria-pressed', selected[e.url] ? 'true' : 'false');
+      btn.setAttribute('aria-haspopup', 'dialog');
+      btn.setAttribute('aria-label', 'Details for ' + (e.title || 'book'));
       var cover = H.el('span', 'tile-cover');
-      if (e.has_cover) {
-        var img = document.createElement('img');
-        img.alt = '';
-        img.loading = 'lazy';
-        img.src = '/api/library/cover?u=' + encodeURIComponent(e.url);
-        img.onerror = function () { img.remove(); };
-        cover.appendChild(img);
-      }
       cover.appendChild(H.el('span', 'tile-glyph', (e.title || '?').trim().charAt(0)));
+      if (e.has_cover) cover.appendChild(coverImage(e));
+      var b = badge(e);
+      if (b) cover.appendChild(H.el('span', 'tile-badge ' + b.cls, b.text));
       btn.appendChild(cover);
       var text = H.el('span', 'tile-text');
       text.appendChild(H.el('span', 'tile-title', e.title));
-      if (e.title_original) text.appendChild(H.el('span', 'muted small', e.title_original));
-      var meta = [e.author, H.plural(e.chapters, 'chapter')].filter(Boolean).join(' · ');
-      text.appendChild(H.el('span', 'muted small', meta));
-      var b = badge(e);
-      if (b) text.appendChild(H.el('span', 'tile-badge ' + b.cls, b.text));
-      if (!e.has_epub) text.appendChild(H.el('span', 'muted small', e.on_drive ? 'EPUB on Drive' : 'No EPUB on the PC'));
+      text.appendChild(H.el('span', 'tile-sub muted small', metaLine(e)));
       btn.appendChild(text);
-      btn.addEventListener('click', function () {
-        if (selected[e.url]) delete selected[e.url]; else selected[e.url] = true;
-        draw();
+      btn.addEventListener('click', function () { openDetail(e); });
+      var pick = H.el('button', 'tile-pick');
+      pick.type = 'button';
+      pick.setAttribute('aria-pressed', selected[e.url] ? 'true' : 'false');
+      pick.setAttribute('aria-label', (selected[e.url] ? 'Deselect ' : 'Select ') + (e.title || 'book'));
+      pick.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        toggleSelected(e.url);
       });
-      btn.addEventListener('dblclick', function () { H.go('read', { url: e.url }); });
       li.appendChild(btn);
+      li.appendChild(pick);
       shelf.appendChild(li);
     });
+    if (detailUrl) {
+      var open = entries.filter(function (e) { return e.url === detailUrl; })[0];
+      if (open) fillDetail(open);
+      else closeDetail();
+    }
     var sel = selection();
     var n = sel.length;
     setText('lib-count', n + ' selected');
@@ -94,6 +98,130 @@
     setText('lib-lede', entries.length
       ? H.plural(entries.length, 'book') + (withUpdates ? ' · ' + withUpdates + ' with new chapters' : '')
       : 'Books you have downloaded on this PC.');
+  }
+
+  function metaLine(e) {
+    return [e.author, H.plural(e.chapters, 'chapter')].filter(Boolean).join(' · ');
+  }
+
+  function coverImage(e) {
+    var img = document.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = '/api/library/cover?u=' + encodeURIComponent(e.url);
+    img.onerror = function () { img.remove(); };
+    return img;
+  }
+
+  function toggleSelected(url) {
+    if (selected[url]) delete selected[url]; else selected[url] = true;
+    draw();
+  }
+
+  function detailEntry() {
+    return entries.filter(function (e) { return e.url === detailUrl; })[0] || null;
+  }
+
+  function savedOn(ts) {
+    var n = Number(ts);
+    if (!n) return '';
+    try {
+      return new Date(n * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function fileLine(e) {
+    if (e.has_epub && e.on_drive) return 'On this PC, and on Google Drive';
+    if (e.has_epub) return 'On this PC';
+    if (e.on_drive) return 'On Google Drive';
+    return 'Not on this PC';
+  }
+
+  function statusLine(e) {
+    var b = badge(e);
+    if (b && e.status === 'error' && e.status_error) return b.text + ' — ' + e.status_error;
+    if (b) return b.text;
+    return 'Not checked yet';
+  }
+
+  function fillDetail(e) {
+    setText('lib-detail-title', e.title || 'Book');
+    setText('lib-detail-original', e.title_original || '');
+    show('lib-detail-original', !!e.title_original);
+    setText('lib-detail-by', e.author || '');
+    show('lib-detail-by', !!e.author);
+    setText('lib-detail-chapters', H.plural(e.chapters, 'chapter'));
+    setText('lib-detail-latest', e.last_chapter || '');
+    show('lib-detail-latest-row', !!e.last_chapter);
+    var saved = savedOn(e.updated_at);
+    setText('lib-detail-saved', saved);
+    show('lib-detail-saved-row', !!saved);
+    setText('lib-detail-file', fileLine(e));
+    setText('lib-detail-status', statusLine(e));
+    setText('lib-detail-blurb', e.description || '');
+    show('lib-detail-blurb', !!e.description);
+    var cover = $('lib-detail-cover');
+    cover.textContent = '';
+    cover.appendChild(H.el('span', 'detail-glyph', (e.title || '?').trim().charAt(0)));
+    if (e.has_cover) cover.appendChild(coverImage(e));
+    var busy = H.state().busy;
+    $('lib-detail-update').disabled = !!busy;
+    $('lib-detail-remove').disabled = !!busy;
+    setText('lib-detail-select', selected[e.url] ? 'Selected' : 'Select');
+    loadToc(e);
+  }
+
+  function loadToc(e) {
+    if (tocUrl === e.url) return;
+    tocUrl = e.url;
+    var seq = ++tocSeq;
+    var list = $('lib-detail-toc');
+    list.textContent = '';
+    list.appendChild(H.el('li', 'muted small', 'Loading chapters…'));
+    H.api('GET', '/api/library/chapters?u=' + encodeURIComponent(e.url)).then(function (res) {
+      if (seq !== tocSeq || detailUrl !== e.url) return;
+      list.textContent = '';
+      var rows = (res.ok && res.data && res.data.chapters) || [];
+      if (!rows.length) {
+        list.appendChild(H.el('li', 'muted small', res.ok ? 'No chapter list on this PC yet.' : H.errorText(res.data)));
+        return;
+      }
+      rows.forEach(function (ch, i) {
+        var li = document.createElement('li');
+        var b = H.el('button', 'toc-row');
+        b.type = 'button';
+        b.appendChild(H.el('span', 'mono toc-n', String(ch.n || i + 1)));
+        b.appendChild(H.el('span', 'toc-name', ch.title || ('Chapter ' + (i + 1))));
+        b.addEventListener('click', function () {
+          var url = e.url;
+          closeDetail();
+          H.go('read', { url: url, index: i });
+        });
+        li.appendChild(b);
+        list.appendChild(li);
+      });
+    }).catch(function () {
+      if (seq !== tocSeq) return;
+      list.textContent = '';
+      list.appendChild(H.el('li', 'muted small', H.ERRORS.network));
+    });
+  }
+
+  function openDetail(e) {
+    detailUrl = e.url;
+    fillDetail(e);
+    var d = $('lib-detail');
+    if (!d.open) d.showModal();
+  }
+
+  function closeDetail() {
+    detailUrl = '';
+    tocUrl = '';
+    tocSeq += 1;
+    var d = $('lib-detail');
+    if (d && d.open) d.close();
   }
 
   function post(path, body, after) {
@@ -152,6 +280,10 @@
   }
 
   function onState(s) {
+    if (H.view() !== 'library') {
+      closeDetail();
+      return;
+    }
     var t = s.task;
     var key = t ? t.id + ':' + t.state + ':' + (t.kind === 'check' ? t.rev : '') : 'none';
     if (key !== lastKey) {
@@ -181,6 +313,50 @@
   $('lib-none').addEventListener('click', function () { selected = {}; draw(); });
   $('lib-invert').addEventListener('click', function () {
     visible().forEach(function (e) { if (selected[e.url]) delete selected[e.url]; else selected[e.url] = true; });
+    draw();
+  });
+  $('lib-detail-close').addEventListener('click', closeDetail);
+  $('lib-detail').addEventListener('click', function (ev) {
+    if (ev.target === $('lib-detail')) closeDetail();
+  });
+  $('lib-detail').addEventListener('close', function () { detailUrl = ''; });
+  $('lib-detail-read').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    closeDetail();
+    H.go('read', { url: e.url });
+  });
+  $('lib-detail-open').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    closeDetail();
+    H.go('single', { url: e.url });
+  });
+  $('lib-detail-update').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    closeDetail();
+    post('/api/library/update', { urls: [e.url] });
+  });
+  $('lib-detail-epub').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    H.api('POST', '/api/library/epub', { url: e.url }).then(function (res) {
+      if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
+      else setText('lib-lede', 'No EPUB on the PC or in Google Drive.');
+    });
+  });
+  $('lib-detail-select').addEventListener('click', function () {
+    var e = detailEntry();
+    if (e) toggleSelected(e.url);
+  });
+  $('lib-detail-remove').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    selected = {};
+    selected[e.url] = true;
+    closeDetail();
+    askRemove();
     draw();
   });
 

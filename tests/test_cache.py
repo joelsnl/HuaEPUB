@@ -160,6 +160,27 @@ class TestChapterListCache:
         assert cache.get_chapter_list("https://book/1") is not None
         assert cache.get_chapter_list("https://book/1", max_age=10) is None
 
+    def test_english_titles_survive_toc_refresh_and_purge(self, cache):
+        from core.cache import english_chapter_title, remember_english_chapter_titles
+        from core.parser import Chapter
+
+        assert english_chapter_title("Chapter 1 Talent Stripped") == "Chapter 1 Talent Stripped"
+        assert english_chapter_title("第1章 天赋") == ""
+        assert english_chapter_title("Chapter 12") == ""
+        url = "https://book/1"
+        remember_english_chapter_titles(cache, url, [
+            Chapter(title="Chapter 1 Talent Stripped", url=f"{url}/1"),
+            Chapter(title="第2章", url=f"{url}/2"),
+        ])
+        got = cache.get_english_chapter_titles(url)
+        assert got[0] == {"url": f"{url}/1", "title": "Chapter 1 Talent Stripped"}
+        assert got[1]["title"] == ""
+        cache.put_chapter_list(url, [{"url": f"{url}/1", "title": "第1章"}])
+        assert cache.get_chapter_list(url)[0]["title"] == "第1章"
+        assert cache.get_english_chapter_titles(url)[0]["title"] == "Chapter 1 Talent Stripped"
+        cache.purge_book(url)
+        assert cache.get_english_chapter_titles(url) is None
+
 
 class TestCacheEviction:
     def test_evicts_oldest_chapters_when_over_cap(self, tmp_path):

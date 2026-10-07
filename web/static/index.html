@@ -306,6 +306,34 @@
   </section>
 
 </div>
+<dialog class="detail" id="lib-detail" aria-labelledby="lib-detail-title">
+  <div class="detail-head">
+    <div class="detail-cover" id="lib-detail-cover"></div>
+    <div class="detail-head-text">
+      <h2 class="detail-title" id="lib-detail-title"></h2>
+      <p class="muted" id="lib-detail-original"></p>
+      <p class="muted small" id="lib-detail-by"></p>
+    </div>
+  </div>
+  <dl class="detail-facts">
+    <div><dt>Chapters</dt><dd id="lib-detail-chapters"></dd></div>
+    <div id="lib-detail-latest-row"><dt>Latest</dt><dd id="lib-detail-latest"></dd></div>
+    <div id="lib-detail-saved-row"><dt>Saved</dt><dd id="lib-detail-saved"></dd></div>
+    <div><dt>File</dt><dd id="lib-detail-file"></dd></div>
+    <div><dt>Status</dt><dd id="lib-detail-status"></dd></div>
+  </dl>
+  <p class="detail-blurb" id="lib-detail-blurb"></p>
+  <ol class="detail-toc" id="lib-detail-toc"></ol>
+  <div class="actions-row">
+    <button type="button" class="btn btn-outline" id="lib-detail-read">Read</button>
+    <button type="button" class="btn btn-quiet" id="lib-detail-update">Update</button>
+    <button type="button" class="btn btn-quiet" id="lib-detail-epub">Download EPUB</button>
+    <button type="button" class="btn btn-quiet" id="lib-detail-open">Open link</button>
+    <button type="button" class="btn btn-quiet" id="lib-detail-select">Select</button>
+    <button type="button" class="btn btn-quiet btn-danger" id="lib-detail-remove">Remove</button>
+    <button type="button" class="btn-link" id="lib-detail-close">Close</button>
+  </div>
+</dialog>
 <script src="/static/app.js" defer></script>
 <script src="/static/single.js" defer></script>
 <script src="/static/multi.js" defer></script>

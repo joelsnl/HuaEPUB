@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.cache import remember_english_chapter_titles
 from core.download_job import book_job, clear_job, save_job
 from core.download_runner import (
     DownloadCancelled,
@@ -181,6 +182,7 @@ def download_one_novel(
     record_successful_download(
         session.library_store, info, chapters, translated_title, output_path
     )
+    remember_english_chapter_titles(session.cache, info.source_url, chapters)
     return failed, build_result
 
 
