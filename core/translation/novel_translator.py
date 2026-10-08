@@ -27,6 +27,7 @@ from core.translator import (
     GoogleTranslator,
     RateLimitedError,
     is_usable_translation,
+    machine_worker_cap,
 )
 from core.translation.glossary import (
     GlossaryEngine,
@@ -144,9 +145,10 @@ class NovelTranslator(GoogleTranslator):
         elif self.backend in (
             "google", "google_html", "google_gtx", "microsoft", "libretranslate"
         ):
-            self.max_workers = max(
-                1, min(int(self.max_workers or DEFAULT_GOOGLE_WORKERS), MAX_PACKED_WORKERS)
-            )
+            self.max_workers = max(1, min(
+                int(self.max_workers or DEFAULT_GOOGLE_WORKERS), MAX_PACKED_WORKERS,
+                machine_worker_cap(),
+            ))
         self._configured_workers = self.max_workers
 
     def configure_glossary(
@@ -636,8 +638,8 @@ class NovelTranslator(GoogleTranslator):
             executor.shutdown(wait=True, cancel_futures=True)
             if fallback is not None:
                 fallback.shutdown(wait=True, cancel_futures=True)
-
-        self._flush_persistent_cache()
+            # Even when the pass fails, keep the translations that did come back.
+            self._flush_persistent_cache()
         return results
 
     def _google_fallback_many(self, texts: List[str]) -> List[str]:

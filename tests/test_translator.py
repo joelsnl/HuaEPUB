@@ -942,3 +942,28 @@ class TestHttpSession:
             assert False, "expected RateLimitedError"
         except RateLimitedError as exc:
             assert exc.retry_after == 1.5
+
+
+def test_machine_worker_cap_follows_ram_and_process_limit():
+    from core.translator import machine_worker_cap
+
+    mib = 1024 * 1024
+    assert machine_worker_cap(416 * mib, 571) == 24      # Pi Zero 2 W
+    assert machine_worker_cap(1800 * mib, 0) == 64       # 2 GB board
+    assert machine_worker_cap(16 * 1024 * mib, 0) == 200  # desktop
+    assert machine_worker_cap(16 * 1024 * mib, 100) == 25  # tight per-user process limit
+    assert machine_worker_cap(0, 0) == 200               # unknown (Windows): no change
+
+
+def test_translator_pool_and_throttle_respect_the_machine_cap(monkeypatch):
+    import core.translator as tr
+    from core.translation.novel_translator import NovelTranslator
+
+    monkeypatch.setattr(tr, "machine_worker_cap", lambda *a, **k: 24)
+    monkeypatch.setattr("core.translation.novel_translator.machine_worker_cap", lambda *a, **k: 24)
+    plain = tr.GoogleTranslator(backend="google_gtx", max_workers=200)
+    assert plain.max_workers == 24 and plain._gtx.max_limit == 24
+    novel = NovelTranslator(backend="google", max_workers=200)
+    assert novel.max_workers == 24
+    small = tr.GoogleTranslator(backend="google", max_workers=8)
+    assert small.max_workers == 8
