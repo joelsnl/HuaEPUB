@@ -240,7 +240,7 @@ While serving, the desktop window shows the addresses, the code or password stat
 
 In the browser you get **Single**, **Multi**, **Library** (check, update, update all, remove, download EPUB, read), **Read** (the same `reading.json` position as the desktop reader) and **Settings** (translate, clean, cache, translator, glossary, workers, Polish, the books folder, and installing Polish, Offline NMT or an Ollama model). Finished EPUBs are saved in the books folder on the computer that is serving and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. You can keep reading a cached chapter while a download runs. A missing chapter from the same site waits until that download is done. One download runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
 
-App updates stay in the desktop app.
+A headless server checks for an app update on its own and restarts into it. The desktop app still asks first.
 
 **No window.** On a machine with no desktop (a Raspberry Pi over SSH):
 
@@ -249,7 +249,7 @@ pip install -r requirements.txt
 python3 app.py --headless
 ```
 
-That prints the address and the access code. Settings in the browser can install a systemd user service when one is not already there (`python3 app.py --install-service` does the same and then exits). An existing `huaepub.service` or `noveldownloader.service` is left as it is. The service does not print the access code; it is in `~/.huaepub/server/secret.json`.
+That prints the address and the access code. About 20 seconds after it starts, and then every six hours, it checks GitHub for a newer release. A verified update is installed and the process restarts, unless someone has a book open or a download is running — then it waits and tries again. Under the systemd service (`Restart=on-failure`) the unit starts it again, so `--headless` stays. Help → Check for updates automatically in the desktop app turns this off. Settings in the browser can install a systemd user service when one is not already there (`python3 app.py --install-service` does the same and then exits). An existing `huaepub.service` or `noveldownloader.service` is left as it is. The service does not print the access code; it is in `~/.huaepub/server/secret.json`.
 
 HuaEPUB remembers that server mode was on and starts serving again the next time it opens. If the port is taken, it says so and opens the desktop app instead.
 

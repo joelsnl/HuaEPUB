@@ -2,7 +2,7 @@
 """Download options for browser jobs, read from the shared settings.json.
 
 The browser can change the choices below and the books folder. It cannot change
-LibreTranslate or Ollama URLs. App updates stay in the desktop app.
+LibreTranslate or Ollama URLs. A headless server applies app updates itself.
 """
 
 from __future__ import annotations

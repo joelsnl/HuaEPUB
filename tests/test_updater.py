@@ -1,6 +1,7 @@
 """Tests for core.updater."""
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -531,6 +532,36 @@ class TestSourceRelaunch:
         assert scheduled == [True]
         assert "reopen" in msg.lower()
         assert "please restart" not in msg.lower()
+
+    def test_service_install_does_not_schedule_a_second_process(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater, "_schedule_relaunch_after_exit", lambda: (_ for _ in ()).throw(
+            AssertionError("helper should not start")
+        ))
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+        ok, msg = updater._update_source_app(src, tmp_path, relaunch=False)
+        assert ok and "Restarting" in msg
+        assert (tmp_path / "VERSION").read_text(encoding="utf-8") == "9.9.9\n"
+
+    def test_relaunch_keeps_headless_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(updater.sys, "platform", "linux")
+        monkeypatch.setattr(updater.sys, "argv", ["/home/pi/HuaEPUB/app.py", "--headless"])
+        monkeypatch.setattr(updater.sys, "executable", "/usr/bin/python3")
+        monkeypatch.setattr(updater, "get_app_dir", lambda: tmp_path)
+        monkeypatch.setattr(updater, "is_frozen", lambda: False)
+        monkeypatch.setattr(updater.os, "getpid", lambda: 7)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        monkeypatch.setattr(updater.subprocess, "Popen", lambda *a, **k: None)
+        updater._schedule_relaunch_after_exit()
+        cfg = json.loads((tmp_path / "_update_relaunch.json").read_text(encoding="utf-8"))
+        assert cfg["args"][0].endswith("app.py")
+        assert cfg["args"][1:] == ["--headless"]
+
+    def test_systemd_source_update_exits_so_the_unit_restarts(self):
+        assert updater.headless_restart_code(service=True, frozen=False) == 1
+        assert updater.headless_restart_code(service=False, frozen=False) == 0
+        assert updater.headless_restart_code(service=True, frozen=True) == 0
 
 
 class TestSourceUpdateItems:

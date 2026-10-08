@@ -229,6 +229,13 @@ class ServerHost:
     def task_busy(self) -> bool:
         return bool(self.ctx is not None and self.ctx.tasks.is_busy())
 
+    def reader_active(self) -> bool:
+        ctx = self.ctx
+        readers = getattr(ctx, "readers", None) if ctx is not None else None
+        if readers is None:
+            return False
+        return bool(readers.active())
+
 
 _HANDOFF = None
 _PID_NAME = "headless.pid"
@@ -312,7 +319,7 @@ def finish_gui_handoff() -> Optional[int]:
         return None
     host, session = _HANDOFF
     _HANDOFF = None
-    return serve_until_stopped(host, session)
+    return serve_until_stopped(host, session, watch_updates=True)
 
 
 def _install_stop_signals() -> threading.Event:
@@ -330,10 +337,64 @@ def _install_stop_signals() -> threading.Event:
     return stopped
 
 
-def serve_until_stopped(host, session, stopped: Optional[threading.Event] = None) -> int:
+def _watch_app_updates(host, stopped: threading.Event, exit_code: list) -> None:
+    """Check GitHub, install a verified release, then ask the server to exit."""
+    from core.settings import is_frozen
+    from core.updater import (
+        check_for_updates, download_update, get_auto_check_updates, headless_restart_code,
+    )
+
+    delay = 20.0
+    while not stopped.wait(delay):
+        delay = 6 * 3600
+        if not get_auto_check_updates():
+            continue
+        if host.task_busy() or host.reader_active():
+            delay = 600
+            continue
+        try:
+            has, latest, message = check_for_updates(force=True)
+        except Exception as exc:
+            host.log(f"App update check failed: {exc}")
+            delay = 600
+            continue
+        if (message or "").startswith("Failed to check"):
+            host.log(message)
+            delay = 600
+            continue
+        if not has:
+            continue
+        if host.task_busy() or host.reader_active():
+            delay = 600
+            continue
+        service = os.environ.get("HUAEPUB_SERVICE") == "1"
+        code = headless_restart_code(service=service, frozen=is_frozen())
+        try:
+            ok, note = download_update(relaunch=code == 0)
+        except Exception as exc:
+            host.log(f"App update failed: {exc}")
+            delay = 600
+            continue
+        if not ok:
+            host.log(note)
+            delay = 600
+            continue
+        host.log(f"Installed app update {latest}. Restarting.")
+        exit_code[:] = [code]
+        stopped.set()
+
+
+def serve_until_stopped(
+    host, session, stopped: Optional[threading.Event] = None, *, watch_updates: bool = False,
+) -> int:
     """Block until Ctrl+C, SIGTERM, or the stop file, then stop the server."""
     if stopped is None:
         stopped = _install_stop_signals()
+    exit_code = [0]
+    if watch_updates:
+        threading.Thread(
+            target=_watch_app_updates, args=(host, stopped, exit_code), daemon=True,
+        ).start()
     folder = _server_dir(session.data_dir)
     stop_path = folder / _STOP_NAME
     pid_path = folder / _PID_NAME
@@ -361,7 +422,7 @@ def serve_until_stopped(host, session, stopped: Optional[threading.Event] = None
                 path.unlink()
             except OSError:
                 pass
-    return 0
+    return exit_code[0]
 
 
 def headless_requested(argv=None) -> bool:
@@ -419,7 +480,7 @@ def serve_headless() -> int:
     else:
         lines.append("Sign in with the server password.")
     _write_terminal("\n".join(lines))
-    return serve_until_stopped(host, session, stopped)
+    return serve_until_stopped(host, session, stopped, watch_updates=True)
 
 
 SERVICE_NAMES = ("huaepub.service", "noveldownloader.service")

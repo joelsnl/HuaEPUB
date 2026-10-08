@@ -406,6 +406,10 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden' && book && H.view() === 'read') savePosition();
   });
+  setInterval(function () {
+    if (!book || $('read-book').hidden) return;
+    H.api('POST', '/api/read/' + book.book_id + '/touch', {}).catch(function () {});
+  }, 45000);
   if (window.ResizeObserver) {
     new ResizeObserver(function () {
       if (!book || $('read-book').hidden) return;

@@ -1025,7 +1025,9 @@ def _download_progress(
 
 
 def download_update(
-    progress_callback: Optional[Callable[[int, int, str], None]] = None
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    *,
+    relaunch: bool = True,
 ) -> Tuple[bool, str]:
     """
     Download the latest version from GitHub and install it.
@@ -1067,7 +1069,8 @@ def download_update(
                 "Pull from git or download the release manually."
             )
         return _update_source_from_asset(
-            session, release_data, source_asset, app_dir, progress_callback
+            session, release_data, source_asset, app_dir, progress_callback,
+            relaunch=relaunch,
         )
 
     except Exception as e:
@@ -1481,7 +1484,9 @@ def _update_source_from_asset(
     release_data: dict,
     asset: dict,
     app_dir: Path,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    *,
+    relaunch: bool = True,
 ) -> Tuple[bool, str]:
     """Update a source install from a checksum-verified source zip asset."""
     if progress_callback:
@@ -1518,13 +1523,17 @@ def _update_source_from_asset(
         else:
             return (False, "Source archive layout not recognized (app.py missing).")
 
-        return _update_source_app(extracted_dir, app_dir, progress_callback)
+        return _update_source_app(
+            extracted_dir, app_dir, progress_callback, relaunch=relaunch,
+        )
 
 
 def _update_source_app(
     extracted_dir: Path,
     app_dir: Path,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    *,
+    relaunch: bool = True,
 ) -> Tuple[bool, str]:
     """Replace source files from an already-verified extracted tree."""
     if progress_callback:
@@ -1563,6 +1572,10 @@ def _update_source_app(
 
     if progress_callback:
         progress_callback(100, 100, "Update complete!")
+
+    if not relaunch:
+        # ponytail: systemd Restart=on-failure is the relaunch. A helper as well would start a second server.
+        return (True, "Update installed. Restarting.")
 
     try:
         _schedule_relaunch_after_exit()
@@ -1660,7 +1673,9 @@ def _schedule_relaunch_after_exit() -> None:
     else:
         launch_exe = Path(sys.executable)
         app_py = app_dir / "app.py"
-        extra = [str(app_py)] if app_py.is_file() else [str(a) for a in sys.argv]
+        # Keep --headless (and any other flags). Dropping them opens a window after the update.
+        tail = [a for a in sys.argv[1:] if a != str(app_py)]
+        extra = [str(app_py)] + tail if app_py.is_file() else [str(a) for a in sys.argv]
         cwd = app_dir
         if sys.platform == "win32" and launch_exe.name.lower() == "python.exe":
             pythonw = launch_exe.with_name("pythonw.exe")
@@ -1724,6 +1739,17 @@ def download_update_async(
     thread = threading.Thread(target=_download)
     thread.daemon = True
     thread.start()
+
+
+def headless_restart_code(*, service: bool, frozen: bool) -> int:
+    """How a no-window process should exit after a verified install.
+
+    A source install under systemd exits 1 so Restart=on-failure starts the
+    same unit again. Anything else exits 0 and the update helper relaunches it.
+    """
+    if service and not frozen:
+        return 1
+    return 0
 
 
 def get_auto_check_updates() -> bool:

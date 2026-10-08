@@ -1079,3 +1079,15 @@ def test_packaging_ships_server_mode():
 
     assert "web" in SOURCE_UPDATE_ITEMS
     assert not (ROOT / "web" / "__main__.py").exists()
+
+
+def test_an_open_book_counts_as_reading_until_it_goes_quiet():
+    from web.reader_api import ReaderStore
+
+    store = ReaderStore()
+    assert not store.active()
+    item = store.put(object())
+    assert store.active()
+    assert store.get(item.id) is item
+    item.seen = time.monotonic() - 181
+    assert not store.active()

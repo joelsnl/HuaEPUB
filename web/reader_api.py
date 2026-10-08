@@ -43,6 +43,7 @@ class OpenBook:
     id: str
     book: object
     last_fetch: float = 0.0
+    seen: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -64,8 +65,15 @@ class ReaderStore:
         with self._lock:
             item = self._items.get(book_id)
             if item is not None:
+                item.seen = time.monotonic()
                 self._items.move_to_end(book_id)
             return item
+
+    def active(self, within: float = 180.0) -> bool:
+        """True when a browser still has a book open (a touch within ``within`` seconds)."""
+        now = time.monotonic()
+        with self._lock:
+            return any((now - item.seen) < within for item in self._items.values())
 
 
 class OpenIn(BaseModel):
@@ -235,6 +243,12 @@ def build_router(ctx) -> APIRouter:
         prefetch_next(item, index)
         return {"index": index, "title": ch.title, "html": sanitize_reader_html(ch.html or ""),
                 "note": note}
+
+    @r.post("/{book_id}/touch")
+    def touch(book_id: str):
+        if ctx.readers.get(book_id) is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        return {"ok": True}
 
     @r.post("/{book_id}/position")
     def position(book_id: str, body: PositionIn):
