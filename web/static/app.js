@@ -163,7 +163,7 @@
       a.classList.toggle('is-on', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    if (name !== 'read') document.body.classList.remove('is-reading');
+    if (name !== 'read') document.body.classList.remove('is-reading', 'dock-open');
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     if (viewHooks[name]) viewHooks[name](arg);
     renderDock(latest);
@@ -188,6 +188,7 @@
     var finished = t && (t.state === 'done' || t.state === 'error' || t.state === 'cancelled');
     var visible = !!t && !onStage && !(finished && dismissed === t.id);
     show('dock', visible);
+    renderReadJob(t, visible);
     if (!visible) return;
     $('dock').setAttribute('data-state', t.state);
     var phase = t.state === 'done' ? (t.result && t.result.warnings ? 'Saved with warnings' : 'Finished')
@@ -197,14 +198,27 @@
     var line = t.state === 'error' ? t.error : (finished ? firstLine(t.result && t.result.notes) : t.message);
     if (!finished && t.novels > 1) line = 'Book ' + (t.novel + 1) + ' of ' + t.novels + (line ? ' · ' + line : '');
     setText('dock-line', line || '');
+    renderDockDetail(t, finished);
     var n = window.matchMedia('(max-width: 719px)').matches ? 16 : 30;
     var c = slipCounts(t, n);
     drawSlips($('dock-slips'), n, c.fetched, c.done, c.cur);
     var running = !finished;
-    show('dock-pause', running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'install');
+    var pausable = running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'install';
     setText('dock-pause', t.state === 'paused' ? 'Resume' : 'Pause');
-    show('dock-cancel', running);
-    show('dock-close', finished);
+    if (document.body.classList.contains('is-reading')) {
+      // The reader's card keeps one set of buttons: Pause, Cancel, Hide (Hide clears a finished job).
+      show('dock-pause', true);
+      show('dock-cancel', true);
+      show('dock-close', false);
+      $('dock-pause').disabled = !pausable;
+      $('dock-cancel').disabled = !running;
+    } else {
+      show('dock-pause', pausable);
+      show('dock-cancel', running);
+      show('dock-close', finished);
+      $('dock-pause').disabled = false;
+      $('dock-cancel').disabled = false;
+    }
     var files = $('dock-files');
     files.textContent = '';
     var list = (finished && t.result && t.result.files) || [];
@@ -215,7 +229,54 @@
       files.appendChild(b);
     });
   }
+  // The reader's card shows more than the strip on other pages: percent, steps, counts, notes.
+  var STEP = { fetching: 0, translating: 1, polishing: 1, writing: 2 };
+  function renderDockDetail(t, finished) {
+    setText('dock-percent', finished ? '' : Math.round((t.fraction || 0) * 100) + '%');
+    var now = t.state === 'done' ? 3 : (t.phase in STEP ? STEP[t.phase] : -1);
+    var steps = $('dock-steps').children;
+    for (var i = 0; i < steps.length; i++) {
+      steps[i].className = i < now || (i === now && t.state === 'done') ? 'is-past' : (i === now ? 'is-now' : '');
+    }
+    var meta = $('dock-meta');
+    meta.textContent = '';
+    if (t.chapters) meta.appendChild(el('span', '', plural(t.chapters, 'chapter')));
+    if (t.novels > 1) meta.appendChild(el('span', '', 'Book ' + (Math.min(t.novel, t.novels - 1) + 1) + ' of ' + t.novels));
+    var notes = finished && t.result && t.result.notes ? String(t.result.notes).trim() : '';
+    setText('dock-notes', notes);
+    show('dock-notes', !!notes);
+    $('dock').classList.toggle('has-notes', !!notes);
+  }
+
+  // In the reader the dock stays hidden; this top-bar button shows progress and toggles it.
+  function renderReadJob(t, visible) {
+    var chip = $('read-job');
+    if (!chip) return;
+    show(chip, visible);
+    if (!visible) { document.body.classList.remove('dock-open'); return; }
+    var text = t.state === 'done' ? 'Download done'
+      : t.state === 'error' ? 'Download failed'
+      : t.state === 'cancelled' ? 'Cancelled'
+      : (t.phase_label || 'Working') + ' ' + Math.round((t.fraction || 0) * 100) + '%';
+    setText(chip, text);
+    chip.setAttribute('aria-pressed', document.body.classList.contains('dock-open') ? 'true' : 'false');
+  }
+
   function firstLine(text) { return (text || '').split('\n').filter(Boolean)[0] || ''; }
+
+  function dismissTask() {
+    var t = latest.task;
+    dismissed = t ? t.id : null;
+    try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
+    renderDock(latest);
+  }
+
+  function hideReaderCard() {
+    document.body.classList.remove('dock-open');
+    $('read-job').setAttribute('aria-pressed', 'false');
+    var t = latest.task;
+    if (t && (t.state === 'done' || t.state === 'error' || t.state === 'cancelled')) dismissTask();
+  }
 
   function pauseTask() { return api('POST', '/api/task/pause').then(refresh); }
   function cancelTask() { return api('POST', '/api/task/cancel').then(refresh); }
@@ -237,14 +298,18 @@
     document.querySelectorAll('.nav a').forEach(function (a) {
       a.addEventListener('click', function (ev) { ev.preventDefault(); go(a.getAttribute('data-view')); });
     });
+    // The progress button and Hide both close the reader's card; closing a finished job clears it.
+    $('read-job').addEventListener('click', function () {
+      if (document.body.classList.contains('dock-open')) hideReaderCard();
+      else {
+        document.body.classList.add('dock-open');
+        $('read-job').setAttribute('aria-pressed', 'true');
+      }
+    });
+    $('dock-hide').addEventListener('click', hideReaderCard);
     $('dock-pause').addEventListener('click', pauseTask);
     $('dock-cancel').addEventListener('click', cancelTask);
-    $('dock-close').addEventListener('click', function () {
-      var t = latest.task;
-      dismissed = t ? t.id : null;
-      try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
-      renderDock(latest);
-    });
+    $('dock-close').addEventListener('click', dismissTask);
     $('btn-resume').addEventListener('click', function () {
       api('POST', '/api/resume').then(function (res) {
         if (!res.ok) { setText('resume-title', errorText(res.data, '', 'resume this download')); return; }

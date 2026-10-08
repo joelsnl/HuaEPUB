@@ -478,7 +478,51 @@ dialog.detail:not([open]) { display: none; }
 body.is-reading { background: var(--paper, var(--ground)); overflow: hidden; }
 body.is-reading .head, body.is-reading .banner { display: none; }
 body.is-reading .shell { max-width: none; padding: 0; gap: 0; }
-body.is-reading .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; border-radius: 0; padding: 10px 16px; }
+/* Detail parts of the dock exist on every page but only show in the reader's card. */
+.dock-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.dock-percent, .dock-steps, .dock-meta, .dock-notes, .dock-hide { display: none; }
+
+/* While reading, the job dock never covers the text by itself: the reader's top bar shows a
+   progress button (#read-job) that opens it as a card under the bar. Since it only appears
+   on request, it shows the whole job. */
+body.is-reading .dock { display: none; }
+body.is-reading.dock-open .dock:not([hidden]) {
+  display: flex; flex-direction: column; align-items: stretch; gap: 14px;
+  position: fixed; z-index: 30; top: 64px; left: 12px; right: 12px; max-width: 34rem; margin: 0 auto;
+  max-height: calc(100vh - 160px); overflow: auto; padding: 18px 20px 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .22), 0 0 0 1px var(--line);
+}
+body.is-reading .dock-text { order: 1; gap: 4px; }
+body.is-reading .dock-percent {
+  display: block; font-family: var(--book); font-weight: 600; font-size: 28px; line-height: 1;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+body.is-reading .dock-phase { font-size: 14px; }
+body.is-reading .dock-title { font-size: 19px; line-height: 1.3; }
+body.is-reading .dock-line { font-size: 14px; }
+body.is-reading .dock.has-notes .dock-line { display: none; }
+body.is-reading .dock-files { flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; }
+body.is-reading .dock-files .btn-link { text-align: left; justify-content: flex-start; font-size: 14px; }
+body.is-reading .dock-slips {
+  order: 2; display: block; --slip-w: 7px; --slip-h: 46px; --slip-gap: 3px;
+  padding: 10px 10px 0; border-radius: var(--radius); overflow: hidden;
+  background: color-mix(in srgb, var(--ground) 70%, var(--ink) 6%);
+}
+body.is-reading .dock-slips .slip { flex: 1 1 0; width: auto; }
+body.is-reading .dock-steps {
+  order: 3; display: flex; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px;
+}
+body.is-reading .dock-steps li { flex: 1; padding-top: 7px; border-top: 3px solid var(--rule); color: var(--muted); }
+body.is-reading .dock-steps li.is-past { border-top-color: var(--mid); }
+body.is-reading .dock-steps li.is-now { border-top-color: var(--accent); color: var(--ink); font-weight: 600; }
+body.is-reading .dock-meta { order: 4; display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: 13px; color: var(--muted); }
+body.is-reading .dock-meta:empty { display: none; }
+body.is-reading .dock-notes:not([hidden]) {
+  order: 5; display: block; margin: 0; white-space: pre-wrap; font-family: var(--sans); font-size: 13px;
+  color: var(--muted); border-left: 3px solid var(--flag); padding-left: 12px; max-height: 9em; overflow: auto;
+}
+body.is-reading .dock-actions { order: 6; align-self: stretch; justify-content: flex-start; gap: 10px; }
+body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-book {
   --paper: #f7f3ea; --paper-ink: #1d1a16; --paper-faint: #84796b; --paper-rule: #e2d9c9;
   position: fixed; inset: 0; z-index: 20; display: block; background: var(--paper); color: var(--paper-ink);

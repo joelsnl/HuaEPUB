@@ -51,15 +51,25 @@
   <div class="dock" id="dock" hidden>
     <div class="dock-slips" id="dock-slips" aria-hidden="true"></div>
     <div class="dock-text">
-      <span class="dock-phase" id="dock-phase"></span>
+      <div class="dock-head">
+        <span class="dock-phase" id="dock-phase"></span>
+        <span class="dock-percent" id="dock-percent"></span>
+      </div>
       <span class="dock-title" id="dock-title"></span>
       <span class="dock-line" id="dock-line"></span>
       <div class="dock-files" id="dock-files"></div>
     </div>
+    <!-- Shown in the reader's card only: the full picture of the job. -->
+    <ol class="dock-steps" id="dock-steps" aria-label="Steps">
+      <li>Fetch</li><li>Translate</li><li>Write</li><li>Save</li>
+    </ol>
+    <p class="dock-meta" id="dock-meta"></p>
+    <pre class="dock-notes" id="dock-notes" hidden></pre>
     <div class="dock-actions">
       <button type="button" class="btn btn-outline" id="dock-pause">Pause</button>
       <button type="button" class="btn btn-quiet" id="dock-cancel">Cancel</button>
       <button type="button" class="btn-link" id="dock-close" hidden>Dismiss</button>
+      <button type="button" class="btn-link dock-hide" id="dock-hide">Hide</button>
     </div>
   </div>
 
@@ -270,6 +280,7 @@
           <span class="reader-book" id="read-title"></span>
           <span class="running-label" id="read-kind"></span>
         </div>
+        <button type="button" class="book-btn read-job" id="read-job" aria-pressed="false" aria-controls="dock" hidden></button>
       </header>
       <footer class="chrome chrome-bot">
         <input type="range" id="read-progress" min="0" max="1000" value="0" aria-label="Place in the book">
