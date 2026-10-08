@@ -1,5 +1,5 @@
 // HuaEPUB server mode: colour theme. Runs in <head> so the page never flashes the wrong palette.
-// Auto follows the system (dark = Graphite & Cyan, light = Celadon Day).
+// Auto follows the system (dark = Catalogue at night, light = Catalogue).
 // The choice lives in this browser's localStorage only.
 (function () {
   'use strict';
@@ -10,7 +10,7 @@
     indigo: 'indigo', gold: 'gold', cinnabar: 'cinnabar', mist: 'mist'
   };
   var NAMES = {
-    auto: 'Auto', dark: 'Dark', light: 'Light', indigo: 'Indigo & Jade',
+    auto: 'Auto', dark: 'Catalogue at night', light: 'Catalogue', indigo: 'Indigo & Jade',
     gold: 'Ink & Gold', cinnabar: 'Cinnabar Night', mist: 'Blue Mist', surprise: 'Surprise me'
   };
   var SURPRISE = ['graphite', 'celadon', 'indigo', 'gold', 'cinnabar', 'mist'];

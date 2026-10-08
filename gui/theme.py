@@ -3,7 +3,7 @@
 
 ``style.qss`` is a template (``${ground}``, ``${accent}``, …). ``apply_look``
 renders it for the chosen palette and sets it on the application. ``auto``
-follows the system colour scheme (Graphite & Cyan when dark, Celadon Day when
+follows the system colour scheme (Catalogue at night when dark, Catalogue when
 light); ``random`` is opt-in only.
 """
 
@@ -57,10 +57,11 @@ class Palette:
 
 
 PALETTES: Dict[str, Palette] = {p.id: p for p in (
-    Palette("graphite", "Graphite & Cyan", True, "#0F1214", "#E8ECEE", "#8A959B", "#4A565C",
-            "#262E33", "#2E3A41", "#5CC8E8", "#F2A65A", "#D2452F"),
-    Palette("celadon", "Celadon Day", False, "#E4ECE7", "#14201B", "#4E6258", "#8FA79B",
-            "#C3D2C9", "#A9C2B5", "#1E6B52", "#B4361F", "#B4361F"),
+    # The card catalogue: steel cabinet, ruled cards, library-red rule, date-stamp blue.
+    Palette("graphite", "Catalogue at night", True, "#1A2027", "#E6E9EE", "#95A0AC", "#4C5866",
+            "#2E3843", "#3C4855", "#93A9F2", "#E4746A", "#C9463A"),
+    Palette("celadon", "Catalogue", False, "#D8DDDA", "#1F2430", "#5B6470", "#9AA4AD",
+            "#C2CAC9", "#AAB6BA", "#2C4A9A", "#B8322E", "#B8322E"),
     Palette("indigo", "Indigo & Jade", True, "#12172A", "#E6EEE9", "#8C98B5", "#4A5680",
             "#2C3556", "#3A4676", "#8FD3B6", "#F0806B", "#D2452F"),
     Palette("gold", "Ink & Gold", True, "#181611", "#EDE7D8", "#A29A86", "#5A5442",
@@ -74,8 +75,8 @@ PALETTES: Dict[str, Palette] = {p.id: p for p in (
 # Menu order and labels; the same ids as the browser's Look menu.
 LOOKS = (
     ("auto", "Auto (follow system)"),
-    ("dark", "Dark"),
-    ("light", "Light"),
+    ("dark", "Catalogue at night"),
+    ("light", "Catalogue"),
     ("indigo", "Indigo & Jade"),
     ("gold", "Ink & Gold"),
     ("cinnabar", "Cinnabar Night"),

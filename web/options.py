@@ -79,7 +79,7 @@ def job_options(settings: Dict[str, Any]) -> Dict[str, Any]:
         "clipboard": bool(settings.get("clipboard_watcher", False)),
         "workers": max(1, min(workers, MAX_WORKERS)),
         "backend": backend,
-        "glossary": str(settings.get("translation_glossary") or "auto"),
+        "glossary": str(settings.get("translation_glossary") or "off"),
         "ollama_model": str(settings.get("ollama_model") or "qwen2.5:3b"),
         "ollama_url": str(settings.get("ollama_url") or "http://127.0.0.1:11434"),
         "ollama_polish": polish,

@@ -69,6 +69,21 @@ def get_position(source_url: str, *, data_dir: Optional[Path] = None) -> Optiona
         return None
 
 
+def chapter_indexes(*, data_dir: Optional[Path] = None) -> Dict[str, int]:
+    """Every book's saved chapter index, from one read of the file (Library lists)."""
+    with _lock:
+        data = _load_unlocked(_path(data_dir))
+    out: Dict[str, int] = {}
+    for url, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            out[url] = max(0, int(raw.get("chapter_index") or 0))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def set_position(
     source_url: str,
     *,

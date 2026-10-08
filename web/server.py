@@ -181,8 +181,12 @@ def create_app(ctx: ServerContext) -> FastAPI:
         response.headers.setdefault("X-Frame-Options", "DENY")
         if ctx.hsts:
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif path in ("/", "/login") or path.startswith("/static/"):
+            # Revalidate (ETag) on every load so an app update never leaves a phone on stale pages.
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     # -- sign-in -------------------------------------------------------------

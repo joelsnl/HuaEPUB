@@ -52,7 +52,7 @@ DEFAULTS: Dict[str, Any] = {
     # 'google', 'libretranslate', 'ollama', or 'ctranslate2' (Offline NMT)
     'translation_backend': 'google',
     # Built-in xianxia pack: 'auto' (default) | 'xianxia' | 'user' | 'off'
-    'translation_glossary': 'auto',
+    'translation_glossary': 'off',
     'libretranslate_url': 'https://libretranslate.com',
     'ollama_url': 'http://127.0.0.1:11434',
     'ollama_model': 'qwen2.5:3b',
