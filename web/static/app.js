@@ -198,6 +198,7 @@
     var line = t.state === 'error' ? t.error : (finished ? firstLine(t.result && t.result.notes) : t.message);
     if (!finished && t.novels > 1) line = 'Book ' + (t.novel + 1) + ' of ' + t.novels + (line ? ' · ' + line : '');
     setText('dock-line', line || '');
+    renderDockDetail(t, finished);
     var n = window.matchMedia('(max-width: 719px)').matches ? 16 : 30;
     var c = slipCounts(t, n);
     drawSlips($('dock-slips'), n, c.fetched, c.done, c.cur);
@@ -216,6 +217,25 @@
       files.appendChild(b);
     });
   }
+  // The reader's card shows more than the strip on other pages: percent, steps, counts, notes.
+  var STEP = { fetching: 0, translating: 1, polishing: 1, writing: 2 };
+  function renderDockDetail(t, finished) {
+    setText('dock-percent', finished ? '' : Math.round((t.fraction || 0) * 100) + '%');
+    var now = t.state === 'done' ? 3 : (t.phase in STEP ? STEP[t.phase] : -1);
+    var steps = $('dock-steps').children;
+    for (var i = 0; i < steps.length; i++) {
+      steps[i].className = i < now || (i === now && t.state === 'done') ? 'is-past' : (i === now ? 'is-now' : '');
+    }
+    var meta = $('dock-meta');
+    meta.textContent = '';
+    if (t.chapters) meta.appendChild(el('span', '', plural(t.chapters, 'chapter')));
+    if (t.novels > 1) meta.appendChild(el('span', '', 'Book ' + (Math.min(t.novel, t.novels - 1) + 1) + ' of ' + t.novels));
+    var notes = finished && t.result && t.result.notes ? String(t.result.notes).trim() : '';
+    setText('dock-notes', notes);
+    show('dock-notes', !!notes);
+    $('dock').classList.toggle('has-notes', !!notes);
+  }
+
   // In the reader the dock stays hidden; this top-bar button shows progress and toggles it.
   function renderReadJob(t, visible) {
     var chip = $('read-job');
@@ -255,6 +275,10 @@
     $('read-job').addEventListener('click', function () {
       var open = document.body.classList.toggle('dock-open');
       $('read-job').setAttribute('aria-pressed', open ? 'true' : 'false');
+    });
+    $('dock-hide').addEventListener('click', function () {
+      document.body.classList.remove('dock-open');
+      $('read-job').setAttribute('aria-pressed', 'false');
     });
     $('dock-pause').addEventListener('click', pauseTask);
     $('dock-cancel').addEventListener('click', cancelTask);
