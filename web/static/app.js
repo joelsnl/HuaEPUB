@@ -163,7 +163,7 @@
       a.classList.toggle('is-on', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    if (name !== 'read') document.body.classList.remove('is-reading');
+    if (name !== 'read') document.body.classList.remove('is-reading', 'dock-open');
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     if (viewHooks[name]) viewHooks[name](arg);
     renderDock(latest);
@@ -188,6 +188,7 @@
     var finished = t && (t.state === 'done' || t.state === 'error' || t.state === 'cancelled');
     var visible = !!t && !onStage && !(finished && dismissed === t.id);
     show('dock', visible);
+    renderReadJob(t, visible);
     if (!visible) return;
     $('dock').setAttribute('data-state', t.state);
     var phase = t.state === 'done' ? (t.result && t.result.warnings ? 'Saved with warnings' : 'Finished')
@@ -215,6 +216,20 @@
       files.appendChild(b);
     });
   }
+  // In the reader the dock stays hidden; this top-bar button shows progress and toggles it.
+  function renderReadJob(t, visible) {
+    var chip = $('read-job');
+    if (!chip) return;
+    show(chip, visible);
+    if (!visible) { document.body.classList.remove('dock-open'); return; }
+    var text = t.state === 'done' ? 'Download done'
+      : t.state === 'error' ? 'Download failed'
+      : t.state === 'cancelled' ? 'Cancelled'
+      : (t.phase_label || 'Working') + ' ' + Math.round((t.fraction || 0) * 100) + '%';
+    setText(chip, text);
+    chip.setAttribute('aria-pressed', document.body.classList.contains('dock-open') ? 'true' : 'false');
+  }
+
   function firstLine(text) { return (text || '').split('\n').filter(Boolean)[0] || ''; }
 
   function pauseTask() { return api('POST', '/api/task/pause').then(refresh); }
@@ -236,6 +251,10 @@
     buildLookSelect();
     document.querySelectorAll('.nav a').forEach(function (a) {
       a.addEventListener('click', function (ev) { ev.preventDefault(); go(a.getAttribute('data-view')); });
+    });
+    $('read-job').addEventListener('click', function () {
+      var open = document.body.classList.toggle('dock-open');
+      $('read-job').setAttribute('aria-pressed', open ? 'true' : 'false');
     });
     $('dock-pause').addEventListener('click', pauseTask);
     $('dock-cancel').addEventListener('click', cancelTask);

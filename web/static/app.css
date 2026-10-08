@@ -478,10 +478,10 @@ dialog.detail:not([open]) { display: none; }
 body.is-reading { background: var(--paper, var(--ground)); overflow: hidden; }
 body.is-reading .head, body.is-reading .banner { display: none; }
 body.is-reading .shell { max-width: none; padding: 0; gap: 0; }
-/* While reading, the job dock lives in the reader's menu: hidden over the text, shown as a
-   compact card under the top bar when a tap in the middle opens the menu. */
+/* While reading, the job dock never covers the text by itself: the reader's top bar shows a
+   progress button (#read-job) that opens it as a compact card under the bar. */
 body.is-reading .dock { display: none; }
-body.is-reading:has(#read-book.is-chrome) .dock:not([hidden]) {
+body.is-reading.dock-open .dock:not([hidden]) {
   display: flex; position: fixed; z-index: 30; top: 64px; left: 12px; right: 12px;
   max-width: 36rem; margin: 0 auto; flex-direction: row; flex-wrap: wrap; align-items: center;
   gap: 8px 16px; padding: 12px 16px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18), 0 0 0 1px var(--line);
