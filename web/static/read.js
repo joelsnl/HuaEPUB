@@ -407,6 +407,10 @@
     else showChrome();
   }
   $('read-leaf').addEventListener('click', zone);
+  // The job dock shows inside the reader's menu; touching it keeps the menu (and dock) open.
+  $('dock').addEventListener('pointerdown', function () {
+    if (book && !$('read-book').hidden) showChrome();
+  });
   // Pages mode: the page follows the finger, then slides on or springs back.
   // Scroll mode keeps the simple swipe-to-turn.
   $('read-leaf').addEventListener('touchstart', function (ev) {
