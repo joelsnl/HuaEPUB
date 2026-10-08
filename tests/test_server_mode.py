@@ -1000,7 +1000,8 @@ def test_headless_serves_without_qt(tmp_path):
     err_parts: list[str] = []
 
     def _drain(stream, dest):
-        dest.append(stream.read() or "")
+        for line in stream:  # line by line, so the test can wait for the banner
+            dest.append(line)
 
     threads = [
         threading.Thread(target=_drain, args=(proc.stdout, out_parts)),
@@ -1020,6 +1021,12 @@ def test_headless_serves_without_qt(tmp_path):
             if got.status_code == 200:
                 seen = got
                 break
+        # The server answers before the banner is printed: wait for it before stopping
+        # the process, or a fast kill (TerminateProcess on Windows) loses the line.
+        while time.monotonic() < deadline and proc.poll() is None:
+            if "Access code: " in "".join(out_parts):
+                break
+            time.sleep(0.05)
     finally:
         if proc.poll() is None:
             proc.terminate()

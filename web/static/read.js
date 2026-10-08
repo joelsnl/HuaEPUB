@@ -12,6 +12,9 @@
   var chromeTimer = null;
   var prefs = { theme: 'paper', mode: 'pages', face: 'serif', leading: 'normal', align: 'justify' };
   var touchX = 0;
+  var drag = null;    // a horizontal page drag in progress (pages mode)
+  var slideFrame = 0;
+  var reducedMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
 
   function root() { return $('read-book'); }
 
@@ -96,6 +99,7 @@
   function reveal(scroll) {
     var leaf = $('read-leaf');
     var ratio = Math.max(0, Math.min(1, Number(scroll) || 0));
+    cancelAnimationFrame(slideFrame);
     leaf.style.scrollBehavior = 'auto';
     if (prefs.mode === 'pages') {
       var pages = pageCount();
@@ -110,11 +114,32 @@
     showPlace();
   }
 
-  function goToPage(page) {
+  // Ease the page sideways like Play Books' slide turn (ease-out, about a quarter second).
+  function slideTo(left) {
+    var leaf = $('read-leaf');
+    cancelAnimationFrame(slideFrame);
+    leaf.style.scrollBehavior = 'auto';
+    var from = leaf.scrollLeft;
+    var dist = left - from;
+    if ((reducedMotion && reducedMotion.matches) || Math.abs(dist) < 1) { leaf.scrollLeft = left; return; }
+    var ms = 140 + 140 * Math.min(1, Math.abs(dist) / (leaf.clientWidth || 1));
+    var start = performance.now();
+    function step(now) {
+      var t = Math.min(1, (now - start) / ms);
+      leaf.scrollLeft = from + dist * (1 - Math.pow(1 - t, 3));
+      if (t < 1) slideFrame = requestAnimationFrame(step);
+    }
+    slideFrame = requestAnimationFrame(step);
+  }
+
+  function goToPage(page, animate) {
     var leaf = $('read-leaf');
     logicalPage = page;
+    var left = page * (leaf.clientWidth || 1);
+    if (animate) { slideTo(left); return; }
+    cancelAnimationFrame(slideFrame);
     leaf.style.scrollBehavior = 'auto';
-    leaf.scrollLeft = page * (leaf.clientWidth || 1);
+    leaf.scrollLeft = left;
   }
 
   function afterMove() {
@@ -266,7 +291,7 @@
     var pages = pageCount();
     if (page < 0) { load(index - 1, 1); return; }
     if (page >= pages) { load(index + 1, 0); return; }
-    goToPage(page);
+    goToPage(page, true);
     afterMove();
   }
 
@@ -382,12 +407,62 @@
     else showChrome();
   }
   $('read-leaf').addEventListener('click', zone);
+  // Pages mode: the page follows the finger, then slides on or springs back.
+  // Scroll mode keeps the simple swipe-to-turn.
   $('read-leaf').addEventListener('touchstart', function (ev) {
     touchX = ev.changedTouches[0].clientX;
+    drag = null;
+    if (!book || prefs.mode !== 'pages' || ev.touches.length > 1) return;
+    cancelAnimationFrame(slideFrame);
+    var t = ev.touches[0];
+    drag = { x: t.clientX, y: t.clientY, at: ev.timeStamp, axis: '',
+      left: logicalPage * ($('read-leaf').clientWidth || 1) };
   }, { passive: true });
+  $('read-leaf').addEventListener('touchmove', function (ev) {
+    if (!drag) return;
+    var t = ev.touches[0];
+    var dx = t.clientX - drag.x;
+    var dy = t.clientY - drag.y;
+    if (!drag.axis) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < 8) return;
+      drag.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    }
+    if (drag.axis !== 'x') return;
+    ev.preventDefault();
+    // Past the first or last page the browser clamps the scroll; release turns the chapter.
+    $('read-leaf').scrollLeft = drag.left - dx;
+  }, { passive: false });
   $('read-leaf').addEventListener('touchend', function (ev) {
     var dx = ev.changedTouches[0].clientX - touchX;
-    if (Math.abs(dx) > 48) { turn(dx < 0 ? 1 : -1); ev.preventDefault(); }
+    if (!drag) {
+      if (prefs.mode !== 'pages' && Math.abs(dx) > 48) { turn(dx < 0 ? 1 : -1); ev.preventDefault(); }
+      return;
+    }
+    var d = drag;
+    drag = null;
+    if (d.axis !== 'x') return;
+    ev.preventDefault();
+    var width = $('read-leaf').clientWidth || 1;
+    var speed = Math.abs(dx) / Math.max(1, ev.timeStamp - d.at);
+    var dir = dx < 0 ? 1 : -1;
+    var page = logicalPage + dir;
+    if (Math.abs(dx) > width * 0.2 || (Math.abs(dx) > 30 && speed > 0.35)) {
+      if (page >= 0 && page < pageCount()) {
+        hideSheets();
+        root().classList.remove('is-chrome');
+        goToPage(page, true);
+        afterMove();
+        return;
+      }
+      goToPage(logicalPage, false);
+      turn(dir);
+      return;
+    }
+    slideTo(d.left);
+  });
+  $('read-leaf').addEventListener('touchcancel', function () {
+    if (drag && drag.axis === 'x') slideTo(drag.left);
+    drag = null;
   });
 
   document.addEventListener('keydown', function (ev) {
