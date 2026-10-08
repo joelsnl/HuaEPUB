@@ -395,7 +395,7 @@ dialog.detail:not([open]) { display: none; }
   border-radius: 6px; transform: rotate(-6deg); opacity: .92;
 }
 
-/* Progress: cards standing on edge in a drawer. Grey = waiting, filed = fetched, inked = translated. */
+/* Progress: bars in a drawer. Faint = waiting, mid-tone = fetched, accent = translated; the current one lifts. */
 .slips {
   position: relative; padding: 18px 14px 10px; overflow: hidden; border-radius: var(--radius);
   background: color-mix(in srgb, var(--ground) 70%, var(--ink) 6%);
@@ -408,8 +408,8 @@ dialog.detail:not([open]) { display: none; }
   border-radius: 2px 2px 0 0; transition: background 160ms linear, transform 160ms linear;
 }
 .slip i { width: 6px; height: 6px; border-radius: 50%; background: transparent; }
-.slip.is-fetched b { background: var(--card); }
-.slip.is-done b { background: var(--card); box-shadow: inset 0 3px 0 var(--accent); }
+.slip.is-fetched b { background: var(--mid); }
+.slip.is-done b { background: var(--accent); }
 .slip.is-cur b { transform: translateY(-10px); box-shadow: inset 0 3px 0 var(--flag); }
 .slip.is-flag i { background: var(--flag); }
 @media (max-width: 719px) { :root { --slip-w: 12px; --slip-h: 130px; --slip-gap: 3px; } }
@@ -418,8 +418,8 @@ dialog.detail:not([open]) { display: none; }
 .legend span { display: inline-flex; align-items: center; gap: 8px; }
 .key { display: inline-block; width: 9px; height: 15px; border-radius: 2px 2px 0 0; }
 .key-wait { background: color-mix(in srgb, var(--card) 55%, transparent); box-shadow: 0 0 0 1px var(--line); }
-.key-fetch { background: var(--card); box-shadow: 0 0 0 1px var(--line); }
-.key-done { background: var(--card); box-shadow: inset 0 3px 0 var(--accent), 0 0 0 1px var(--line); }
+.key-fetch { background: var(--mid); }
+.key-done { background: var(--accent); }
 .key-flag { width: 6px; height: 6px; border-radius: 50%; background: var(--flag); }
 
 .steps { display: flex; margin: auto 0 0; padding: 0; list-style: none; gap: 6px; }
