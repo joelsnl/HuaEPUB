@@ -32,7 +32,7 @@ class AppSession:
         clipboard: bool,
         workers: int,
         backend: str,
-        translation_glossary: str = "auto",
+        translation_glossary: str = "off",
         library_view: str,
         library_filter: str,
         ollama_model: str = "qwen2.5:3b",

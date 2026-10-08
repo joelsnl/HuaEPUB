@@ -33,6 +33,23 @@
 
   function selection() { return entries.filter(function (e) { return selected[e.url]; }); }
 
+  // Call number from the source link: twkan.com/book/86838.html -> "TWKAN 86838".
+  function callNumber(url) {
+    try {
+      var u = new URL(url);
+      var host = u.hostname.replace(/^www\./, '').split('.')[0].toUpperCase();
+      var ids = u.pathname.match(/\d+/g);
+      return host + (ids ? ' ' + ids[ids.length - 1] : '');
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function readLine(e) {
+    if (!e.read_chapter) return 'Not opened';
+    return 'On chapter ' + Math.min(e.read_chapter, e.chapters || e.read_chapter);
+  }
+
   function badge(e) {
     if (e.status === 'update') return { text: '+' + e.new_count + ' new', cls: 'is-new' };
     if (e.status === 'checking') return { text: 'Checking…', cls: 'is-wait' };
@@ -52,16 +69,25 @@
       btn.type = 'button';
       btn.setAttribute('aria-haspopup', 'dialog');
       btn.setAttribute('aria-label', 'Details for ' + (e.title || 'book'));
+      btn.appendChild(H.el('span', 'tile-call', callNumber(e.url)));
       var cover = H.el('span', 'tile-cover');
-      cover.appendChild(H.el('span', 'tile-glyph', (e.title || '?').trim().charAt(0)));
+      cover.appendChild(H.el('span', 'tile-glyph', (e.title_original || e.title || '?').trim().charAt(0)));
       if (e.has_cover) cover.appendChild(coverImage(e));
-      var b = badge(e);
-      if (b) cover.appendChild(H.el('span', 'tile-badge ' + b.cls, b.text));
       btn.appendChild(cover);
       var text = H.el('span', 'tile-text');
       text.appendChild(H.el('span', 'tile-title', e.title));
-      text.appendChild(H.el('span', 'tile-sub muted small', metaLine(e)));
+      if (e.title_original) text.appendChild(H.el('span', 'tile-orig', e.title_original));
+      if (e.author) text.appendChild(H.el('span', 'tile-sub', e.author));
       btn.appendChild(text);
+      var foot = H.el('span', 'tile-foot');
+      var count = H.el('span', '');
+      count.appendChild(H.el('b', '', String(e.chapters || 0)));
+      count.appendChild(document.createTextNode(e.chapters === 1 ? ' chapter' : ' chapters'));
+      foot.appendChild(count);
+      foot.appendChild(H.el('span', '', readLine(e)));
+      var b = badge(e);
+      if (b) foot.appendChild(H.el('span', 'tile-badge ' + b.cls, b.text));
+      btn.appendChild(foot);
       btn.addEventListener('click', function () { openDetail(e); });
       var pick = H.el('button', 'tile-pick');
       pick.type = 'button';
@@ -83,6 +109,7 @@
     var sel = selection();
     var n = sel.length;
     setText('lib-count', n + ' selected');
+    document.querySelector('.toolbar-sel').classList.toggle('has-sel', n > 0);
     var busy = H.state().busy;
     $('lib-read').disabled = n !== 1;
     $('lib-open').disabled = n !== 1;
@@ -96,12 +123,9 @@
     setText('lib-update-all', withUpdates ? 'Update all (' + withUpdates + ')' : 'Update all');
     $('lib-check').disabled = busy || !entries.length;
     setText('lib-lede', entries.length
-      ? H.plural(entries.length, 'book') + (withUpdates ? ' · ' + withUpdates + ' with new chapters' : '')
+      ? H.plural(entries.length, 'book') + ' in the catalogue.' +
+        (withUpdates ? ' ' + withUpdates + (withUpdates === 1 ? ' has' : ' have') + ' new chapters.' : '')
       : 'Books you have downloaded on this PC.');
-  }
-
-  function metaLine(e) {
-    return [e.author, H.plural(e.chapters, 'chapter')].filter(Boolean).join(' · ');
   }
 
   function coverImage(e) {
@@ -145,12 +169,15 @@
   }
 
   function fillDetail(e) {
+    setText('lib-detail-call', callNumber(e.url));
     setText('lib-detail-title', e.title || 'Book');
     setText('lib-detail-original', e.title_original || '');
     show('lib-detail-original', !!e.title_original);
     setText('lib-detail-by', e.author || '');
     show('lib-detail-by', !!e.author);
     setText('lib-detail-chapters', H.plural(e.chapters, 'chapter'));
+    setText('lib-detail-readpos', e.read_chapter ? String(e.read_chapter) : '');
+    show('lib-detail-read-row', !!e.read_chapter);
     setText('lib-detail-latest', e.last_chapter || '');
     show('lib-detail-latest-row', !!e.last_chapter);
     var saved = savedOn(e.updated_at);
@@ -162,7 +189,7 @@
     show('lib-detail-blurb', !!e.description);
     var cover = $('lib-detail-cover');
     cover.textContent = '';
-    cover.appendChild(H.el('span', 'detail-glyph', (e.title || '?').trim().charAt(0)));
+    cover.appendChild(H.el('span', 'detail-glyph', (e.title_original || e.title || '?').trim().charAt(0)));
     if (e.has_cover) cover.appendChild(coverImage(e));
     var busy = H.state().busy;
     $('lib-detail-update').disabled = !!busy;

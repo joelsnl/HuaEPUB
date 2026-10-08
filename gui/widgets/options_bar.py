@@ -93,16 +93,15 @@ class OptionsBar(QWidget):
             "Off",
         ])
         self.glossary.setToolTip(
-            "Auto (default) uses the built-in xianxia/wuxia list only when the "
-            "title or chapter list looks like cultivation. Cultivation pack "
-            "always applies it. Names only uses ~/.huaepub/glossary.json and "
-            "per-novel files (including names learned from this book). Off "
-            "disables protect/restore. "
-            "公子 / 凡人 alone do not trigger Auto. "
+            "Off (default) leaves names to the translator. Auto uses the built-in "
+            "xianxia/wuxia list only when the title or chapter list looks like "
+            "cultivation; Cultivation pack always applies it. Names only uses "
+            "~/.huaepub/glossary.json and per-novel files (including names learned "
+            "from this book). 公子 / 凡人 alone do not trigger Auto. "
             "This is not a general Chinese dictionary."
         )
         self.glossary.setCurrentText(
-            self._glossary_label(s.get("translation_glossary", "auto"))
+            self._glossary_label(s.get("translation_glossary", "off"))
         )
         self.glossary.currentTextChanged.connect(self._emit_options)
         row2.addWidget(self.glossary)

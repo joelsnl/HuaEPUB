@@ -335,7 +335,7 @@ class ServerActionsMixin:
             "use_cache": s.get("use_chapter_cache", True),
             "workers": s.get("workers", 200),
             "backend": s.get("translation_backend", "google"),
-            "glossary": s.get("translation_glossary", "auto"),
+            "glossary": s.get("translation_glossary", "off"),
             "ollama_polish": s.get("ollama_polish", False),
         }
         self.options.blockSignals(True)

@@ -125,7 +125,7 @@ def should_offer_glossary_qwen(
         return True
     if not settings.get("glossary_qwen_ask", True):
         return False
-    mode = str(settings.get("translation_glossary") or "auto").strip().lower()
+    mode = str(settings.get("translation_glossary") or "off").strip().lower()
     if mode in ("off", "none", "false", "0"):
         return False
     ready = polish_gguf_on_disk() if model_ready is None else bool(model_ready)

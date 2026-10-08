@@ -489,6 +489,25 @@ def test_signed_out_requests_go_to_sign_in(session):
     assert login.status_code == 200 and "Content-Security-Policy" in login.headers
 
 
+def test_pages_revalidate_so_updates_reach_phones(session):
+    c = _signed_in(_ctx(session))
+    for path in ("/", "/static/app.css", "/static/library.js"):
+        assert c.get(path).headers["Cache-Control"] == "no-cache", path
+    assert c.get("/api/state").headers["Cache-Control"] == "no-store"
+    assert _client(_ctx(session)).get("/login").headers["Cache-Control"] == "no-cache"
+
+
+def test_library_entries_carry_the_reading_position(session):
+    from core.reading import set_position
+
+    url = "https://example.com/book/read"
+    session.library_store.upsert_library(url, title="书", translated_title="Read Book",
+                                         chapter_count=10)
+    set_position(url, chapter_url=url + "/c/4", chapter_index=3, data_dir=session.data_dir)
+    entries = _signed_in(_ctx(session)).get("/api/library").json()["entries"]
+    assert [e["read_chapter"] for e in entries if e["url"] == url] == [4]
+
+
 def test_code_link_and_login_set_a_cookie(session):
     ctx = _ctx(session)
     c = _client(ctx)
@@ -1091,3 +1110,10 @@ def test_an_open_book_counts_as_reading_until_it_goes_quiet():
     assert store.get(item.id) is item
     item.seen = time.monotonic() - 181
     assert not store.active()
+
+
+def test_card_description_turns_site_markup_into_lines():
+    from web.library_api import card_description
+
+    raw = "[Cultivation] + [Stable]<br /> Han Xuanji &amp; <b>friends</b>.<br/><br/>  Next   line"
+    assert card_description(raw) == "[Cultivation] + [Stable]\nHan Xuanji & friends.\nNext line"

@@ -246,7 +246,7 @@ class MainWindow(
             clipboard=o["clipboard"],
             workers=o["workers"],
             backend=o["backend"],
-            translation_glossary=o.get("glossary", "auto"),
+            translation_glossary=o.get("glossary", "off"),
             ollama_model=o.get("ollama_model", "qwen2.5:3b"),
             ollama_url=o.get("ollama_url", "http://127.0.0.1:11434"),
             ollama_polish=bool(o.get("ollama_polish", False)),

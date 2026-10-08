@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 from typing import List
 
 from fastapi import APIRouter, Query
@@ -13,6 +15,7 @@ from core.cache import english_chapter_title
 from core.cleaner import is_chinese
 from core.parser import create_http_session
 from core.reader import find_local_epub, load_epub_chapters
+from core.reading import chapter_indexes
 from core.security import fetch_cover_bytes
 from web import books
 from web.context import ServerContext
@@ -76,15 +79,22 @@ def card_original_title(title: str, translated: str) -> str:
     return raw
 
 
+_BREAK = re.compile(r"<br\s*/?>|</p\s*>", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]+>")
+
+
 def card_description(text: str) -> str:
-    """Synopsis for the detail view. Capped so a runaway paragraph stays in the dialog."""
-    raw = " ".join((text or "").split())
+    """Synopsis for the detail view: site markup becomes plain lines, capped so a
+    runaway paragraph stays in the dialog."""
+    plain = html.unescape(_TAG.sub("", _BREAK.sub("\n", text or "")))
+    lines = (" ".join(line.split()) for line in plain.split("\n"))
+    raw = "\n".join(line for line in lines if line)
     if len(raw) > _DESCRIPTION_MAX:
         return raw[:_DESCRIPTION_MAX].rstrip()
     return raw
 
 
-def _entry_payload(ctx: ServerContext, e) -> dict:
+def _entry_payload(ctx: ServerContext, e, read_index: int = -1) -> dict:
     st = ctx.check_status.get(e.source_url) or {}
     local = find_local_epub(
         output_path=e.output_path or "",
@@ -105,6 +115,8 @@ def _entry_payload(ctx: ServerContext, e) -> dict:
         "status": st.get("state") or "",
         "new_count": int(st.get("new_count") or 0),
         "status_error": st.get("error") or "",
+        # 1-based chapter the reader is on (0 = not opened yet), from reading.json.
+        "read_chapter": read_index + 1 if read_index >= 0 else 0,
     }
 
 
@@ -213,8 +225,9 @@ def build_router(ctx: ServerContext) -> APIRouter:
     def listing():
         entries = session.library_store.get_library()
         check = ctx.tasks.active()
+        read = chapter_indexes(data_dir=session.data_dir)
         return {
-            "entries": [_entry_payload(ctx, e) for e in entries],
+            "entries": [_entry_payload(ctx, e, read.get(e.source_url, -1)) for e in entries],
             "checking": bool(check and check.kind == "check"),
         }
 
