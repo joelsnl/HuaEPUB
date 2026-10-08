@@ -206,7 +206,12 @@ fieldset.card > legend.block-title + * { clear: both; }
 .banner-actions, .dock-actions { display: flex; align-items: center; gap: 14px; }
 .dock-files { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .dock-files .btn-link { font-family: var(--sans); }
-.dock-slips { --slip-w: 5px; --slip-h: 40px; --slip-gap: 2px; }
+.dock-slips {
+  /* The same drawer as the Add-a-book page: unfilled cards only show against it. */
+  --slip-w: 6px; --slip-h: 40px; --slip-gap: 2px; flex-shrink: 0;
+  padding: 8px 8px 0; border-radius: var(--radius); overflow: hidden;
+  background: color-mix(in srgb, var(--ground) 70%, var(--ink) 6%);
+}
 .dock-slips .slips-row { display: flex; gap: var(--slip-gap); align-items: flex-end; }
 .dock-slips .slip { width: var(--slip-w); display: block; }
 .dock-slips .slip i { display: none; }
@@ -504,9 +509,7 @@ body.is-reading .dock.has-notes .dock-line { display: none; }
 body.is-reading .dock-files { flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; }
 body.is-reading .dock-files .btn-link { text-align: left; justify-content: flex-start; font-size: 14px; }
 body.is-reading .dock-slips {
-  order: 2; display: block; --slip-w: 7px; --slip-h: 46px; --slip-gap: 3px;
-  padding: 10px 10px 0; border-radius: var(--radius); overflow: hidden;
-  background: color-mix(in srgb, var(--ground) 70%, var(--ink) 6%);
+  order: 2; display: block; --slip-w: 7px; --slip-h: 46px; --slip-gap: 3px; padding: 10px 10px 0;
 }
 body.is-reading .dock-slips .slip { flex: 1 1 0; width: auto; }
 body.is-reading .dock-steps {

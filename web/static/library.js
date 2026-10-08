@@ -59,6 +59,13 @@
   }
 
   function draw() {
+    drawShelf();
+    drawControls();
+  }
+
+  // The cards. Rebuilding them reloads every cover, so only do it when the books,
+  // the filter or the selection changed, not on every progress tick.
+  function drawShelf() {
     var shelf = $('shelf');
     shelf.textContent = '';
     var list = visible();
@@ -72,7 +79,7 @@
       btn.appendChild(H.el('span', 'tile-call', callNumber(e.url)));
       var cover = H.el('span', 'tile-cover');
       cover.appendChild(H.el('span', 'tile-glyph', (e.title_original || e.title || '?').trim().charAt(0)));
-      if (e.has_cover) cover.appendChild(coverImage(e));
+      if (e.has_cover) cover.appendChild(shelfCover(e));
       btn.appendChild(cover);
       var text = H.el('span', 'tile-text');
       text.appendChild(H.el('span', 'tile-title', e.title));
@@ -106,6 +113,14 @@
       if (open) fillDetail(open);
       else closeDetail();
     }
+  }
+
+  // Buttons, counts and the summary line: cheap, safe on every state tick.
+  function drawControls() {
+    if (detailUrl) {
+      $('lib-detail-update').disabled = !!H.state().busy;
+      $('lib-detail-remove').disabled = !!H.state().busy;
+    }
     var sel = selection();
     var n = sel.length;
     setText('lib-count', n + ' selected');
@@ -128,12 +143,23 @@
       : 'Books you have downloaded on this PC.');
   }
 
+  // Shelf covers are kept and moved into the rebuilt cards, so a redraw never reloads them.
+  var shelfCovers = {};
+  function shelfCover(e) {
+    var img = shelfCovers[e.url];
+    if (!img || !img.isConnected && img.dataset.failed) {
+      img = coverImage(e);
+      shelfCovers[e.url] = img;
+    }
+    return img;
+  }
+
   function coverImage(e) {
     var img = document.createElement('img');
     img.alt = '';
     img.loading = 'lazy';
     img.src = '/api/library/cover?u=' + encodeURIComponent(e.url);
-    img.onerror = function () { img.remove(); };
+    img.onerror = function () { img.dataset.failed = '1'; img.remove(); };
     return img;
   }
 
@@ -320,7 +346,7 @@
       lastKey = key;
       if (H.view() === 'library') load();
     } else if (H.view() === 'library') {
-      draw();
+      drawControls();
     }
   }
 
