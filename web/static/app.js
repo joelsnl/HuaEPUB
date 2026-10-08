@@ -203,10 +203,22 @@
     var c = slipCounts(t, n);
     drawSlips($('dock-slips'), n, c.fetched, c.done, c.cur);
     var running = !finished;
-    show('dock-pause', running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'install');
+    var pausable = running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'install';
     setText('dock-pause', t.state === 'paused' ? 'Resume' : 'Pause');
-    show('dock-cancel', running);
-    show('dock-close', finished);
+    if (document.body.classList.contains('is-reading')) {
+      // The reader's card keeps one set of buttons: Pause, Cancel, Hide (Hide clears a finished job).
+      show('dock-pause', true);
+      show('dock-cancel', true);
+      show('dock-close', false);
+      $('dock-pause').disabled = !pausable;
+      $('dock-cancel').disabled = !running;
+    } else {
+      show('dock-pause', pausable);
+      show('dock-cancel', running);
+      show('dock-close', finished);
+      $('dock-pause').disabled = false;
+      $('dock-cancel').disabled = false;
+    }
     var files = $('dock-files');
     files.textContent = '';
     var list = (finished && t.result && t.result.files) || [];
@@ -252,6 +264,20 @@
 
   function firstLine(text) { return (text || '').split('\n').filter(Boolean)[0] || ''; }
 
+  function dismissTask() {
+    var t = latest.task;
+    dismissed = t ? t.id : null;
+    try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
+    renderDock(latest);
+  }
+
+  function hideReaderCard() {
+    document.body.classList.remove('dock-open');
+    $('read-job').setAttribute('aria-pressed', 'false');
+    var t = latest.task;
+    if (t && (t.state === 'done' || t.state === 'error' || t.state === 'cancelled')) dismissTask();
+  }
+
   function pauseTask() { return api('POST', '/api/task/pause').then(refresh); }
   function cancelTask() { return api('POST', '/api/task/cancel').then(refresh); }
 
@@ -272,22 +298,18 @@
     document.querySelectorAll('.nav a').forEach(function (a) {
       a.addEventListener('click', function (ev) { ev.preventDefault(); go(a.getAttribute('data-view')); });
     });
+    // The progress button and Hide both close the reader's card; closing a finished job clears it.
     $('read-job').addEventListener('click', function () {
-      var open = document.body.classList.toggle('dock-open');
-      $('read-job').setAttribute('aria-pressed', open ? 'true' : 'false');
+      if (document.body.classList.contains('dock-open')) hideReaderCard();
+      else {
+        document.body.classList.add('dock-open');
+        $('read-job').setAttribute('aria-pressed', 'true');
+      }
     });
-    $('dock-hide').addEventListener('click', function () {
-      document.body.classList.remove('dock-open');
-      $('read-job').setAttribute('aria-pressed', 'false');
-    });
+    $('dock-hide').addEventListener('click', hideReaderCard);
     $('dock-pause').addEventListener('click', pauseTask);
     $('dock-cancel').addEventListener('click', cancelTask);
-    $('dock-close').addEventListener('click', function () {
-      var t = latest.task;
-      dismissed = t ? t.id : null;
-      try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
-      renderDock(latest);
-    });
+    $('dock-close').addEventListener('click', dismissTask);
     $('btn-resume').addEventListener('click', function () {
       api('POST', '/api/resume').then(function (res) {
         if (!res.ok) { setText('resume-title', errorText(res.data, '', 'resume this download')); return; }

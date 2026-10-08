@@ -191,7 +191,8 @@
   }
 
   function pickList() {
-    document.body.classList.remove('is-reading');
+    document.body.classList.remove('is-reading', 'dock-open');
+    H.refresh();  // redraw the job panel for the page view (it had the reader's buttons)
     show('read-pick', true);
     show('read-book', false);
     hideSheets();
