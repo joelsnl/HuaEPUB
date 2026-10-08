@@ -50,6 +50,40 @@ from core.parser import CHROME_UA
 DEFAULT_GOOGLE_WORKERS = 200
 MAX_PACKED_WORKERS = 200
 MAX_SESSION_POOL = 16
+# Translation threads by machine size. Each one also holds an HTTP session; a Pi Zero
+# 2 W (416 MB) refused new threads part-way to 200 ("can't start new thread").
+_SMALL_RAM_BYTES, _SMALL_RAM_THREADS = 1 << 30, 24
+_MID_RAM_BYTES, _MID_RAM_THREADS = 2 << 30, 64
+
+
+def _total_ram_bytes() -> int:
+    try:
+        import os
+        return int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+    except (AttributeError, ValueError, OSError):
+        return 0  # Windows: no sysconf; desktops there have room for the full pool
+
+
+def machine_worker_cap(total_ram: Optional[int] = None, nproc_soft: Optional[int] = None) -> int:
+    """Most translation threads this machine can run; the Workers setting is a ceiling under it."""
+    cap = MAX_PACKED_WORKERS
+    ram = _total_ram_bytes() if total_ram is None else total_ram
+    if 0 < ram < _SMALL_RAM_BYTES:
+        cap = _SMALL_RAM_THREADS
+    elif 0 < ram < _MID_RAM_BYTES:
+        cap = _MID_RAM_THREADS
+    if nproc_soft is None:
+        try:
+            import resource
+            nproc_soft = resource.getrlimit(resource.RLIMIT_NPROC)[0]
+            if nproc_soft == resource.RLIM_INFINITY:
+                nproc_soft = 0
+        except (ImportError, AttributeError, ValueError, OSError):
+            nproc_soft = 0
+    if nproc_soft and nproc_soft > 0:
+        # Threads count against the per-user process limit; leave room for everything else.
+        cap = min(cap, max(4, nproc_soft // 4))
+    return cap
 GOOGLE_FAMILY_BACKENDS = frozenset({"google", "google_html", "google_gtx"})
 THROTTLED_BACKENDS = frozenset({"google", "google_html", "google_gtx", "microsoft"})
 # Widget keys shipped in Google's Translate Element / the Calibre plugin.
@@ -192,9 +226,11 @@ class GoogleTranslator:
         elif self.backend == 'ctranslate2':
             self.max_workers = max(1, min(int(max_workers or 1), 4))
         elif self.backend in ('google', 'google_html', 'google_gtx', 'microsoft', 'libretranslate'):
-            self.max_workers = max(
-                1, min(int(max_workers or DEFAULT_GOOGLE_WORKERS), MAX_PACKED_WORKERS)
-            )
+            wanted = int(max_workers or DEFAULT_GOOGLE_WORKERS)
+            self.max_workers = max(1, min(wanted, MAX_PACKED_WORKERS, machine_worker_cap()))
+            if self.max_workers < min(wanted, MAX_PACKED_WORKERS):
+                print(f"  Workers {wanted} is more threads than this machine can run; "
+                      f"using {self.max_workers}.")
         self._configured_workers = self.max_workers
         self._adapter_pool_size = max(8, min(int(self.max_workers or 1), MAX_SESSION_POOL))
         # (connect, read) — short connect avoids long IPv6 black-hole waits
@@ -1114,8 +1150,8 @@ class GoogleTranslator:
                 _fill()
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
-
-        self._flush_persistent_cache()
+            # Even when the pass fails, keep the translations that did come back.
+            self._flush_persistent_cache()
         return results
     
     def translate_texts_with_retry(
