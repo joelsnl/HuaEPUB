@@ -2,27 +2,27 @@
 
 Download Chinese web novels and build English EPUBs. Run from source on **Windows, macOS, or Linux** (Python 3.10+). Prebuilt executables are published for **Windows, macOS, and Linux**.
 
-GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter through 2.5).
+GUI is **PySide6 (Qt)**, plus a browser app (server mode) for reading and managing the library from a phone. Formerly *Novel Downloader & Translator* (CustomTkinter through 2.5).
 
-![HuaEPUB desktop app translating a book](docs/screenshots/desktop-single-dark.png)
+![The library in a browser: each book is a catalogue card with its call number, reading position and a "+27 new" stamp](docs/screenshots/browser-library-light.png)
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/desktop-library-light.png" alt="Library tab in the light look"></td>
-    <td width="50%"><img src="docs/screenshots/desktop-serving-dark.png" alt="Server mode: address, access code and QR code"></td>
+    <td width="50%"><img src="docs/screenshots/browser-detail-dark.png" alt="A book's card opened: facts, synopsis and chapter list"></td>
+    <td width="50%"><img src="docs/screenshots/desktop-serving-dark.png" alt="Server mode on the desktop: address, access code and QR code"></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/browser-library-light.png" alt="The same library in a browser"></td>
-    <td align="center"><img src="docs/screenshots/phone-library-dark.png" width="45%" alt="Library on a phone"> <img src="docs/screenshots/phone-reader-dark.png" width="45%" alt="Reading on a phone"></td>
+    <td><img src="docs/screenshots/desktop-library-light.png" alt="The desktop Library tab"></td>
+    <td align="center"><img src="docs/screenshots/phone-library-dark.png" width="45%" alt="The library on a phone"> <img src="docs/screenshots/phone-reader-light.png" width="45%" alt="Reading a chapter on a phone"></td>
   </tr>
 </table>
 
-<sub>Screenshots use made-up demo books.</sub>
+<sub>Screenshots use made-up demo books (`python tools/make_demo_home.py <folder>` builds that library).</sub>
 
 ## Features
 
 - **In-app reader** — **Read** tab (Library **Read** / double-click, or Single **Read** after fetch). Prefers the local EPUB (translated/polished English if that is what you downloaded). Otherwise it reads cached chapter HTML (usually the original site text) and fetches a missing chapter on demand — no EPUB rebuild, no translation/polish. Reading position stays in `~/.huaepub/reading.json` on this PC.
-- **Server mode** — use HuaEPUB from a web browser on your phone, another computer or this PC. **This network** signs in with an access code (or a QR code); **Anywhere** uses HTTPS and a password. Single, Multi, Library, Read and Settings all work in the browser on the same library, cache and reading position. See [Server mode](#server-mode).
+- **Server mode** — use HuaEPUB from a web browser on your phone, another computer or this PC. **This network** signs in with an access code (or a QR code); **Anywhere** uses HTTPS and a password. The browser opens on the **Library**: every book is a catalogue card with its call number, chapter count, where you are reading and a **+N new** stamp after a check. Add a book, Add several, Read and Settings work on the same library, cache and reading position. The reader turns pages with a slide like Play Books, and a running download stays out of the text behind a progress button in the reader's top bar. See [Server mode](#server-mode).
 - **Looks** — View → **Look**: Auto follows your system (Catalogue at night when dark, Catalogue when light), or pick Indigo & Jade, Ink & Gold, Cinnabar Night, Blue Mist, or Surprise me. The browser pages use the same palettes.
 - **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site; if a configured site’s content selector misses, the same heuristic is used and the completion dialog warns you
@@ -134,7 +134,7 @@ Pick **Translator → Offline NMT** for a free local engine. This is not bundled
 pip install -r requirements-nmt.txt   # ctranslate2 + sentencepiece + CUDA 12 libs
 ```
 
-The first **translate** pass (after chapters are fetched) downloads Helsinki-NLP **opus-mt-zh-en** (CTranslate2, ~320 MB) into `~/.huaepub/nmt/` — not once per chapter. **Glossary** is Auto by default: the built-in web-novel pack (ranks like Grand Elder / Golden Core, plus cultivation items) is used only when the title or chapter list looks like cultivation. Romance, urban, and similar books skip it so 公子 is not forced to “Young Master.” That pack is **not** a general Chinese dictionary (pinning everyday words would wreck sentences). Character names are harvested from the book into `~/.huaepub/glossaries/<novel-title>.json` during the translate pass. You can also add names in `~/.huaepub/glossary.json` (same JSON shape as the polish glossary). Quality is below Google + Polish; use Polish English after Offline NMT if you want a copy-edit pass. The model stays on this PC.
+The first **translate** pass (after chapters are fetched) downloads Helsinki-NLP **opus-mt-zh-en** (CTranslate2, ~320 MB) into `~/.huaepub/nmt/` — not once per chapter. **Glossary** is Off by default. Set it to **Auto** and the built-in web-novel pack (ranks like Grand Elder / Golden Core, plus cultivation items) is used only when the title or chapter list looks like cultivation. Romance, urban, and similar books skip it so 公子 is not forced to “Young Master.” That pack is **not** a general Chinese dictionary (pinning everyday words would wreck sentences). Character names are harvested from the book into `~/.huaepub/glossaries/<novel-title>.json` during the translate pass. You can also add names in `~/.huaepub/glossary.json` (same JSON shape as the polish glossary). Quality is below Google + Polish; use Polish English after Offline NMT if you want a copy-edit pass. The model stays on this PC.
 
 #### GPU (NVIDIA)
 
@@ -238,7 +238,14 @@ Server mode turns HuaEPUB into a small web app you open in a browser. Click **SE
 
 While serving, the desktop window shows the addresses, the code or password status, a QR code, what the browser is doing right now, **Open in browser** (signs this PC's browser in with a one-time link) and **Stop serving**. The desktop tabs are paused so the browser and the window never run jobs on the same library at once; on this PC you use the browser too.
 
-In the browser you get **Single**, **Multi**, **Library** (check, update, update all, remove, download EPUB, read), **Read** (the same `reading.json` position as the desktop reader) and **Settings** (translate, clean, cache, translator, glossary, workers, Polish, the books folder, and installing Polish, Offline NMT or an Ollama model). Finished EPUBs are saved in the books folder on the computer that is serving and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. You can keep reading a cached chapter while a download runs. A missing chapter from the same site waits until that download is done. One download runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
+In the browser you get:
+
+- **Library** (the home page) — one catalogue card per book: a call number from its source link, the English and Chinese titles, the author, the chapter count, the chapter you are on, and a red **+N new** stamp after **Check for updates**. Tap a card for its synopsis, chapter list and actions (Read, Update, Download EPUB, Open link, Remove); tick cards to update, download or remove several at once.
+- **Add a book** / **Add several** — the Single and Multi downloads.
+- **Read** — the same `reading.json` position as the desktop reader. In **Pages** mode a page follows your finger and slides on, like Play Books; taps on the edges and the arrow keys slide too. While a download runs, a progress button in the reader's top bar ("Translating 38%") opens a card with the whole job (steps, counts, notes, files) and **Pause** / **Cancel** / **Hide**; it never covers the text on its own.
+- **Settings** (translate, clean, cache, translator, glossary, workers, Polish, the books folder, and installing Polish, Offline NMT or an Ollama model).
+
+Finished EPUBs are saved in the books folder on the computer that is serving and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. You can keep reading a cached chapter while a download runs. A missing chapter from the same site waits until that download is done. One download runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
 
 A headless server checks for an app update on its own and restarts into it. The desktop app still asks first.
 
@@ -285,8 +292,8 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 
 - Updates install only when the downloaded zip matches the release’s `SHA256SUMS.txt` (fail closed if the sum is missing or wrong). There is no fallback to unsigned `main.zip`.
 - Checksums and zips come from the **same** GitHub release — treat the [joelsnl/HuaEPUB](https://github.com/joelsnl/HuaEPUB) publisher account as your trust root (enable 2FA on that account).
-- On **every OS** (Windows, macOS, Linux, and source installs), confirm the “update ready” dialog. The app **quits** so a small helper can replace the files and **reopen** HuaEPUB. Frozen Windows may swap the on-disk `.exe` first, then a hidden PowerShell helper deletes the backup and relaunches after exit. Frozen macOS/Linux use a shell helper (`/bin/sh` or `/bin/bash`), never the app binary itself.
-- Need **2.10.1+** for a correct reopen of the **built** app. 2.9.2–2.10.0 could relaunch via Terminal/`python` on macOS (closing that session quit the app) and often failed to reopen on Windows. Older 2.6–2.9.1 builds often left the window closed after an update.
+- On **every OS** (Windows, macOS, Linux, and source installs), accepting an update hides the window behind one progress dialog that shows the real download size, then switches to **Restart now**. The app **quits** so a small helper can replace the files and **reopen** HuaEPUB. Frozen Windows may swap the on-disk `.exe` first, then a hidden PowerShell helper deletes the backup and relaunches after exit. Frozen macOS/Linux use a shell helper (`/bin/sh` or `/bin/bash`), never the app binary itself.
+- An update is installed by the version you are running, so a new update screen appears from the update after it lands. Builds before 2.10.1 could fail to reopen after updating; install a current release by hand once if you are on one.
 - Novel page / cover / LibreTranslate fetches block private/loopback hosts and re-check redirect targets. Translation still sends chapter text to Google or your LibreTranslate URL when enabled. Polish English stays on this PC.
 
 ### Tips
@@ -343,8 +350,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 ```
 .
 ├── app.py              # Entry → gui.app.run()
-├── gui/                # PySide6 UI (main window, pages, workers, Slips theme)
-├── web/                # Server mode: FastAPI app, sign-in, TLS, browser pages (web/static)
+├── gui/                # PySide6 UI (main window, pages, workers, catalogue palettes)
+├── web/                # Server mode: FastAPI app, sign-in, TLS, the browser app (web/static)
 ├── requirements.txt    # Server and download dependencies
 ├── requirements-gui.txt # Desktop window (PySide6)
 ├── requirements-dev.txt # pytest, ruff, pinned PyInstaller
@@ -353,7 +360,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── branding.py     # Product name + legacy aliases
 │   ├── parser.py       # Base parser class + registry
 │   ├── cleaner.py      # Watermark/ad removal
-│   ├── translator.py   # Translation (Google / LibreTranslate / Ollama)
+│   ├── translator.py   # Translation engines (Google / Microsoft / LibreTranslate / Ollama)
+│   ├── translation/    # Glossary protect/restore, Offline NMT, NovelTranslator pipeline
 │   ├── ollama_setup.py # Ollama install / GPU / probe / pull
 │   ├── local_polish.py # Polish English entry (KEEP/REPLACE)
 │   ├── polish/         # llama.cpp serve + span copy-edit (pinned hosts + hashes)
@@ -376,6 +384,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── config.py       # Single parser that reads sites.json
 │   ├── pagination.py   # TOC / chapter-body next-page walks
 │   └── generic.py      # Fallback parser for other sites
+├── tools/
+│   └── make_demo_home.py # Demo library for README screenshots (made-up books)
 └── tests/              # Offline pytest suite
 ```
 
@@ -429,8 +439,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 - Over the cap, oldest stored chapter HTML is deleted first. Translations are kept unless the file is still over the limit. Nothing is cleared on a timer.
 
 ### Update installed but the app does not reopen (any OS)
-- Confirm you are on **2.10.1+**. 2.9.2–2.10.0 could reopen a Terminal/`python` session on macOS instead of the `dist` binary, and on Windows the helper was often killed with the old process so nothing reopened. Older onefile builds could also fail to relaunch (PyInstaller treated the new process as a worker of the dying extract). Polish English in **2.9+** uses llama.cpp (Ollama is not required); 2.7.x used Ollama for polish.
-- After “Update ready”, allow the app to quit; do not force-quit the helper. It should reopen itself. If it does not, start `HuaEPUB` from the same folder you installed into.
+- Builds before 2.10.1 could fail to reopen after updating (a Terminal/`python` session on macOS, or a helper killed with the old process on Windows). Install a current release by hand once to get past that.
+- After **Restart now**, allow the app to quit; do not force-quit the helper. It should reopen itself. If it does not, start `HuaEPUB` from the same folder you installed into.
 - If it still fails, download the OS zip from [Releases](https://github.com/joelsnl/HuaEPUB/releases) and replace the binary manually. On macOS, clear quarantine if Gatekeeper blocks it: `xattr -cr /path/to/HuaEPUB`.
 
 ### Update refused / checksum error
