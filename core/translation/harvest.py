@@ -8,7 +8,7 @@ Instead, each book grows ``~/.huaepub/glossaries/<title>.json`` from names
 and domain terms that actually appear in that text.
 
 Person names are romanized with pypinyin (not Google). User-edited targets
-are never overwritten. Never Drive-synced.
+are never overwritten.
 """
 
 from __future__ import annotations

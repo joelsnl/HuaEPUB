@@ -1,5 +1,5 @@
 # Author: joelsnl and Anthropic Claude
-"""One piece of server work at a time: downloads, checks, lookups, Drive sync.
+"""One piece of server work at a time: downloads, checks, and lookups.
 
 Every browser shares one task slot, the same rule the desktop applies to its
 worker thread. Reader fetches take the same slot for a few seconds (see
@@ -31,7 +31,6 @@ PHASES = {
     "translating": "Translating",
     "polishing": "Polishing English",
     "writing": "Writing EPUB",
-    "syncing": "Syncing Google Drive",
     "paused": "Paused",
 }
 
@@ -44,16 +43,13 @@ class Busy(Exception):
 
 
 def phase_from_status(status: str, fallback: str) -> str:
-    """``pipeline_phase`` plus the server's own phases (paused, syncing, checking)."""
+    """``pipeline_phase`` plus the server's own phases (paused, checking)."""
     low = (status or "").lower()
     if "paused" in low:
         return "paused"
     phase = pipeline_phase(low)
-    if phase in ("", "fetching"):
-        if "drive" in low:
-            return "syncing"
-        if "checking" in low:
-            return "checking"
+    if phase in ("", "fetching") and "checking" in low:
+        return "checking"
     return phase or fallback
 
 
@@ -182,14 +178,13 @@ class TaskManager:
         session,
         *,
         file_roots: Callable[[], List[Path]],
-        after_library_change: Optional[Callable[[TaskContext], None]] = None,
     ):
         self.session = session
         self._file_roots = file_roots
-        self._after_library_change = after_library_change
         self._lock = threading.Lock()
         self._task: Optional[Task] = None
         self._exclusive = False
+        self._reader_busy = False
         self._files: Dict[str, Path] = {}
         self._thread: Optional[threading.Thread] = None
 
@@ -252,7 +247,6 @@ class TaskManager:
         rows: Optional[List[Dict[str, Any]]] = None,
         novels: int = 1,
         chapters: int = 0,
-        library_change: bool = False,
     ) -> Task:
         with self._lock:
             self._check_free("Reading")
@@ -264,25 +258,20 @@ class TaskManager:
             ctrl = self.session.control
             ctrl.cancel_requested = False
             ctrl.is_paused = False
-            ctrl.is_downloading = kind not in ("lookup", "check", "sync")
+            ctrl.is_downloading = kind not in ("lookup", "check", "install")
         thread = threading.Thread(
-            target=self._run, args=(task, body, library_change),
+            target=self._run, args=(task, body),
             name=f"server-task-{kind}", daemon=True,
         )
         self._thread = thread
         thread.start()
         return task
 
-    def _run(self, task: Task, body: TaskBody, library_change: bool) -> None:
+    def _run(self, task: Task, body: TaskBody) -> None:
         ctx = TaskContext(self, task)
         ctrl = self.session.control
         try:
             result = body(ctx) or {}
-            if library_change and self._after_library_change is not None and not ctrl.cancel_requested:
-                try:
-                    self._after_library_change(ctx)
-                except Exception as exc:
-                    print(f"Server: after-update step failed: {exc}")
             state = "cancelled" if result.get("cancelled") else "done"
             task.finish(state, result=result, fraction=1.0 if state == "done" else task.fraction)
         except DownloadCancelled:
@@ -306,6 +295,20 @@ class TaskManager:
         finally:
             with self._lock:
                 self._exclusive = False
+
+    @contextlib.contextmanager
+    def reader_turn(self, label: str = "Reading") -> Iterator[None]:
+        """One reader fetch or translate at a time, without taking the download slot."""
+        with self._lock:
+            if self._reader_busy:
+                task = self._running()
+                raise Busy(task.id if task else "", task.label if task else label)
+            self._reader_busy = True
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._reader_busy = False
 
     def pause(self) -> bool:
         task = self.active()

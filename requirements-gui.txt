@@ -1,0 +1,2 @@
+# Desktop window. A headless server (`python3 app.py --headless`) does not need this.
+PySide6>=6.5.0

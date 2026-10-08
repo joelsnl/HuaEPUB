@@ -48,7 +48,6 @@ class _Host(WorkerHostMixin, QMainWindow):
         self._worker = None
         self._worker_busy = False
         self._worker_epoch = 0
-        self._pending_drive_sync = False
         self.got = None
         self.err = None
         self.statuses = []
@@ -70,7 +69,7 @@ class _Host(WorkerHostMixin, QMainWindow):
 
 def _cleanup_host(qapp, host, wait_ms=1000):
     try:
-        host._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+        host._stop_thread(wait_ms=wait_ms)
     except Exception:
         pass
     try:
@@ -162,7 +161,7 @@ def test_worker_busy_clears_after_finish(qapp, monkeypatch):
 
 
 def test_finish_from_background_thread_clears_busy(qapp):
-    """Drive-sync slots can run off the GUI thread; cleanup must still clear busy.
+    """A worker can finish off the GUI thread; cleanup must still clear busy.
 
     The regression: QTimer.singleShot(0, _stop_thread) without a context QObject
     attached the timer to the worker thread, so busy never cleared and Fetch

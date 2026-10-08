@@ -10,7 +10,18 @@ from core.utils import sanitize_runtime_env
 
 def run():
     sanitize_runtime_env()
-    from web.host import headless_requested, serve_headless
+    from web.host import (
+        _write_terminal,
+        headless_requested,
+        install_service_requested,
+        install_user_service,
+        serve_headless,
+    )
+
+    if install_service_requested():
+        code, message = install_user_service()
+        _write_terminal(message)
+        return code
 
     if headless_requested():
         return serve_headless()

@@ -32,7 +32,7 @@ def sanitize_runtime_env() -> list:
     The update helper is spawned by the old frozen process, so it (and any
     child it Start-Processes) can inherit SSL_CERT_FILE / CURL_CA_BUNDLE
     pointing at the old `_MEI*` extract dir. Once that dir is deleted,
-    curl_cffi fails with error 77 and library/Drive networking dies until a
+    curl_cffi fails with error 77 and downloads fail until a
     clean manual restart.
     """
     cleared = []

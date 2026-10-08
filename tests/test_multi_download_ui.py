@@ -41,7 +41,6 @@ class _Host(WorkerHostMixin, QMainWindow):
         self._worker = None
         self._worker_busy = False
         self._worker_epoch = 0
-        self._pending_drive_sync = False
         self.session = _Session(tmp_path)
         self.progress = ProgressPanel()
         self.single = SinglePage()
@@ -75,7 +74,7 @@ def _quit_qthread(thread, wait_ms=2000):
 
 def _cleanup_host(qapp, host, extra_threads=(), wait_ms=2000):
     try:
-        host._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
+        host._stop_thread(wait_ms=wait_ms)
     except Exception:
         pass
     for th in extra_threads:
@@ -302,7 +301,7 @@ def test_multi_worker_emits_progress_before_slow_prepare(qapp, tmp_path, monkeyp
 
 
 def test_stale_finish_does_not_kill_new_download_worker(qapp, tmp_path, monkeypatch):
-    """Fetch/Drive `_finish_worker_later` must not quit() Download All.
+    """A stale `_finish_worker_later` must not quit() Download All.
 
     The regression: cleanup is posted with QTimer.singleShot(0). Download All
     then `_run_worker`s a new thread. The leftover stop hits `self._thread`

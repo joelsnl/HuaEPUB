@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -10,7 +9,7 @@ from core.reader import (
     UnsupportedSite,
     fetch_reader_chapter,
     html_needs_live_translate,
-    live_translate_html,
+    live_translate_chapter,
 )
 
 
@@ -70,6 +69,8 @@ class ReaderTranslateWorker(QObject):
         options: dict | None = None,
         novel_title: str = "",
         detect_text: str = "",
+        chapter_title: str = "",
+        source_url: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -80,6 +81,9 @@ class ReaderTranslateWorker(QObject):
         self.options = options or {}
         self.novel_title = novel_title or ""
         self.detect_text = detect_text or ""
+        self.chapter_title = chapter_title or ""
+        self.source_url = source_url or ""
+        self.translated_title = ""
 
     @Slot()
     def run(self):
@@ -88,36 +92,13 @@ class ReaderTranslateWorker(QObject):
                 self.finished.emit(self.index, self.url, self.html)
                 return
             self.status.emit("Translating chapter…")
-            out = live_translate_html(
+            out, title = live_translate_chapter(
                 self.html, cache=self.cache, options=self.options,
                 novel_title=self.novel_title, detect_text=self.detect_text,
+                chapter_title=self.chapter_title, chapter_url=self.url,
+                source_url=self.source_url,
             )
+            self.translated_title = title if title and title != self.chapter_title else ""
             self.finished.emit(self.index, self.url, out)
         except Exception as exc:
             self.error.emit(self.index, str(exc))
-
-
-class DriveEpubDownloadWorker(QObject):
-    finished = Signal(str)
-    error = Signal(str)
-    status = Signal(str)
-
-    def __init__(self, drive_sync, file_id: str, dest_path: str, allowed_root: Path, parent=None):
-        super().__init__(parent)
-        self.drive_sync = drive_sync
-        self.file_id = file_id
-        self.dest_path = dest_path
-        self.allowed_root = Path(allowed_root)
-
-    @Slot()
-    def run(self):
-        try:
-            self.status.emit("Downloading EPUB from Drive…")
-            dest = self.drive_sync.download_epub(
-                self.file_id,
-                self.dest_path,
-                allowed_root=self.allowed_root,
-            )
-            self.finished.emit(str(dest))
-        except Exception as exc:
-            self.error.emit(str(exc))

@@ -2,8 +2,7 @@
 """
 Resolve a novel for the in-app reader: local EPUB first, else cached TOC/HTML.
 
-Never Drive-syncs. Callers pull a Drive EPUB into the books folder first if
-needed. Chapter HTML is sanitized for QTextBrowser (no scripts, no navigation).
+Chapter HTML is sanitized for QTextBrowser (no scripts, no navigation).
 The one-chapter site fetch and the live translate are shared by the desktop
 Read tab and the browser reader.
 """
@@ -14,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
+from urllib.parse import urlsplit
 
 from lxml import html as lxml_html
 
@@ -51,13 +51,11 @@ class ReaderBook:
     kind: str
     chapters: List[ReaderChapter] = field(default_factory=list)
     epub_path: str = ""
-    drive_file_id: str = ""
 
 
 @dataclass
 class ReaderOpenResult:
     book: Optional[ReaderBook] = None
-    need_drive: bool = False
     error: str = ""
 
 
@@ -141,18 +139,25 @@ _CSS_FAMILY_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
 
 
 def wrap_reader_html(body: str, *, font_pt: int = 18, color: str = "#e8e8e8",
-                     background: str = "#2b2b2b", font_family: str = "") -> str:
+                     background: str = "#2b2b2b", font_family: str = "",
+                     line_height: float = 1.7, align: str = "justify") -> str:
     size = max(12, min(36, int(font_pt or 18)))
     inner = sanitize_reader_html(body)
     color = color if _CSS_COLOR_RE.match(color or "") else "#e8e8e8"
     background = background if _CSS_COLOR_RE.match(background or "") else "#2b2b2b"
     family = f"font-family:'{font_family}'; " if _CSS_FAMILY_RE.match(font_family or "") else ""
+    try:
+        lead = float(line_height)
+    except (TypeError, ValueError):
+        lead = 1.7
+    lead = min(2.4, max(1.2, lead))
+    text_align = "justify" if align == "justify" else "left"
     return (
         "<html><head><meta charset='utf-8'><style>"
         f"body {{ color:{color}; background:{background}; {family}font-size:{size}pt; "
-        "line-height:1.65; padding:8px 16px; }}"
-        "h1,h2,h3 { font-weight:600; }"
-        "p { margin: 0.7em 0; }"
+        f"line-height:{lead}; padding:18px 28px; }}"
+        "h1,h2,h3 { font-weight:600; line-height:1.3; }"
+        f"p {{ margin: 0.75em 0; text-align:{text_align}; }}"
         "</style></head><body>"
         f"{inner}"
         "</body></html>"
@@ -288,15 +293,13 @@ def resolve_reader_book(
     title: str = "",
     output_path: str = "",
     epub_filename: str = "",
-    drive_file_id: str = "",
     output_dir: str = "",
     cache=None,
     extra_chapters: Optional[Sequence] = None,
     extra_epub_path: str = "",
 ) -> ReaderOpenResult:
     """
-    Prefer a local EPUB under the books folder. If none, signal Drive when
-    drive_file_id is set. Otherwise build a cache/TOC book.
+    Prefer a local EPUB under the books folder. Otherwise build a cache/TOC book.
     """
     url = (source_url or "").strip()
     display = (title or "").strip() or url or "Untitled"
@@ -320,11 +323,8 @@ def resolve_reader_book(
                 kind=KIND_EPUB,
                 chapters=chapters,
                 epub_path=str(epub),
-                drive_file_id=drive_file_id or "",
             )
         )
-    if (drive_file_id or "").strip():
-        return ReaderOpenResult(need_drive=True)
 
     toc = None
     if cache is not None and url:
@@ -333,6 +333,7 @@ def resolve_reader_book(
         except Exception:
             toc = None
     chapters = chapters_from_toc(toc or [], cache=cache, extras=extra_chapters)
+    _apply_stored_english_titles(chapters, cache, url)
     if not chapters:
         return ReaderOpenResult(
             error="Nothing to read yet. Download an EPUB, or fetch the chapter list first."
@@ -343,7 +344,6 @@ def resolve_reader_book(
             title=display,
             kind=KIND_CACHE,
             chapters=chapters,
-            drive_file_id=drive_file_id or "",
         )
     )
 
@@ -359,6 +359,60 @@ def next_cache_prefetch_index(book: Optional[ReaderBook], current_index: int) ->
     if (ch.html or "").strip() or not (ch.url or "").strip():
         return None
     return nxt
+
+
+def _hostname(url: str) -> str:
+    try:
+        return (urlsplit(url or "").hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def reader_fetch_waits(job, downloading: bool, chapter_url: str) -> bool:
+    """True when a running download is already scraping this chapter's site.
+
+    A different site can be read at the same time. An unknown job waits, so two
+    scrapes of one host do not run together.
+    """
+    if not downloading:
+        return False
+    host = _hostname(chapter_url)
+    if not host or not isinstance(job, dict):
+        return True
+    hosts = {_hostname(str(job.get("source_url") or ""))}
+    info = job.get("info") if isinstance(job.get("info"), dict) else {}
+    hosts.add(_hostname(str(info.get("source_url") or "")))
+    for key in ("novels", "entries"):
+        for item in job.get(key) or []:
+            if isinstance(item, dict):
+                hosts.add(_hostname(str(item.get("source_url") or item.get("url") or "")))
+    hosts.discard("")
+    if not hosts:
+        return True
+    return host in hosts
+
+
+def _apply_stored_english_titles(chapters, cache, source_url: str) -> None:
+    getter = getattr(cache, "get_english_chapter_titles", None) if cache is not None else None
+    if not callable(getter) or not source_url:
+        return
+    try:
+        stored = getter(source_url) or []
+    except Exception:
+        return
+    from core.cache import english_chapter_title
+
+    by_url = {}
+    for row in stored:
+        if not isinstance(row, dict):
+            continue
+        chapter_url = (row.get("url") or "").strip()
+        title = english_chapter_title(row.get("title") or "")
+        if chapter_url and title:
+            by_url[chapter_url] = title
+    for chapter in chapters:
+        if chapter.url in by_url:
+            chapter.title = by_url[chapter.url]
 
 
 def html_needs_live_translate(html: str) -> bool:
@@ -396,12 +450,22 @@ def fetch_reader_chapter(cache, book_url: str, url: str, title: str = "") -> str
     return html
 
 
-def live_translate_html(html: str, *, cache, options: dict, novel_title: str = "",
-                        detect_text: str = "") -> str:
-    """Translate one cache chapter for the reader (check ``html_needs_live_translate`` first)."""
+def live_translate_chapter(
+    html: str,
+    *,
+    cache,
+    options: dict,
+    novel_title: str = "",
+    detect_text: str = "",
+    chapter_title: str = "",
+    chapter_url: str = "",
+    source_url: str = "",
+) -> tuple:
+    """Translate one cache chapter and, when it is still Chinese, its title."""
     from types import SimpleNamespace
 
-    from core.cleaner import ContentCleaner
+    from core.cache import english_chapter_title, save_english_chapter_title
+    from core.cleaner import ContentCleaner, is_chinese
     from core.download_runner import make_translator, translator_backend_kwargs
 
     kw = translator_backend_kwargs({}, options)
@@ -412,7 +476,27 @@ def live_translate_html(html: str, *, cache, options: dict, novel_title: str = "
         cfg(SimpleNamespace(title=novel_title or "", description=""),
             mode=kw.get("glossary_mode", "auto"), detect_text=detect_text or novel_title or "")
     cleaner = ContentCleaner() if options.get("clean", True) else None
-    return translator.translate_and_apply_html(html or "", cleaner=cleaner) or html
+    out = translator.translate_and_apply_html(html or "", cleaner=cleaner) or html
+    title = chapter_title or ""
+    if title and not english_chapter_title(title) and is_chinese(title):
+        try:
+            got = translator.translate_texts([title]) or []
+        except Exception:
+            got = []
+        shown = english_chapter_title(got[0] if got else "")
+        if shown:
+            title = shown
+            save_english_chapter_title(cache, source_url, chapter_url, shown)
+    return out, title
+
+
+def live_translate_html(html: str, *, cache, options: dict, novel_title: str = "",
+                        detect_text: str = "") -> str:
+    """Translate one cache chapter for the reader (check ``html_needs_live_translate`` first)."""
+    text, _title = live_translate_chapter(
+        html, cache=cache, options=options, novel_title=novel_title, detect_text=detect_text,
+    )
+    return text
 
 
 def resume_index(book: ReaderBook, position: Optional[dict]) -> int:

@@ -248,29 +248,68 @@
       <ul class="pick-list" id="read-list"></ul>
       <p class="muted" id="read-empty" hidden>Nothing to read yet. Download a book first.</p>
     </div>
-    <div id="read-book" hidden>
-      <div class="reader-bar">
-        <button type="button" class="btn-link small" id="read-back">All books</button>
+    <div id="read-book" hidden data-theme="paper" data-face="serif" data-leading="normal" data-align="justify">
+      <div class="leaf" id="read-leaf">
+        <p class="running" id="read-running"></p>
+        <div class="spread" id="read-spread">
+          <article class="reader-text" id="read-text"></article>
+        </div>
+        <div class="leaf-hit" id="read-hit"></div>
+        <p class="leaf-note" id="read-status" aria-live="polite"></p>
+      </div>
+      <header class="chrome chrome-top">
+        <button type="button" class="book-link" id="read-back">Library</button>
         <div class="reader-title">
           <span class="reader-book" id="read-title"></span>
-          <span class="label" id="read-kind"></span>
+          <span class="running-label" id="read-kind"></span>
         </div>
-        <div class="reader-tools">
-          <button type="button" class="btn btn-quiet btn-sq" id="read-smaller" aria-label="Smaller text">A−</button>
-          <button type="button" class="btn btn-quiet btn-sq" id="read-larger" aria-label="Larger text">A+</button>
+      </header>
+      <footer class="chrome chrome-bot">
+        <input type="range" id="read-progress" min="0" max="1000" value="0" aria-label="Place in the book">
+        <div class="chrome-row">
+          <span class="running-label" id="read-place"></span>
+          <span class="grow"></span>
+          <button type="button" class="book-btn" id="read-contents-btn">Contents</button>
+          <button type="button" class="book-btn" id="read-display-btn" aria-label="Text settings">Aa</button>
+          <button type="button" class="book-btn" id="read-mark" aria-pressed="false">Bookmark</button>
         </div>
+      </footer>
+      <div class="sheet" id="read-contents" hidden>
+        <div class="sheet-head">
+          <span class="running-label">Contents</span>
+          <button type="button" class="book-link" id="read-contents-close">Close</button>
+        </div>
+        <ul class="sheet-list" id="read-toc-list"></ul>
       </div>
-      <div class="reader-nav">
-        <button type="button" class="btn btn-quiet" id="read-prev">Previous</button>
-        <select id="read-toc" class="select" aria-label="Chapter"></select>
-        <button type="button" class="btn btn-quiet" id="read-next">Next</button>
-      </div>
-      <p class="muted small mono" id="read-status" aria-live="polite"></p>
-      <article class="reader-text" id="read-text"></article>
-      <div class="reader-nav reader-nav-foot">
-        <button type="button" class="btn btn-quiet" id="read-prev2">Previous</button>
-        <span class="grow"></span>
-        <button type="button" class="btn btn-outline" id="read-next2">Next chapter</button>
+      <div class="sheet sheet-display" id="read-display" hidden>
+        <div class="sheet-head">
+          <span class="running-label">Display</span>
+          <button type="button" class="book-link" id="read-display-close">Close</button>
+        </div>
+        <div class="chips" role="group" aria-label="Paper">
+          <button type="button" class="chip" data-pref="reader_theme" data-value="paper">Paper</button>
+          <button type="button" class="chip" data-pref="reader_theme" data-value="sepia">Sepia</button>
+          <button type="button" class="chip" data-pref="reader_theme" data-value="night">Night</button>
+        </div>
+        <label class="display-line" for="read-size">Text size <span id="read-size-n">18</span></label>
+        <input type="range" id="read-size" min="12" max="36" value="18" aria-label="Text size">
+        <div class="chips" role="group" aria-label="Type">
+          <button type="button" class="chip" data-pref="reader_face" data-value="serif">Serif</button>
+          <button type="button" class="chip" data-pref="reader_face" data-value="sans">Sans</button>
+        </div>
+        <div class="chips" role="group" aria-label="Line spacing">
+          <button type="button" class="chip" data-pref="reader_leading" data-value="tight">Tight</button>
+          <button type="button" class="chip" data-pref="reader_leading" data-value="normal">Roomy</button>
+          <button type="button" class="chip" data-pref="reader_leading" data-value="loose">Loose</button>
+        </div>
+        <div class="chips" role="group" aria-label="Alignment">
+          <button type="button" class="chip" data-pref="reader_align" data-value="justify">Justified</button>
+          <button type="button" class="chip" data-pref="reader_align" data-value="left">Ragged</button>
+        </div>
+        <div class="chips" role="group" aria-label="Flow">
+          <button type="button" class="chip" data-pref="reader_mode" data-value="pages">Pages</button>
+          <button type="button" class="chip" data-pref="reader_mode" data-value="scroll">Scroll</button>
+        </div>
       </div>
     </div>
   </section>
@@ -296,11 +335,24 @@
         <label class="check"><input type="checkbox" id="set-polish"><span>Polish English</span></label>
         <p class="muted small" id="set-polish-note"></p>
       </fieldset>
+      <fieldset class="block">
+        <legend class="label">Books folder</legend>
+        <label class="muted" for="set-output">Where EPUBs are saved on this computer</label>
+        <input id="set-output" class="field mono" type="text" spellcheck="false" autocomplete="off">
+        <button type="button" class="btn btn-outline" id="set-output-save">Save folder</button>
+      </fieldset>
+      <fieldset class="block">
+        <legend class="label">On this computer</legend>
+        <p class="muted small">Downloads the model onto the machine that is serving. App updates stay in the desktop app.</p>
+        <button type="button" class="btn btn-quiet" id="set-install-polish">Install Polish</button>
+        <button type="button" class="btn btn-quiet" id="set-install-nmt">Install Offline NMT</button>
+        <button type="button" class="btn btn-quiet" id="set-install-ollama">Download Ollama model</button>
+        <button type="button" class="btn btn-quiet" id="set-install-service">Install Linux service</button>
+        <p class="muted small">Writes a systemd user service only when HuaEPUB does not already have one.</p>
+      </fieldset>
       <p class="muted small" id="set-status" aria-live="polite"></p>
     </form>
     <div class="block desk-only">
-      <span class="label">On the PC only</span>
-      <p class="muted">Google Drive sign-in, the save folder, app updates and installing Polish, Offline NMT or Ollama stay in the desktop app. Turn off server mode on the PC to change them.</p>
       <button type="button" class="btn-link" id="btn-signout">Sign out of this device</button>
     </div>
   </section>

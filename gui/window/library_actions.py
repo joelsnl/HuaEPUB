@@ -10,7 +10,7 @@ from PySide6.QtGui import QDesktopServices
 
 from core.download_job import library_update_all_job, save_job
 from core.utils import format_count, format_ratio, plural
-from core.download_runner import completion_dialog_title, downloads_folder, epub_path
+from core.download_runner import completion_dialog_title, downloads_folder
 from core.notify import notify
 from core.settings import get_default_books_dir
 from gui.dialogs import ask_yes_no, busy_message, show_info, show_warning
@@ -141,7 +141,6 @@ class LibraryActionsMixin:
         self.progress.set_progress(1.0, "Library updated")
         show_info(self, completion_dialog_title(msg, "Library updated"), msg)
         self.library.refresh()
-        self._queue_drive_sync()
         self._finish_worker_later()
 
     @Slot(str)
@@ -216,7 +215,6 @@ class LibraryActionsMixin:
             pending = [e for e in job.get("entries") or [] if not e.get("done")]
             if pending:
                 self.resume_banner.show_job(job, self.session.cache)
-        self._queue_drive_sync()
         self._finish_worker_later()
 
     def _open_library_url(self, url: str):
@@ -235,13 +233,6 @@ class LibraryActionsMixin:
         for url in urls:
             entry = self.session.library_store.get_library_entry(url)
             titles.append((entry.translated_title or entry.title or url) if entry else url)
-        drive_on = bool(self.library.drive_enabled.isChecked())
-        extra = (
-            "\n• the Google Drive EPUB and library.json entry "
-            "(it will not come back on the next sync)"
-            if drive_on
-            else "\n• a sync marker so Google Drive cannot restore it later"
-        )
         if len(urls) == 1:
             heading = f'Remove “{titles[0]}” from your library?'
         else:
@@ -260,7 +251,6 @@ class LibraryActionsMixin:
             "• the local EPUB in your books folder\n"
             f"• chapter, cover, and table-of-contents cache for {noun}\n"
             "• the reading position on this PC"
-            f"{extra}"
         )
         if not ask_yes_no(self, "Remove", msg):
             return
@@ -271,8 +261,6 @@ class LibraryActionsMixin:
             output_dir=self.session.output_dir, data_dir=self.session.data_dir,
         )
         self.library.refresh()
-        if drive_on and self.session.drive_sync.is_connected():
-            self._start_drive_sync(silent=True)
 
     @Slot(object)
     def _download_library_epub(self, payload):
@@ -284,28 +272,21 @@ class LibraryActionsMixin:
             self._download_one_library_epub(entries[0], open_folder=True)
             return
         local_n = 0
-        saved = []
         missing = []
         errors = []
         for entry in entries:
             kind, detail = self._download_one_library_epub(entry, open_folder=False)
             if kind == "local":
                 local_n += 1
-            elif kind == "saved":
-                saved.append(detail)
             elif kind == "missing":
                 missing.append(detail)
             else:
                 errors.append(detail)
         lines = []
-        if saved:
-            lines.append(f"Downloaded {plural(len(saved), 'EPUB')} from Drive.")
         if local_n:
             lines.append(f"{plural(local_n, 'book')} already on disk.")
         if missing:
-            lines.append(
-                f"{plural(len(missing), 'book')} had no local or Drive EPUB."
-            )
+            lines.append(f"{plural(len(missing), 'book')} had no EPUB on this PC.")
         if errors:
             lines.append("Errors:\n" + "\n".join(errors[:8]))
         body = "\n".join(lines) if lines else "Nothing to download."
@@ -325,37 +306,17 @@ class LibraryActionsMixin:
             if open_folder:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
             return "local", title
-        if entry.drive_file_id:
-            dest = epub_path(
-                folder,
-                entry.title or "book",
-                preferred_name=entry.epub_filename or "",
-            )
-            try:
-                self.session.drive_sync.download_epub(
-                    entry.drive_file_id, dest, allowed_root=folder
-                )
-                if open_folder:
-                    show_info(self, "Download", f"Saved to:\n{dest}")
-                return "saved", str(dest)
-            except Exception as e:
-                if open_folder:
-                    show_warning(self, "Download EPUB", str(e))
-                    return "error", str(e)
-                return "error", f"{title}: {e}"
         if open_folder:
-            show_info(self, "Download EPUB", "No local or Drive EPUB found for this entry.")
+            show_info(self, "Download EPUB", "No EPUB on this PC for this book.")
         return "missing", title
 
     def _reset_library(self):
         if not ask_yes_no(
             self, "Reset library",
             "Clear all tracked novels from your local library?\n\n"
-            "They will not come back on Drive sync. Local EPUB files are kept.",
+            "EPUB files on this PC are kept.",
         ):
             return
         self.session.library_store.clear(clear_library=True, clear_history=False)
         self.library.check_status.clear()
         self.library.refresh()
-        if self.library.drive_enabled.isChecked() and self.session.drive_sync.is_connected():
-            self._start_drive_sync(silent=True)

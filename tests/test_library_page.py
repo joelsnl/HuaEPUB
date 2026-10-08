@@ -33,9 +33,6 @@ def _session(tmp_path):
         settings = {
             "library_view": "list",
             "library_filter": "all",
-            "drive_sync_enabled": False,
-            "drive_sync_library": True,
-            "drive_sync_epubs": True,
         }
         library_store = store
         cache = _FakeCache()

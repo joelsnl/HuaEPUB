@@ -91,9 +91,7 @@ def _start_single_job(manager, parser, info, chapters, out, translated_title, jo
         )
         return _single_result(ctx, result, chapters)
 
-    # Site downloads add the book to the Library, and the browser has no Sync button:
-    # sync Drive afterwards, like a Library update.
-    return manager.start("single", label, body, chapters=len(chapters), library_change=True)
+    return manager.start("single", label, body, chapters=len(chapters))
 
 
 # ----------------------------------------------------------------------
@@ -182,7 +180,7 @@ def _start_multi_job(manager, novels, job):
         }
 
     return manager.start("multi", f"Multi-download ({len(novels)} novels)", body,
-                         rows=rows, novels=len(novels), library_change=True)
+                         rows=rows, novels=len(novels))
 
 
 # ----------------------------------------------------------------------
@@ -211,7 +209,7 @@ def start_library_update(manager: TaskManager, entry):
             "translated": bool(options.get("translate")),
         }
 
-    return manager.start("library_update", f"Update — {display}", body, library_change=True)
+    return manager.start("library_update", f"Update — {display}", body)
 
 
 def start_library_update_many(manager: TaskManager, entries: list, *, label: str = "Update All",
@@ -253,38 +251,7 @@ def start_library_update_many(manager: TaskManager, entries: list, *, label: str
         return {"notes": summary, "warnings": completion_has_warnings(summary), "files": files,
                 "translated": bool(options.get("translate"))}
 
-    return manager.start("library_update_all", label, body, rows=rows, novels=len(entries),
-                         library_change=True)
-
-
-def drive_sync_after_change(ctx: TaskContext) -> None:
-    """Desktop rule: a successful Library update queues a quiet Drive sync."""
-    session = ctx.session
-    if not session.settings.get("drive_sync_enabled"):
-        return
-    ds = getattr(session, "drive_sync", None)
-    if ds is None:
-        return
-    try:
-        connected = ds.is_connected() or ds.try_restore_session()
-    except Exception:
-        connected = False
-    if not connected:
-        return
-    ctx.task.update(phase="syncing", message="Syncing Google Drive…")
-    try:
-        summary = core_tasks.run_drive_sync(session, progress=ctx.status)
-        print(f"Server: {summary}")
-    except Exception as exc:
-        print(f"Server: Drive sync failed: {exc}")
-
-
-def start_drive_sync(manager: TaskManager):
-    def body(ctx: TaskContext) -> Dict[str, Any]:
-        drive_sync_after_change(ctx)
-        return {"notes": "Drive sync finished."}
-
-    return manager.start("sync", "Sync Google Drive", body)
+    return manager.start("library_update_all", label, body, rows=rows, novels=len(entries))
 
 
 # ----------------------------------------------------------------------
@@ -341,3 +308,64 @@ def start_resume(manager: TaskManager):
         return start_library_update_many(manager, entries, job=job)
     clear_job(session.data_dir)
     raise ResumeError(f"Unknown job type: {kind}")
+
+
+def start_install(manager, what: str):
+    """Download a model onto the machine that is serving. Does not install Ollama itself."""
+    kind = (what or "").strip()
+    labels = {
+        "nmt": "Download Offline NMT",
+        "polish": "Download Polish",
+        "ollama": "Download Ollama model",
+    }
+    if kind not in labels:
+        raise ValueError(kind)
+
+    def body(ctx: TaskContext) -> Dict[str, Any]:
+        ctrl = ctx.session.control
+
+        def cancelled() -> bool:
+            return bool(ctrl.cancel_requested)
+
+        def log(msg: str) -> None:
+            ctx.status(str(msg))
+
+        try:
+            if kind == "nmt":
+                from core.translation.nmt import ensure_nmt_model
+
+                if cancelled():
+                    return {"cancelled": True}
+                ensure_nmt_model(log=log, cancelled=cancelled)
+            elif kind == "polish":
+                from core.polish.hardware import detect_device
+                from core.polish.serve import install_llama_server, resolve_gguf
+
+                profile = detect_device()
+                if cancelled():
+                    return {"cancelled": True}
+                install_llama_server(profile, download=True, log=log)
+                if cancelled():
+                    return {"cancelled": True}
+                resolve_gguf(profile, download=True, log=log)
+            else:
+                from core.ollama_setup import ollama_is_installed, pull_ollama_model
+
+                if not ollama_is_installed():
+                    raise RuntimeError(
+                        "Ollama is not installed on this computer. Install it, then download the model."
+                    )
+                model = ctx.session.settings.get("ollama_model") or "qwen2.5:3b"
+                url = ctx.session.settings.get("ollama_url") or "http://127.0.0.1:11434"
+                pull_ollama_model(
+                    model, ollama_url=url,
+                    progress_callback=lambda _pct, text: log(text),
+                    cancel_check=cancelled,
+                )
+        except (RuntimeError, ValueError) as exc:
+            if "cancel" in str(exc).lower():
+                return {"cancelled": True}
+            raise
+        return {"notes": "Installed."}
+
+    return manager.start("install", labels[kind], body)

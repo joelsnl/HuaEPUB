@@ -9,9 +9,9 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QGroupBox, QHBoxLayout, QLabel,
+    QAbstractItemView, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QTableWidgetSelectionRange,     QVBoxLayout, QWidget,
+    QTableWidgetItem, QTableWidgetSelectionRange, QVBoxLayout, QWidget,
 )
 
 from core.utils import format_count, format_ratio, plural
@@ -26,11 +26,6 @@ class LibraryPage(QWidget):
     remove_selected = Signal(object)  # list[str]
     download_epub_selected = Signal(object)  # LibraryEntry or list[LibraryEntry]
     refresh_requested = Signal()
-    drive_connect = Signal()
-    drive_sync = Signal()
-    drive_disconnect = Signal()
-    drive_change_folder = Signal()
-    drive_open_folder = Signal()
     view_changed = Signal(str)
     filter_changed = Signal(str)
 
@@ -49,8 +44,7 @@ class LibraryPage(QWidget):
         header = QHBoxLayout()
         header.addWidget(QLabel(
             "Your library — Select All or Ctrl/Cmd-click (Shift for a range) for batch "
-            "Update / Remove / Download EPUB. Double-click to read. Covers & TOC stay "
-            "on this device; Drive syncs library.json + EPUBs."
+            "Update / Remove / Download EPUB. Double-click to read."
         ))
         header.addStretch(1)
         self.filter_all = QPushButton("All")
@@ -81,46 +75,6 @@ class LibraryPage(QWidget):
         self.status_label = QLabel("")
         self.status_label.setObjectName("mutedLabel")
         root.addWidget(self.status_label)
-
-        # Drive panel
-        self.drive_box = QGroupBox("Google Drive")
-        drive_lay = QVBoxLayout(self.drive_box)
-        self.drive_enabled = QCheckBox("Sync with Google Drive")
-        self.drive_enabled.setChecked(bool(session.settings.get("drive_sync_enabled", False)))
-        drive_lay.addWidget(self.drive_enabled)
-        opts = QHBoxLayout()
-        self.drive_library = QCheckBox("Sync library")
-        self.drive_library.setChecked(bool(session.settings.get("drive_sync_library", True)))
-        self.drive_epubs = QCheckBox("Sync EPUBs")
-        self.drive_epubs.setChecked(bool(session.settings.get("drive_sync_epubs", True)))
-        opts.addWidget(self.drive_library)
-        opts.addWidget(self.drive_epubs)
-        opts.addStretch(1)
-        drive_lay.addLayout(opts)
-        btns = QHBoxLayout()
-        self.drive_connect_btn = QPushButton("Connect")
-        self.drive_sync_btn = QPushButton("Sync Now")
-        self.drive_folder_btn = QPushButton("Change folder")
-        self.drive_open_btn = QPushButton("Open folder")
-        self.drive_disconnect_btn = QPushButton("Disconnect")
-        for b in (
-            self.drive_connect_btn, self.drive_sync_btn, self.drive_folder_btn,
-            self.drive_open_btn, self.drive_disconnect_btn,
-        ):
-            b.setObjectName("secondaryBtn")
-            btns.addWidget(b)
-        btns.addStretch(1)
-        drive_lay.addLayout(btns)
-        self.drive_status = QLabel("")
-        self.drive_status.setObjectName("mutedLabel")
-        self.drive_status.setWordWrap(True)
-        drive_lay.addWidget(self.drive_status)
-        self.drive_connect_btn.clicked.connect(self.drive_connect.emit)
-        self.drive_sync_btn.clicked.connect(self.drive_sync.emit)
-        self.drive_folder_btn.clicked.connect(self.drive_change_folder.emit)
-        self.drive_open_btn.clicked.connect(self.drive_open_folder.emit)
-        self.drive_disconnect_btn.clicked.connect(self.drive_disconnect.emit)
-        root.addWidget(self.drive_box)
 
         self.stack = QStackedWidget()
         self.grid = QListWidget()
@@ -181,8 +135,6 @@ class LibraryPage(QWidget):
 
         self._sync_toggle_styles()
         self._apply_view()
-        self._update_drive_enabled()
-        self.drive_enabled.toggled.connect(self._update_drive_enabled)
         self._refresh_status_and_actions()
 
     def _set_filter(self, value: str):
@@ -207,19 +159,6 @@ class LibraryPage(QWidget):
 
     def _apply_view(self):
         self.stack.setCurrentWidget(self.grid if self._view == "grid" else self.table)
-
-    def _update_drive_enabled(self):
-        on = self.drive_enabled.isChecked()
-        for w in (
-            self.drive_library, self.drive_epubs, self.drive_connect_btn,
-            self.drive_sync_btn, self.drive_folder_btn, self.drive_open_btn,
-            self.drive_disconnect_btn,
-        ):
-            w.setEnabled(on)
-
-    def set_drive_busy(self, busy: bool):
-        self.drive_sync_btn.setEnabled(not busy and self.drive_enabled.isChecked())
-        self.drive_sync_btn.setText("Syncing…" if busy else "Sync Now")
 
     def show_all(self):
         """Ensure the All filter is active (Updates hides novels until Check runs)."""

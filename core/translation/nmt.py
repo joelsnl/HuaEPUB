@@ -11,7 +11,7 @@ NVIDIA driver. We register toolkit / pip / Ollama DLL dirs via
 
 Weights are downloaded from Hugging Face https only
 (``validate_polish_download_url``). No invented SHA256. Cache lives in
-``~/.huaepub/nmt/`` and is never Drive-synced.
+``~/.huaepub/nmt/`` and stays on this PC.
 """
 
 from __future__ import annotations

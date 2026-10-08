@@ -19,8 +19,7 @@
     unknown_book: 'That book is no longer in the Library.',
     nothing_to_update: 'No books have new chapters. Check for updates first.',
     empty_library: 'The Library is empty.',
-    no_epub: 'No EPUB for this book on the PC or in Google Drive.',
-    drive_failed: 'Google Drive did not send the file.',
+    no_epub: 'No EPUB for this book on this PC.',
     nothing_to_read: 'Nothing to read yet.',
     cannot_resume: 'That download cannot be resumed.',
     bad_setting: 'That setting was not saved.',
@@ -65,7 +64,7 @@
       var running = (data && data.label) ? (' ' + data.label + ' is still running.') : ' Another job is still running.';
       text = "Can't " + trying + " yet." + running + ' Wait for it or cancel it first.';
     }
-    if ((key === 'fetch_failed' || key === 'drive_failed' || key === 'cannot_resume' ||
+    if ((key === 'fetch_failed' || key === 'cannot_resume' ||
          key === 'bad_setting' || key === 'nothing_to_read') && data.detail) text += ' ' + data.detail;
     return text;
   }
@@ -164,6 +163,7 @@
       a.classList.toggle('is-on', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
+    if (name !== 'read') document.body.classList.remove('is-reading');
     if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
     if (viewHooks[name]) viewHooks[name](arg);
     renderDock(latest);
@@ -201,9 +201,9 @@
     var c = slipCounts(t, n);
     drawSlips($('dock-slips'), n, c.fetched, c.done, c.cur);
     var running = !finished;
-    show('dock-pause', running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'sync');
+    show('dock-pause', running && t.kind !== 'lookup' && t.kind !== 'check' && t.kind !== 'install');
     setText('dock-pause', t.state === 'paused' ? 'Resume' : 'Pause');
-    show('dock-cancel', running && t.kind !== 'sync');
+    show('dock-cancel', running);
     show('dock-close', finished);
     var files = $('dock-files');
     files.textContent = '';

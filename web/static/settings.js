@@ -31,11 +31,13 @@
     $('set-polish').checked = !!s.polish;
     $('set-polish').disabled = !s.polish_available || !s.translate;
     setText('set-polish-note', s.polish_available
-      ? 'Copy-edits the machine English on the PC after translating. Slower.'
-      : 'Polish needs its model on the PC first. Tick Polish English once in the desktop app to download it.');
+      ? 'Copy-edits the machine English on this computer after translating. Slower.'
+      : 'Install Polish below, then turn this on.');
+    $('set-output').value = s.output_dir || '';
     var label = (s.backends.filter(function (b) { return b.value === s.backend; })[0] || {}).label || s.backend;
     if (window.HuaSingle) window.HuaSingle.setTranslator(s.translate ? label : 'Off (Chinese EPUB)');
-    if (window.HuaRead) window.HuaRead.setFont(s.reader_font_pt || 18, false);
+    if (window.HuaRead && window.HuaRead.applyPrefs) window.HuaRead.applyPrefs(s);
+    else if (window.HuaRead) window.HuaRead.setFont(s.reader_font_pt || 18, false);
   }
 
   function load() {
@@ -49,7 +51,8 @@
     polish: 'change Polish',
     backend: 'change the translator',
     glossary: 'change the glossary',
-    workers: 'change how many workers run'
+    workers: 'change how many workers run',
+    output_dir: 'change the books folder'
   };
 
   function save(change) {
@@ -77,6 +80,26 @@
       return;
     }
     save({ workers: v });
+  });
+  $('set-output-save').addEventListener('click', function () {
+    save({ output_dir: $('set-output').value });
+  });
+
+  function install(what, label) {
+    setText('set-status', 'Starting…');
+    H.api('POST', '/api/install', { what: what }).then(function (res) {
+      setText('set-status', res.ok ? (label + ' started.') : H.errorText(res.data, '', 'start ' + label));
+    }).catch(function () { setText('set-status', H.ERRORS.network); });
+  }
+  $('set-install-polish').addEventListener('click', function () { install('polish', 'Polish'); });
+  $('set-install-nmt').addEventListener('click', function () { install('nmt', 'Offline NMT'); });
+  $('set-install-ollama').addEventListener('click', function () { install('ollama', 'the Ollama model'); });
+  $('set-install-service').addEventListener('click', function () {
+    setText('set-status', 'Checking…');
+    H.api('POST', '/api/service').then(function (res) {
+      var text = (res.data && (res.data.message || res.data.detail)) || H.errorText(res.data, '', 'install the service');
+      setText('set-status', text);
+    }).catch(function () { setText('set-status', H.ERRORS.network); });
   });
   $('settings-form').addEventListener('submit', function (e) { e.preventDefault(); });
   $('btn-signout').addEventListener('click', function () {

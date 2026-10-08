@@ -81,7 +81,6 @@ def build():
         '--hidden-import=gui.window',
         '--hidden-import=gui.window.worker_host',
         '--hidden-import=gui.window.reader_actions',
-        '--hidden-import=gui.window.drive_actions',
         '--hidden-import=gui.window.library_actions',
         '--hidden-import=gui.window.server_actions',
         '--hidden-import=gui.window.look_actions',

@@ -2,7 +2,7 @@
 """Server-mode sign-in: access code, password, signed cookies, rate limits.
 
 Secrets live in ``~/.huaepub/server/secret.json`` (owner-only, never
-Drive-synced, never logged). Cookies are HMAC-signed so they survive an app
+logged). Cookies are HMAC-signed so they survive an app
 restart; rotating the code or the password bumps a generation number and
 every older cookie stops working.
 """

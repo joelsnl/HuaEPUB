@@ -2,8 +2,8 @@
 """
 Local-only incomplete download job (active_download.json in ~/.huaepub/).
 
-Never synced to Google Drive — only chapter cache + this file let a download
-resume after Pause, app close, or PC shutdown. The desktop and server mode
+Chapter cache plus this file let a download resume after Pause, app close,
+or PC shutdown. The desktop and server mode
 build and decode the job dicts here, so both resume the same file.
 """
 

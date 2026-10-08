@@ -133,9 +133,7 @@
   }
 
   function fileLine(e) {
-    if (e.has_epub && e.on_drive) return 'On this PC, and on Google Drive';
     if (e.has_epub) return 'On this PC';
-    if (e.on_drive) return 'On Google Drive';
     return 'Not on this PC';
   }
 
@@ -240,7 +238,7 @@
     var names = sel.slice(0, 6).map(function (e) { return '“' + e.title + '”'; }).join(', ');
     if (sel.length > 6) names += ' and ' + (sel.length - 6) + ' more';
     setText('lib-confirm-text', 'Remove ' + names + ' from your library? This deletes the EPUB in the books folder on the PC, ' +
-      'the cached chapters and cover, and the reading position. If Google Drive sync is on, the Drive copy goes too.');
+      'the cached chapters and cover, and the reading position.');
     setText('lib-confirm-yes', sel.length > 1 ? 'Remove ' + sel.length + ' books' : 'Remove');
     show('lib-confirm', true);
     $('lib-confirm-no').focus();
@@ -248,7 +246,7 @@
 
   function askReset() {
     pendingRemove = 'reset';
-    setText('lib-confirm-text', 'Clear every tracked book from the Library? EPUB files on the PC are kept, and the books will not come back on Drive sync.');
+    setText('lib-confirm-text', 'Clear every tracked book from the Library? EPUB files on this PC are kept.');
     setText('lib-confirm-yes', 'Reset library');
     show('lib-confirm', true);
     $('lib-confirm-no').focus();
@@ -280,7 +278,7 @@
       });
     });
     chain.then(function () {
-      if (missing) setText('lib-lede', H.plural(missing, 'book') + ' had no EPUB on the PC or in Google Drive.');
+      if (missing) setText('lib-lede', H.plural(missing, 'book') + ' had no EPUB on this PC.');
     });
   }
 
@@ -352,7 +350,7 @@
       if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
       else if (res.data && res.data.error === 'busy') {
         setText('lib-lede', H.errorText(res.data, '', 'download this EPUB'));
-      } else setText('lib-lede', 'No EPUB on the PC or in Google Drive.');
+      } else setText('lib-lede', 'No EPUB on this PC.');
     });
   });
   $('lib-detail-select').addEventListener('click', function () {

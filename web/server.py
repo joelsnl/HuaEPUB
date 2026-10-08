@@ -77,6 +77,10 @@ class MultiIn(BaseModel):
     preview_ids: List[str]
 
 
+class InstallIn(BaseModel):
+    what: str
+
+
 class LoginIn(BaseModel):
     secret: str
 
@@ -396,14 +400,36 @@ def create_app(ctx: ServerContext) -> FastAPI:
         if not isinstance(changes, dict):
             return JSONResponse({"error": "bad_json"}, status_code=400)
         busy = ctx.tasks.active()
-        if busy is not None and set(changes) - {"reader_font_pt"}:
+        if busy is not None and set(changes) - {
+            "reader_font_pt", "reader_theme", "reader_mode", "reader_face",
+            "reader_leading", "reader_align",
+        }:
             # A running job keeps the options it started with; change them after.
             raise Busy(busy.id, busy.label)
         try:
             apply_settings(session.settings, changes)
         except SettingsError as exc:
             return JSONResponse({"error": "bad_setting", "detail": str(exc)}, status_code=400)
+        if "output_dir" in changes:
+            session.output_dir = session.settings.get("output_dir") or ""
         return settings_payload(session.settings)
+
+    @app.post("/api/install")
+    def install_model(body: InstallIn):
+        try:
+            task = books.start_install(ctx.tasks, body.what)
+        except ValueError:
+            return JSONResponse({"error": "bad_install"}, status_code=400)
+        return JSONResponse({"task_id": task.id}, status_code=202)
+
+    @app.post("/api/service")
+    def install_service():
+        from web.host import install_user_service
+
+        code, message = install_user_service()
+        if code:
+            return JSONResponse({"error": "service", "detail": message}, status_code=400)
+        return {"ok": True, "message": message}
 
     app.include_router(library_router(ctx))
     app.include_router(reader_router(ctx))

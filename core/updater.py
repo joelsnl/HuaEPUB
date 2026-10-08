@@ -52,7 +52,8 @@ from core.settings import get_app_dir, is_frozen
 from core.utils import format_bytes
 
 SOURCE_UPDATE_ITEMS = [
-    'app.py', 'core', 'gui', 'parsers', 'web', 'requirements.txt', 'README.md', 'build.py',
+    'app.py', 'core', 'gui', 'parsers', 'web', 'requirements.txt', 'requirements-gui.txt',
+    'README.md', 'build.py',
     'VERSION',
 ]
 

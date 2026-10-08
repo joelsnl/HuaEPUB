@@ -5,7 +5,7 @@ Local-Qwen glossary classifier.
 Qwen only labels candidates already mined from a book's Chinese. It does
 not invent terms from titles and does not rewrite shipped novel_terms.json.
 Writes go to ``~/.huaepub/glossaries/<title>.json`` only (never a global
-dump). Never Drive-synced. Everyday Chinese is rejected — this is not CEDICT.
+dump). Everyday Chinese is rejected — this is not CEDICT.
 """
 
 from __future__ import annotations

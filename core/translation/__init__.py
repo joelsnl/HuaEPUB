@@ -4,8 +4,8 @@ Novel translation extras: glossary protect/restore, optional CTranslate2,
 and the NovelTranslator facade used by the download pipeline.
 
 Lives under core/ (not a separate huaepub/ package). HTTP engines stay in
-core.translator.GoogleTranslator. Never Drive-sync ~/.huaepub/nmt/,
-glossary.json, glossary-qwen.json, or glossaries/.
+core.translator.GoogleTranslator. ~/.huaepub/nmt/, glossary.json,
+glossary-qwen.json, and glossaries/ stay on this PC.
 """
 
 from core.translation.glossary import (

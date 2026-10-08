@@ -1,5 +1,5 @@
 # Author: joelsnl and Anthropic Claude
-"""Main Qt window: modes, workers, pause/resume, menus, Drive auto-sync."""
+"""Main Qt window: modes, workers, pause/resume, and menus."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ from core.utils import extract_urls, format_ratio, looks_like_url, sanitize_runt
 from gui import theme
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
-    CloseWhileSyncingDialog, UpdateProgressDialog, ask_accept_glossary_proposals,
+    UpdateProgressDialog, ask_accept_glossary_proposals,
     ask_yes_no, ask_yes_not_now_dont_ask, busy_message, pick_recent_download, show_cache_dialog,
     show_error, show_info, show_info_with_preview, show_rich_info, show_warning,
 )
@@ -55,7 +55,6 @@ from gui.widgets.resume_banner import ResumeBanner
 from gui.workers.download_worker import MultiDownloadWorker, SingleDownloadWorker
 from gui.workers.fetch_worker import FetchWorker
 from gui.workers.glossary_worker import GlossaryQwenWorker
-from gui.window.drive_actions import DriveActionsMixin
 from gui.window.library_actions import LibraryActionsMixin
 from gui.window.look_actions import LookActionsMixin
 from gui.window.reader_actions import ReaderActionsMixin
@@ -68,7 +67,6 @@ import parsers  # noqa: F401 — register site parsers
 class MainWindow(
     WorkerHostMixin,
     ReaderActionsMixin,
-    DriveActionsMixin,
     LibraryActionsMixin,
     ServerActionsMixin,
     LookActionsMixin,
@@ -97,11 +95,8 @@ class MainWindow(
         self._check_thread: QThread | None = None
         self._check_worker = None
         self._check_busy = False
-        self._pending_drive_sync = False
-        self._drive_sync_silent = True
         self._exiting_for_update = False
         self._force_close = False
-        self._close_sync_dialog = None
         self._app_update_checking = False
         self._app_update_pending = False
         self._app_update_installing = False
@@ -174,8 +169,6 @@ class MainWindow(
         self._clipboard_timer = QTimer(self)
         self._clipboard_timer.timeout.connect(self._poll_clipboard)
         self._clipboard_timer.start(3000)
-        if self.session.settings.get("drive_sync_enabled"):
-            QTimer.singleShot(2500, self._startup_drive_sync)
         if self.session.library_store.get_library():
             QTimer.singleShot(4000, self.library.refresh)
         QTimer.singleShot(3500, self._maybe_offer_glossary_qwen)
@@ -196,7 +189,6 @@ class MainWindow(
 
         lib_m = mb.addMenu("Library")
         lib_m.addAction("Check for updates", lambda: self.library.check_requested.emit())
-        lib_m.addAction("Sync Drive now", self._drive_sync_now)
         lib_m.addAction("Reset library…", self._reset_library)
 
         help_m = mb.addMenu("Help")
@@ -209,7 +201,6 @@ class MainWindow(
         glossary_act = help_m.addAction("Polish glossaries with Qwen…", self._menu_glossary_qwen)
         cache_act = help_m.addAction("Cache…", self._cache_dialog)
         help_m.addAction("About", self._about)
-        help_m.addAction("Drive OAuth setup…", self._drive_setup_help)
         # Off while serving: the browser owns jobs, the library and the cache then.
         self._server_locked_actions = [server_act, lib_m.menuAction(), glossary_act, cache_act]
 
@@ -231,17 +222,15 @@ class MainWindow(
         self.library.read_selected.connect(self._open_reader_from_library)
         self.library.remove_selected.connect(self._remove_library)
         self.library.refresh_requested.connect(self.library.refresh)
-        self.library.drive_connect.connect(self._drive_connect)
-        self.library.drive_sync.connect(self._drive_sync_now)
-        self.library.drive_disconnect.connect(self._drive_disconnect)
-        self.library.drive_change_folder.connect(self._drive_change_folder)
-        self.library.drive_open_folder.connect(self._drive_open_folder)
         self.library.view_changed.connect(lambda v: self._persist_settings())
         self.library.filter_changed.connect(lambda v: self._persist_settings())
         self.library.download_epub_selected.connect(self._download_library_epub)
         self.reader.back_requested.connect(self._close_reader)
         self.reader.chapter_requested.connect(self._on_reader_chapter)
         self.reader.font_changed.connect(self._on_reader_font)
+        self.reader.prefs_changed.connect(self._on_reader_prefs)
+        self.reader.bookmark_requested.connect(self._on_reader_bookmark)
+        self.reader.place_changed.connect(self._save_reader_position)
         self.options.options_changed.connect(self._persist_settings)
 
     # ------------------------------------------------------------------
@@ -261,12 +250,8 @@ class MainWindow(
             ollama_model=o.get("ollama_model", "qwen2.5:3b"),
             ollama_url=o.get("ollama_url", "http://127.0.0.1:11434"),
             ollama_polish=bool(o.get("ollama_polish", False)),
-            drive_enabled=self.library.drive_enabled.isChecked(),
-            drive_library=self.library.drive_library.isChecked(),
-            drive_epubs=self.library.drive_epubs.isChecked(),
             library_view=self.library._view,
             library_filter=self.library._filter,
-            drive_panel_expanded=True,
         )
 
     _GLOSSARY_QWEN_PROMPT = (
@@ -468,28 +453,6 @@ class MainWindow(
         if getattr(self, "_app_update_installing", False) and not update_exit:
             event.ignore()
             return
-        if (
-            not force_close
-            and not update_exit
-            and self._drive_sync_running()
-        ):
-            event.ignore()
-            if getattr(self, "_close_sync_dialog", None) is not None:
-                return
-            choice = self._confirm_close_while_syncing()
-            if choice == CloseWhileSyncingDialog.STAY:
-                return
-            self._pending_drive_sync = False
-            self._force_close = True
-            if choice == CloseWhileSyncingDialog.ABORT:
-                worker = self._worker
-                if worker is not None and hasattr(worker, "request_cancel"):
-                    try:
-                        worker.request_cancel()
-                    except Exception:
-                        pass
-            self.close()
-            return
         self._finalize_close(event)
 
     def _finalize_close(self, event):
@@ -520,9 +483,9 @@ class MainWindow(
         except Exception:
             pass
         self.session.close()
-        self._pending_drive_sync = False
-        self._stop_thread(drain_pending_sync=False, wait_ms=wait_ms)
-        self._stop_check_thread(wait_ms=min(wait_ms, 5000), drain_pending_sync=False)
+        self._stop_reader_side(wait_ms=min(wait_ms, 2000))
+        self._stop_thread(wait_ms=wait_ms)
+        self._stop_check_thread(wait_ms=min(wait_ms, 5000))
         event.accept()
 
     def _check_resume_job(self):
@@ -705,32 +668,6 @@ class MainWindow(
     def _on_progress(self, fraction: float, status: str):
         """On MainWindow so QueuedConnection is a real QObject slot, not a mixin."""
         WorkerHostMixin._on_progress(self, fraction, status)
-
-    @Slot()
-    def _start_drive_sync_silent(self):
-        DriveActionsMixin._start_drive_sync_silent(self)
-
-    @Slot()
-    def _startup_drive_sync(self):
-        # While serving, the browser's jobs own Drive sync (after library changes).
-        if not self._serving():
-            self._start_drive_sync_silent()
-
-    @Slot()
-    def _drive_sync_now(self):
-        DriveActionsMixin._drive_sync_now(self)
-
-    @Slot(bool, str, str)
-    def _drive_connect_done(self, ok: bool, email: str, err: str):
-        DriveActionsMixin._drive_connect_done(self, ok, email, err)
-
-    @Slot(str)
-    def _on_drive_sync_progress(self, msg: str):
-        DriveActionsMixin._on_drive_sync_progress(self, msg)
-
-    @Slot(str, str)
-    def _on_drive_sync_finished(self, summary: str, err: str):
-        DriveActionsMixin._on_drive_sync_finished(self, summary, err)
 
     @Slot(int, int, str)
     def _on_library_check_progress(self, idx: int, total: int, name: str):
@@ -1117,8 +1054,6 @@ class MainWindow(
         prev = getattr(self, "_last_app_update_check", None)
         if prev is not None and prev[0] == key and (now - prev[1]) < 2.0:
             self._app_update_checking = False
-            if not self._app_update_pending and not self._app_update_installing:
-                self._release_deferred_drive_sync()
             return
         self._last_app_update_check = (key, now)
         notify = bool(getattr(self, "_update_check_notify", False))
@@ -1136,8 +1071,6 @@ class MainWindow(
             self._app_update_pending = False
             if accepted:
                 self._begin_app_update(latest)
-                return
-            self._release_deferred_drive_sync()
             return
         self._app_update_checking = False
         self.progress.set_status(message or "App is up to date")
@@ -1149,12 +1082,10 @@ class MainWindow(
                     self, "Updates",
                     message or f"You're running the latest version ({get_current_version()}).",
                 )
-        self._release_deferred_drive_sync()
 
     def _begin_app_update(self, version: str = ""):
-        """Hide the main window and download. Library sync does not run."""
+        """Hide the main window and download the update."""
         self._app_update_installing = True
-        self._pending_drive_sync = False
         self._open_update_progress("Connecting to GitHub…", version)
         download_update_async(
             progress_callback=lambda c, t, s: self._sig_update_progress.emit(

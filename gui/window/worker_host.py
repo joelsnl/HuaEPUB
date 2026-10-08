@@ -88,7 +88,6 @@ class WorkerHostMixin:
 
     def _stop_thread(
         self,
-        drain_pending_sync: bool = True,
         wait_ms: int = 5000,
         *,
         thread=None,
@@ -119,7 +118,6 @@ class WorkerHostMixin:
             )
             self._call_on_gui(
                 lambda: self._stop_thread(
-                    drain_pending_sync,
                     wait_ms,
                     thread=target_thread,
                     worker=target_worker,
@@ -155,8 +153,6 @@ class WorkerHostMixin:
         if had_job:
             self._worker_epoch = current_epoch + 1
         _reap_qthread(target_thread, target_worker, wait_ms)
-        if drain_pending_sync and self._pending_drive_sync:
-            self._call_on_gui(self._start_drive_sync_silent)
 
     def _run_worker(self, worker) -> bool:
         """
@@ -169,11 +165,11 @@ class WorkerHostMixin:
         """
         if not _is_gui_thread(self):
             return False
-        if self._is_check_running() and not self._worker_is_drive(worker):
+        if self._is_check_running():
             return False
         if self._worker_busy and self._thread and self._thread.isRunning():
             return False
-        self._stop_thread(drain_pending_sync=False)
+        self._stop_thread()
         self._worker_epoch = int(getattr(self, "_worker_epoch", 0) or 0) + 1
         self._thread = QThread()  # no parent — avoids cross-thread parenting issues
         self._worker = worker
@@ -193,32 +189,6 @@ class WorkerHostMixin:
             signal.connect(slot, Qt.ConnectionType.QueuedConnection)
         return self._run_worker(worker)
 
-    def _worker_is_drive(self, worker) -> bool:
-        try:
-            from gui.workers.drive_workers import DriveConnectWorker, DriveSyncWorker
-        except Exception:
-            return False
-        return isinstance(worker, (DriveSyncWorker, DriveConnectWorker))
-
-    def _drive_sync_running(self) -> bool:
-        """True while a DriveSyncWorker QThread is still in flight."""
-        try:
-            from gui.workers.drive_workers import DriveSyncWorker
-        except Exception:
-            return False
-        worker = getattr(self, "_worker", None)
-        if not isinstance(worker, DriveSyncWorker):
-            return False
-        thread = getattr(self, "_thread", None)
-        try:
-            return bool(
-                getattr(self, "_worker_busy", False)
-                and thread is not None
-                and thread.isRunning()
-            )
-        except RuntimeError:
-            return False
-
     def _is_check_running(self) -> bool:
         thread = getattr(self, "_check_thread", None)
         if not getattr(self, "_check_busy", False) or thread is None:
@@ -228,12 +198,10 @@ class WorkerHostMixin:
         except RuntimeError:
             return False
 
-    def _stop_check_thread(self, wait_ms: int = 5000, drain_pending_sync: bool = False):
+    def _stop_check_thread(self, wait_ms: int = 5000):
         """Stop the library-check QThread. Must be called from the GUI thread."""
         if not _is_gui_thread(self):
-            self._call_on_gui(
-                lambda: self._stop_check_thread(wait_ms, drain_pending_sync)
-            )
+            self._call_on_gui(lambda: self._stop_check_thread(wait_ms))
             return
         thread = getattr(self, "_check_thread", None)
         worker = getattr(self, "_check_worker", None)
@@ -241,20 +209,16 @@ class WorkerHostMixin:
         self._check_worker = None
         self._check_busy = False
         _reap_qthread(thread, worker, wait_ms)
-        if drain_pending_sync and getattr(self, "_pending_drive_sync", False) and not (
-            self._worker_busy and self._thread and self._thread.isRunning()
-        ):
-            self._call_on_gui(self._start_drive_sync_silent)
 
     def _run_check_worker(self, worker) -> bool:
-        """Start Library Check on its own thread (does not wait for Drive)."""
+        """Start Library Check on its own thread."""
         if not _is_gui_thread(self):
             return False
         if self.session.control.is_downloading:
             return False
         if self._is_check_running():
             return False
-        self._stop_check_thread(drain_pending_sync=False)
+        self._stop_check_thread()
         self._check_thread = QThread()
         self._check_worker = worker
         self._check_busy = True
@@ -271,7 +235,7 @@ class WorkerHostMixin:
         return self._run_check_worker(worker)
 
     def _finish_check_worker_later(self):
-        self._call_on_gui(lambda: self._stop_check_thread(5000, True))
+        self._call_on_gui(lambda: self._stop_check_thread(5000))
 
     def _finish_worker_later(self):
         """Cleanup after a worker finished signal (safe from worker or GUI)."""
@@ -280,7 +244,7 @@ class WorkerHostMixin:
         epoch = int(getattr(self, "_worker_epoch", 0) or 0)
         self._call_on_gui(
             lambda: self._stop_thread(
-                True, 5000, thread=thread, worker=worker, epoch=epoch
+                5000, thread=thread, worker=worker, epoch=epoch
             )
         )
 

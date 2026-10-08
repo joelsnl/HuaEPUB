@@ -8,8 +8,6 @@ Persistent download history and reading library.
   come from the chapter cache).
 
 Stored as library.json in ~/.huaepub/. Never raises to callers.
-Optional Google Drive sync merges remote copies via merge_library()
-(library.json + EPUBs only — never cache.db or resume files).
 """
 
 from __future__ import annotations
@@ -54,18 +52,16 @@ class LibraryEntry:
     last_chapter_title: str = ""
     last_downloaded_at: float = 0.0
     output_path: str = ""
-    drive_file_id: str = ""
     epub_filename: str = ""
     description: str = ""
 
 
 @dataclass
 class RemovedEntry:
-    """Tombstone so Drive merge cannot resurrect a novel the user removed."""
+    """Tombstone so a removed novel is not put back by a library merge."""
     source_url: str
     removed_at: float = 0.0
     epub_filename: str = ""
-    drive_file_id: str = ""
 
 
 @dataclass
@@ -109,7 +105,6 @@ def _library_from_dict(e: dict) -> Optional[LibraryEntry]:
             last_chapter_title=e.get('last_chapter_title', '') or '',
             last_downloaded_at=float(e.get('last_downloaded_at') or 0),
             output_path=e.get('output_path', '') or '',
-            drive_file_id=e.get('drive_file_id', '') or '',
             epub_filename=e.get('epub_filename', '') or '',
             description=e.get('description', '') or '',
         )
@@ -126,7 +121,6 @@ def _removed_from_dict(e: dict) -> Optional[RemovedEntry]:
             source_url=url,
             removed_at=float(e.get('removed_at') or 0),
             epub_filename=e.get('epub_filename', '') or '',
-            drive_file_id=e.get('drive_file_id', '') or '',
         )
     except (TypeError, ValueError):
         return None
@@ -180,10 +174,7 @@ def _prefer_library_entry(a: LibraryEntry, b: LibraryEntry) -> LibraryEntry:
     else:
         winner, loser = a, b
 
-    # Fill blanks from the other side (e.g. local path vs remote drive id)
     merged = LibraryEntry(**asdict(winner))
-    if not merged.drive_file_id and loser.drive_file_id:
-        merged.drive_file_id = loser.drive_file_id
     if not merged.epub_filename and loser.epub_filename:
         merged.epub_filename = loser.epub_filename
     if not merged.output_path and loser.output_path:
@@ -205,8 +196,6 @@ def _prefer_removed_entry(a: RemovedEntry, b: RemovedEntry) -> RemovedEntry:
     merged = RemovedEntry(**asdict(winner))
     if not merged.epub_filename and loser.epub_filename:
         merged.epub_filename = loser.epub_filename
-    if not merged.drive_file_id and loser.drive_file_id:
-        merged.drive_file_id = loser.drive_file_id
     return merged
 
 
@@ -228,8 +217,7 @@ def merge_library(local: LibraryData, remote: LibraryData) -> LibraryData:
     - Union novels by source_url; newer last_downloaded_at wins
       (ties → higher chapter_count).
     - History by source_url; newer downloaded_at wins; capped at MAX_HISTORY.
-    - Tombstones (`removed`) win over older library/history rows so a local
-      Remove is not undone by the next Drive sync.
+    - Tombstones (`removed`) win over older library/history rows.
     """
     removed_map = _tombstone_map(list(remote.removed) + list(local.removed))
 
@@ -320,20 +308,6 @@ class LibraryStore:
                 removed=list(self._data.removed),
             )
 
-    def replace_data(self, data: LibraryData) -> None:
-        """Replace entire store contents (used after Drive merge)."""
-        with self._lock:
-            self._data = LibraryData(
-                history=list(data.history),
-                library=list(data.library),
-                removed=list(getattr(data, "removed", None) or []),
-            )
-            self._save()
-            print(
-                f"Library store updated: {len(self._data.library)} novel(s) "
-                f"→ {self._path}"
-            )
-
     def reload(self) -> None:
         """Re-read library.json from disk into memory."""
         with self._lock:
@@ -386,7 +360,6 @@ class LibraryStore:
         last_chapter_url: str = '',
         last_chapter_title: str = '',
         output_path: str = '',
-        drive_file_id: str = '',
         epub_filename: str = '',
         description: str = '',
     ) -> None:
@@ -409,7 +382,6 @@ class LibraryStore:
                 last_chapter_title=last_chapter_title or '',
                 last_downloaded_at=time.time(),
                 output_path=output_path or (prev.output_path if prev else ''),
-                drive_file_id=drive_file_id or (prev.drive_file_id if prev else ''),
                 epub_filename=epub_filename or (prev.epub_filename if prev else ''),
                 description=description or (prev.description if prev else ''),
             )
@@ -421,28 +393,6 @@ class LibraryStore:
                 r for r in self._data.removed if r.source_url != source_url
             ]
             self._save()
-
-    def update_drive_file(
-        self,
-        source_url: str,
-        drive_file_id: str = '',
-        epub_filename: str = '',
-        output_path: str = '',
-    ) -> None:
-        """Update Drive/EPUB fields without bumping last_downloaded_at."""
-        if not source_url:
-            return
-        with self._lock:
-            for e in self._data.library:
-                if e.source_url == source_url:
-                    if drive_file_id:
-                        e.drive_file_id = drive_file_id
-                    if epub_filename:
-                        e.epub_filename = epub_filename
-                    if output_path:
-                        e.output_path = output_path
-                    self._save()
-                    return
 
     def update_metadata(
         self,
@@ -486,9 +436,8 @@ class LibraryStore:
 
     def remove_library(self, source_url: str) -> Optional[LibraryEntry]:
         """
-        Drop the novel from library + history and write a tombstone so Drive
-        sync cannot resurrect it. Returns the removed entry (for file/cache
-        cleanup), or None if it was not in the library.
+        Drop the novel from library + history. Returns the removed entry
+        (for file/cache cleanup), or None if it was not in the library.
         """
         url = (source_url or "").strip()
         if not url:
@@ -506,12 +455,10 @@ class LibraryStore:
                 h for h in self._data.history if h.source_url != url
             ]
             filename = ""
-            drive_id = ""
             if found:
                 filename = found.epub_filename or (
                     Path(found.output_path).name if found.output_path else ""
                 )
-                drive_id = found.drive_file_id or ""
             self._data.removed = [
                 r for r in self._data.removed if r.source_url != url
             ]
@@ -521,7 +468,6 @@ class LibraryStore:
                     source_url=url,
                     removed_at=time.time(),
                     epub_filename=filename,
-                    drive_file_id=drive_id,
                 ),
             )
             self._save()
@@ -553,7 +499,6 @@ class LibraryStore:
                         source_url=e.source_url,
                         removed_at=now,
                         epub_filename=filename,
-                        drive_file_id=e.drive_file_id or "",
                     )
                 self._data.removed = list(tombs.values())
                 self._data.library = []
@@ -605,7 +550,7 @@ def purge_novel_artifacts(
     Delete this novel's local EPUB and per-book caches (chapters, TOC, cover).
     Does not wipe the shared translation cache (phrases are reused across books).
     Only unlinks .epub files under extra_dirs (books folder / output folder).
-    Also drops the local reading position (never Drive-synced).
+    Also drops the local reading position.
     """
     try:
         from core.reading import clear_position

@@ -27,10 +27,6 @@ class TestSettings:
         assert loaded['ollama_url'] == 'http://127.0.0.1:11434'
         assert loaded['ollama_model'] == 'qwen2.5:3b'
         assert loaded['ollama_polish'] is False
-        assert loaded['drive_sync_enabled'] is False
-        assert loaded['drive_sync_library'] is True
-        assert loaded['drive_sync_epubs'] is True
-        assert loaded['drive_library_revision'] == ''
         assert loaded['polish_notice_shown'] is False
         assert loaded['nmt_notice_shown'] is False
         assert loaded['glossary_qwen_ask'] is True

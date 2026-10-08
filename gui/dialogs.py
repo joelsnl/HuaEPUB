@@ -13,7 +13,7 @@ import re
 
 from core.branding import APP_TITLE
 from core.utils import format_bytes, format_count
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractButton, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
@@ -399,131 +399,6 @@ class UpdateProgressDialog(QDialog):
         super().keyPressEvent(event)
 
 
-class CloseWhileSyncingDialog(QDialog):
-    """Close intercept while Google Drive sync is still running."""
-
-    STAY = "stay"
-    WAIT = "wait"
-    ABORT = "abort"
-
-    def __init__(self, parent=None, initial_status: str = ""):
-        super().__init__(parent)
-        self.choice = self.STAY
-        self._waiting = False
-        self._done = False
-        self._accepting = False
-        self.setWindowTitle("Drive sync")
-        self.setModal(True)
-        self.setMinimumWidth(460)
-        lay = QVBoxLayout(self)
-        self.headline = QLabel("HuaEPUB is still syncing with Google Drive.")
-        self.headline.setWordWrap(True)
-        lay.addWidget(self.headline)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 0)
-        self.bar.setTextVisible(True)
-        lay.addWidget(self.bar)
-        self.status = QLabel(initial_status or "Syncing with Google Drive…")
-        self.status.setWordWrap(True)
-        lay.addWidget(self.status)
-        self.hint = QLabel(
-            "Closing now can leave library.json or EPUBs half-uploaded."
-        )
-        self.hint.setWordWrap(True)
-        self.hint.setObjectName("hintLabel")
-        lay.addWidget(self.hint)
-
-        btns = QHBoxLayout()
-        self.keep_btn = QPushButton("Keep open")
-        self.keep_btn.setObjectName("secondaryBtn")
-        self.abort_btn = QPushButton("Close anyway")
-        self.abort_btn.setObjectName("dangerBtn")
-        self.wait_btn = QPushButton("Wait, then close")
-        self.wait_btn.setDefault(True)
-        self.keep_btn.clicked.connect(self._keep_open)
-        self.abort_btn.clicked.connect(self._close_anyway)
-        self.wait_btn.clicked.connect(self._wait_then_close)
-        btns.addWidget(self.keep_btn)
-        btns.addStretch(1)
-        btns.addWidget(self.abort_btn)
-        btns.addWidget(self.wait_btn)
-        lay.addLayout(btns)
-        self.set_status(initial_status)
-
-    def set_status(self, msg: str) -> None:
-        text = (msg or "").strip() or "Syncing with Google Drive…"
-        self.status.setText(text)
-        match = _SYNC_COUNT_RE.search(text)
-        if match:
-            current, total = int(match.group(1)), int(match.group(2))
-            if total > 0:
-                self.bar.setRange(0, total)
-                self.bar.setValue(max(0, min(current, total)))
-                return
-        if self._done:
-            self.bar.setRange(0, 1000)
-            self.bar.setValue(1000)
-            return
-        self.bar.setRange(0, 0)
-
-    def mark_finished(self, summary: str = "", err: str = "") -> None:
-        self._done = True
-        if err:
-            self.headline.setText("Drive sync stopped with an error.")
-            self.set_status(f"Sync error: {err}")
-        else:
-            self.headline.setText("Drive sync finished.")
-            self.set_status(summary or "Sync finished.")
-        self.bar.setRange(0, 1000)
-        self.bar.setValue(1000)
-        self.hint.setText("HuaEPUB will close.")
-        self.wait_btn.setEnabled(False)
-        self.abort_btn.setEnabled(False)
-        if self._waiting or self.isVisible():
-            if self.choice == self.STAY:
-                self.choice = self.WAIT
-            QTimer.singleShot(400 if self.isVisible() else 0, self._accept_wait)
-
-    def _accept_wait(self) -> None:
-        if self.choice == self.STAY:
-            return
-        self.choice = self.WAIT
-        self._accepting = True
-        self.accept()
-
-    def _keep_open(self) -> None:
-        self.choice = self.STAY
-        self._waiting = False
-        self.reject()
-
-    def _close_anyway(self) -> None:
-        self.choice = self.ABORT
-        self._accepting = True
-        self.accept()
-
-    def _wait_then_close(self) -> None:
-        self.choice = self.WAIT
-        self._waiting = True
-        self.wait_btn.setEnabled(False)
-        self.hint.setText(
-            "Waiting for Drive to finish. HuaEPUB will close after that."
-        )
-        if self._done:
-            self._accepting = True
-            self.accept()
-
-    def reject(self) -> None:
-        self.choice = self.STAY
-        self._waiting = False
-        super().reject()
-
-    def closeEvent(self, event) -> None:
-        if not self._accepting:
-            self.choice = self.STAY
-            self._waiting = False
-        event.accept()
-
-
 def show_cache_dialog(parent, cache, settings: dict, on_status) -> None:
     """Help → Cache… size cap and clear buttons."""
     from core.settings import set_setting
@@ -540,7 +415,7 @@ def show_cache_dialog(parent, cache, settings: dict, on_status) -> None:
     layout.addWidget(size_lbl)
     explain = QLabel(
         "Chapter HTML, translations (including polished spans), covers, and "
-        "tables of contents live in ~/.huaepub/cache.db. This is not Drive-synced. "
+        "tables of contents live in ~/.huaepub/cache.db on this PC. "
         "When the file grows past the limit, the oldest cached chapters are "
         "deleted first (least recently stored). Translations are kept unless "
         "the cache is still over the limit.\n\n"

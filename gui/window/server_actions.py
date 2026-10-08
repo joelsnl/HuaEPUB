@@ -122,8 +122,6 @@ class ServerActionsMixin:
             return "Can't start server mode yet. A download is running. Let it finish, or pause it, first."
         if self._is_check_running():
             return "Can't start server mode yet. Library is checking for updates. Wait for it to finish first."
-        if self._drive_sync_running():
-            return "Can't start server mode yet. Google Drive is syncing. Wait for it to finish first."
         return ""
 
     # -- start -------------------------------------------------------------

@@ -25,7 +25,6 @@ from typing import Any, Dict
 
 from core.branding import (
     DATA_DIR_NAME,
-    DRIVE_FOLDER_NAME,
     LEGACY_DATA_DIR_NAME,
 )
 
@@ -63,24 +62,10 @@ DEFAULTS: Dict[str, Any] = {
     'use_chapter_cache': True,
     # Watch system clipboard for novel URLs and queue them
     'clipboard_watcher': False,
-    # Optional Google Drive sync (offline-first; off by default)
-    'drive_sync_enabled': False,
-    'drive_sync_library': True,
-    'drive_sync_epubs': True,
-    # Visible My Drive folder: create/reuse by name, or pin a folder id/URL
-    'drive_folder_name': DRIVE_FOLDER_NAME,
-    'drive_folder_id': '',
-    'drive_library_hash': '',
-    # last seen Drive library.json headRevisionId (empty = first sync / old client)
-    'drive_library_revision': '',
-    'drive_last_synced_at': 0.0,
-    'drive_last_sync_summary': '',
     # Library shelf: 'grid' | 'list'
     'library_view': 'grid',
     # Library filter: 'all' | 'updates'
     'library_filter': 'all',
-    # Drive options panel expanded under Library
-    'drive_panel_expanded': False,
     # Local cache.db cap in MiB. 0 = unlimited. Oldest chapter HTML is
     # deleted first when the file is over this size (translations kept).
     'cache_max_mb': 2048,
@@ -91,8 +76,13 @@ DEFAULTS: Dict[str, Any] = {
     # Offer a local Qwen pass over user/per-novel glossaries.
     'glossary_qwen_ask': True,
     'glossary_qwen_last_at': 0.0,
-    # In-app reader font size (points).
+    # In-app reader. Pages is the book; scroll is the other flow.
     'reader_font_pt': 18,
+    'reader_theme': 'paper',  # paper | sepia | night
+    'reader_mode': 'pages',  # pages | scroll
+    'reader_face': 'serif',  # serif | sans
+    'reader_leading': 'normal',  # tight | normal | loose
+    'reader_align': 'justify',  # justify | left
     # Main window geometry. 0 width/height means "use the built-in default".
     'window_x': 0,
     'window_y': 0,

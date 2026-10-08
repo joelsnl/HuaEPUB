@@ -13,6 +13,7 @@ import ipaddress
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -114,10 +115,9 @@ class ServerHost:
             return self.status
         import uvicorn
 
-        from web.books import drive_sync_after_change, start_drive_sync
         from web.context import ServerContext, book_roots
         from web.server import create_app
-        from web.tasks import Busy, TaskManager
+        from web.tasks import TaskManager
 
         if mode not in ("lan", "remote"):
             raise ServerStartError("Unknown server mode")
@@ -147,7 +147,6 @@ class ServerHost:
         manager = TaskManager(
             self.session,
             file_roots=lambda: book_roots(self.session),
-            after_library_change=drive_sync_after_change,
         )
         ctx = ServerContext(
             session=self.session, tasks=manager, secrets=self.secrets, mode=mode,
@@ -185,12 +184,6 @@ class ServerHost:
         self._thread = thread
         where = "your network" if mode == "lan" else "anywhere (HTTPS)"
         self.log(f"Server mode on: port {port}, reachable from {where}")
-        # The desktop skips its startup sync while serving: pull other devices' changes now.
-        if self.session.settings.get("drive_sync_enabled"):
-            try:
-                start_drive_sync(manager)
-            except Busy:
-                pass
         return status
 
     def stop(self, timeout: float = 15.0) -> None:
@@ -419,12 +412,141 @@ def serve_headless() -> int:
         lines.append(status.lan_url)
     if status.public_url:
         lines.append(status.public_url)
-    if status.mode == "lan":
+    if status.mode == "lan" and os.environ.get("HUAEPUB_SERVICE"):
+        lines.append("Access code is in ~/.huaepub/server/secret.json (lan_code).")
+    elif status.mode == "lan":
         lines.append(f"Access code: {host.secrets.lan_code}")
     else:
         lines.append("Sign in with the server password.")
     _write_terminal("\n".join(lines))
     return serve_until_stopped(host, session, stopped)
+
+
+SERVICE_NAMES = ("huaepub.service", "noveldownloader.service")
+
+
+def install_service_requested() -> bool:
+    return "--install-service" in sys.argv
+
+
+def service_unit_roots() -> list:
+    home = Path.home()
+    return [
+        home / ".config" / "systemd" / "user",
+        Path("/etc/systemd/system"),
+        Path("/lib/systemd/system"),
+        Path("/usr/lib/systemd/system"),
+    ]
+
+
+def _is_huaepub_unit(path: Path) -> bool:
+    if path.name in SERVICE_NAMES:
+        try:
+            return path.is_file()
+        except OSError:
+            return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    return "--headless" in text and ("huaepub" in text or "noveldownloader" in text or "app.py" in text)
+
+
+def existing_service_unit(roots=None) -> Optional[Path]:
+    """A HuaEPUB unit that is already on disk. None when this machine has none."""
+    for root in (service_unit_roots() if roots is None else roots):
+        root = Path(root)
+        for name in SERVICE_NAMES:
+            path = root / name
+            if _is_huaepub_unit(path):
+                return path
+        try:
+            extras = [p for p in root.glob("*.service") if p.name not in SERVICE_NAMES]
+        except OSError:
+            continue
+        for path in extras:
+            if _is_huaepub_unit(path):
+                return path
+    return None
+
+
+def _systemd_quote(text: str) -> str:
+    if not text or any(ch.isspace() or ch in '"\\' for ch in text):
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return text
+
+
+def _service_exec() -> tuple:
+    if getattr(sys, "frozen", False):
+        exe = str(Path(sys.executable).resolve())
+        return str(Path(exe).parent), _systemd_quote(exe) + " --headless"
+    app = str((Path(__file__).resolve().parents[1] / "app.py"))
+    return str(Path(app).parent), _systemd_quote(sys.executable) + " " + _systemd_quote(app) + " --headless"
+
+
+def _unit_text() -> str:
+    work, cmd = _service_exec()
+    return (
+        "[Unit]\n"
+        "Description=HuaEPUB\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        "Environment=HUAEPUB_SERVICE=1\n"
+        f"WorkingDirectory={_systemd_quote(work)}\n"
+        f"ExecStart={cmd}\n"
+        "Restart=on-failure\n"
+        "RestartSec=3\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_user_service(*, roots=None, unit_dir=None, runner=None) -> tuple:
+    """Write a user systemd unit when none exists, then enable it. Returns (code, message)."""
+    found = existing_service_unit(roots)
+    if found is not None:
+        return 0, f"HuaEPUB service is already installed:\n{found}"
+    if not sys.platform.startswith("linux"):
+        return 1, "A systemd service is a Linux option. This machine is not Linux."
+    dest_dir = Path(unit_dir) if unit_dir is not None else Path.home() / ".config" / "systemd" / "user"
+    path = dest_dir / "huaepub.service"
+    if path.is_file():
+        return 0, f"HuaEPUB service is already installed:\n{path}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(_unit_text(), encoding="utf-8")
+    lines = [f"Installed {path}"]
+
+    def run(cmd):
+        if runner is not None:
+            return runner(cmd)
+        try:
+            return subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except FileNotFoundError:
+            return None
+
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user:
+        linger = run(["loginctl", "enable-linger", user])
+        if linger is not None and getattr(linger, "returncode", 1) != 0:
+            lines.append("To start at boot without a login: loginctl enable-linger")
+    reload = run(["systemctl", "--user", "daemon-reload"])
+    if reload is None:
+        lines.append("systemctl was not found. When it is:")
+        lines.append("systemctl --user daemon-reload")
+        lines.append("systemctl --user enable --now huaepub.service")
+        return 0, "\n".join(lines)
+    enable = run(["systemctl", "--user", "enable", "--now", "huaepub.service"])
+    if enable is None or getattr(enable, "returncode", 1) != 0:
+        err = ""
+        if enable is not None:
+            err = (getattr(enable, "stderr", "") or getattr(enable, "stdout", "") or "").strip()
+        return 1, f"Wrote {path} but could not enable it.\n{err}".rstrip()
+    lines.append("Enabled huaepub.service.")
+    return 0, "\n".join(lines)
 
 
 def find_public_address(timeout: float = 8.0) -> str:

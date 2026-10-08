@@ -2,7 +2,7 @@
 """
 SQLite-backed persistent caches.
 
-Local-only database (cache.db in ~/.huaepub/) — never synced to Drive:
+Local-only database (cache.db in ~/.huaepub/):
 
 - chapters: successfully downloaded chapter HTML, keyed by chapter URL.
 - translations: translated / polished text segments, keyed by (backend, source).
@@ -470,7 +470,7 @@ class NovelCache:
         )
 
     # ------------------------------------------------------------------
-    # Covers (local only — never Drive-synced)
+    # Covers (local only)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -863,6 +863,28 @@ def english_chapter_title(text: str) -> str:
     ):
         return ""
     return collapsed
+
+
+def save_english_chapter_title(cache, source_url: str, url: str, title: str) -> None:
+    """Keep one English chapter title. Other chapters in the list stay as they were."""
+    shown = english_chapter_title(title)
+    chapter_url = (url or "").strip()
+    book = (source_url or "").strip()
+    put = getattr(cache, "put_english_chapter_titles", None)
+    getter = getattr(cache, "get_english_chapter_titles", None)
+    if not shown or not chapter_url or not book or not callable(put):
+        return
+    rows = []
+    if callable(getter):
+        try:
+            rows = [row for row in (getter(book) or []) if (row.get("url") or "") != chapter_url]
+        except Exception:
+            rows = []
+    rows.append({"url": chapter_url, "title": shown})
+    try:
+        put(book, rows)
+    except Exception:
+        pass
 
 
 def remember_english_chapter_titles(cache, source_url: str, chapters) -> None:

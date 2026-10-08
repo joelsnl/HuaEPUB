@@ -68,12 +68,10 @@ def _preview(count=5, url="https://example.com/book/1", title="A Test Novel") ->
 
 
 def _ctx(session, *, mode="lan", https=False, hsts=False, builder=None):
-    from web.books import drive_sync_after_change
     from web.context import ServerContext, book_roots
     from web.tasks import TaskManager
 
-    manager = TaskManager(session, file_roots=lambda: book_roots(session),
-                          after_library_change=drive_sync_after_change)
+    manager = TaskManager(session, file_roots=lambda: book_roots(session))
     secrets = ServerSecrets(session.data_dir / "server" / "secret.json")
     ctx = ServerContext(session=session, tasks=manager, secrets=secrets, mode=mode,
                         version="9.9.9", https=https, hsts=hsts,
@@ -256,9 +254,129 @@ def test_apply_settings_validates_every_key(home):
     assert settings["translate"] is False and settings["workers"] == 50
     assert settings["translation_glossary"] == "off" and settings["reader_font_pt"] == 20
     for bad in ({"workers": 0}, {"workers": "5"}, {"translate": "yes"}, {"glossary": "x"},
-                {"reader_font_pt": 99}, {"output_dir": "/tmp"}, {"backend": "nope"}):
+                {"reader_font_pt": 99}, {"backend": "nope"}):
         with pytest.raises(SettingsError):
             apply_settings(settings, bad)
+
+
+def test_browser_can_set_an_existing_books_folder(home):
+    from web.options import SettingsError, apply_settings
+
+    books = home / "books"
+    books.mkdir()
+    settings = {}
+    apply_settings(settings, {"output_dir": str(books)})
+    assert settings["output_dir"] == str(books)
+    apply_settings(settings, {"output_dir": "  "})
+    assert settings["output_dir"] == ""
+    apply_settings(settings, {"reader_theme": "sepia", "reader_mode": "scroll"})
+    assert settings["reader_theme"] == "sepia" and settings["reader_mode"] == "scroll"
+    with pytest.raises(SettingsError):
+        apply_settings(settings, {"reader_theme": "neon"})
+    for bad in ("books", str(home / "missing")):
+        with pytest.raises(SettingsError):
+            apply_settings(settings, {"output_dir": bad})
+
+
+def test_settings_books_folder_is_used_immediately(session, home):
+    books = home / "shelf"
+    books.mkdir()
+    ctx = _ctx(session)
+    c = _signed_in(ctx)
+    r = c.put("/api/settings", json={"output_dir": str(books)}, headers=H)
+    assert r.status_code == 200
+    assert session.output_dir == str(books)
+    assert r.json()["output_dir"] == str(books)
+
+
+def test_install_route_and_service_route(session, monkeypatch):
+    from web import host
+
+    ctx = _ctx(session)
+    c = _signed_in(ctx)
+    assert c.post("/api/install", json={"what": "nope"}, headers=H).status_code == 400
+    monkeypatch.setattr(host, "install_user_service", lambda **_k: (0, "already installed:\n/unit"))
+    ok = c.post("/api/service", headers=H)
+    assert ok.status_code == 200
+    assert "already installed" in ok.json()["message"]
+    monkeypatch.setattr(host, "install_user_service", lambda **_k: (1, "Linux only"))
+    bad = c.post("/api/service", headers=H)
+    assert bad.status_code == 400 and bad.json()["detail"] == "Linux only"
+    done = threading.Event()
+
+    def body(_ctx):
+        assert session.control.is_downloading is False
+        done.set()
+        return {"notes": "ok"}
+
+    ctx.tasks.start("install", "Download Polish", body)
+    assert done.wait(2)
+    ctx.tasks.wait(2)
+    assert session.control.is_downloading is False
+
+
+class _Ok:
+    returncode = 0
+    stderr = ""
+    stdout = ""
+
+
+def test_install_service_leaves_an_existing_unit(tmp_path, monkeypatch):
+    from web import host
+
+    unit = tmp_path / "noveldownloader.service"
+    unit.write_text("existing\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(host.sys, "platform", "linux")
+    code, message = host.install_user_service(
+        roots=[tmp_path], unit_dir=tmp_path / "new",
+        runner=lambda cmd: calls.append(cmd) or _Ok(),
+    )
+    assert code == 0
+    assert "already installed" in message
+    assert calls == []
+    assert unit.read_text(encoding="utf-8") == "existing\n"
+    assert not (tmp_path / "new").exists()
+
+    other = tmp_path / "other-units"
+    other.mkdir()
+    custom = other / "pi-books.service"
+    custom.write_text("ExecStart=/usr/bin/python3 /home/joelsnl/HuaEPUB/app.py --headless\n",
+                      encoding="utf-8")
+    code, message = host.install_user_service(
+        roots=[other], unit_dir=tmp_path / "new", runner=lambda cmd: calls.append(cmd) or _Ok(),
+    )
+    assert code == 0 and "already installed" in message and calls == []
+    assert custom.read_text(encoding="utf-8").startswith("ExecStart=")
+
+
+def test_install_service_writes_a_unit_when_none_exists(tmp_path, monkeypatch):
+    from web import host
+
+    monkeypatch.setattr(host.sys, "platform", "linux")
+    dest = tmp_path / "user"
+    code, _message = host.install_user_service(
+        roots=[tmp_path / "empty"], unit_dir=dest, runner=lambda cmd: _Ok(),
+    )
+    assert code == 0
+    text = (dest / "huaepub.service").read_text(encoding="utf-8")
+    assert "HUAEPUB_SERVICE=1" in text and "--headless" in text
+    again, message = host.install_user_service(
+        roots=[dest], unit_dir=tmp_path / "other", runner=lambda cmd: (_ for _ in ()).throw(AssertionError(cmd)),
+    )
+    assert again == 0 and "already installed" in message
+    assert text == (dest / "huaepub.service").read_text(encoding="utf-8")
+
+
+def test_install_service_is_linux_only(tmp_path, monkeypatch):
+    from web import host
+
+    monkeypatch.setattr(host.sys, "platform", "win32")
+    code, message = host.install_user_service(
+        roots=[tmp_path], unit_dir=tmp_path / "user", runner=lambda cmd: _Ok(),
+    )
+    assert code == 1 and "Linux" in message
+    assert not (tmp_path / "user").exists()
 
 
 def test_job_options_never_start_downloads(home, monkeypatch):
@@ -281,7 +399,7 @@ def test_job_options_never_start_downloads(home, monkeypatch):
 def test_one_task_at_a_time_and_exclusive(session):
     from web.tasks import Busy, TaskManager
 
-    manager = TaskManager(session, file_roots=lambda: [], after_library_change=None)
+    manager = TaskManager(session, file_roots=lambda: [])
     gate = threading.Event()
 
     def body(ctx):
@@ -306,7 +424,7 @@ def test_task_errors_are_short_and_cancel_clears_the_resume_point(session):
     from core.download_job import load_job, save_job
     from web.tasks import TaskManager
 
-    manager = TaskManager(session, file_roots=lambda: [], after_library_change=None)
+    manager = TaskManager(session, file_roots=lambda: [])
 
     def boom(ctx):
         raise RuntimeError("x" * 1000)
@@ -336,8 +454,7 @@ def test_files_are_only_served_from_the_books_folder(session, tmp_path):
     from web.context import book_roots
     from web.tasks import TaskManager
 
-    manager = TaskManager(session, file_roots=lambda: book_roots(session),
-                          after_library_change=None)
+    manager = TaskManager(session, file_roots=lambda: book_roots(session))
     books = book_roots(session)[0]
     books.mkdir(parents=True, exist_ok=True)
     good = books / "Book.epub"
@@ -723,77 +840,6 @@ def test_library_chapter_list_reads_english_from_local_epub_once(session, monkey
     assert stored[1]["title"] == ""
 
 
-def _recording_manager(session):
-    from web.context import book_roots
-    from web.tasks import TaskManager
-
-    synced = []
-    manager = TaskManager(session, file_roots=lambda: book_roots(session),
-                          after_library_change=lambda ctx: synced.append(ctx.task.kind))
-    return manager, synced
-
-
-def _wait_task(manager, timeout=10.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        snap = manager.snapshot()
-        if snap and snap["state"] in ("done", "error", "cancelled"):
-            return snap
-        time.sleep(0.02)
-    raise AssertionError(f"task did not finish: {manager.snapshot()}")
-
-
-def test_site_single_download_syncs_drive_afterwards(session, monkeypatch):
-    from core import tasks as core_tasks
-    from web import books
-
-    def fake_run_single(sess, parser, info, chapters, output_path, translated_title, options,
-                        *, emit, detail=None):
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_bytes(b"PK epub")
-        return core_tasks.SingleResult(path=str(output_path))
-
-    monkeypatch.setattr(core_tasks, "run_single", fake_run_single)
-    session.settings["translate"] = False
-    manager, synced = _recording_manager(session)
-    books.start_single(manager, _preview(), 1, 2)
-    assert _wait_task(manager)["state"] == "done"
-    assert synced == ["single"]
-
-
-def test_site_multi_download_syncs_drive_afterwards(session, monkeypatch):
-    from core import tasks as core_tasks
-    from web import books
-
-    def fake_run_multi(sess, novels, options, *, emit, on_novel_status=None, detail=None):
-        return core_tasks.MultiResult(summary="2 novels saved.")
-
-    monkeypatch.setattr(core_tasks, "run_multi", fake_run_multi)
-    session.settings["translate"] = False
-    manager, synced = _recording_manager(session)
-    previews = [_preview(url="https://example.com/book/1"),
-                _preview(url="https://example.com/book/2")]
-    books.start_multi(manager, previews)
-    assert _wait_task(manager)["state"] == "done"
-    assert synced == ["multi"]
-
-
-def test_cancelled_site_download_does_not_sync_drive(session, monkeypatch):
-    from core import tasks as core_tasks
-    from core.download_runner import DownloadCancelled
-    from web import books
-
-    def cancelled_run_single(*_a, **_k):
-        raise DownloadCancelled()
-
-    monkeypatch.setattr(core_tasks, "run_single", cancelled_run_single)
-    session.settings["translate"] = False
-    manager, synced = _recording_manager(session)
-    books.start_single(manager, _preview(), 1, 2)
-    assert _wait_task(manager)["state"] == "cancelled"
-    assert synced == []
-
-
 # ----------------------------------------------------------------------
 # Running the real server
 # ----------------------------------------------------------------------
@@ -975,26 +1021,6 @@ def test_headless_serves_without_qt(tmp_path):
     logged = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
     assert code and code not in logged
 
-
-def test_server_start_syncs_drive_only_when_enabled(session, monkeypatch):
-    pytest.importorskip("uvicorn")
-    from web import books
-    from web.host import ServerHost
-
-    synced = []
-    monkeypatch.setattr(books, "drive_sync_after_change", lambda ctx: synced.append(ctx.task.kind))
-    for enabled in (False, True):
-        session.settings["drive_sync_enabled"] = enabled
-        host = ServerHost(session, version="1.0", log=lambda _m: None)
-        host.start(mode="lan", port=_free_port())
-        try:
-            if enabled:
-                assert _wait_task(host.ctx.tasks)["kind"] == "sync"
-            else:
-                assert host.ctx.tasks.snapshot() is None
-        finally:
-            host.stop()
-    assert synced == ["sync"]
 
 
 def test_remote_server_speaks_https_only(session):

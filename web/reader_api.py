@@ -25,13 +25,14 @@ from core.reader import (
     KIND_CACHE,
     fetch_reader_chapter,
     html_needs_live_translate,
-    live_translate_html,
+    live_translate_chapter,
     next_cache_prefetch_index,
+    reader_fetch_waits,
     resolve_reader_book,
     resume_index,
     sanitize_reader_html,
 )
-from core.reading import get_position, set_position
+from core.reading import get_bookmarks, get_position, set_position, toggle_bookmark
 from web.tasks import Busy
 
 MAX_OPEN_BOOKS = 6
@@ -114,19 +115,31 @@ def build_router(ctx) -> APIRouter:
         ch = book.chapters[index]
         if not html_needs_live_translate(ch.html or ""):
             return
-        ch.html = live_translate_html(
+        html, title = live_translate_chapter(
             ch.html or "", cache=session.cache, options=options, novel_title=book.title or "",
             detect_text=" ".join([book.title or ""] + [c.title or "" for c in book.chapters[:40]]),
+            chapter_title=ch.title or "", chapter_url=ch.url or "", source_url=book.source_url or "",
         )
+        ch.html = html
+        if title and title != ch.title:
+            ch.title = title
+
+    def fetch_slot(chapter_url: str):
+        """Hold the download slot only when this site is already being scraped."""
+        job = session.control.active_job
+        if reader_fetch_waits(job, session.control.is_downloading, chapter_url):
+            return ctx.tasks.exclusive("Reading")
+        return ctx.tasks.reader_turn("Reading")
 
     def prefetch_next(item: OpenBook, index: int) -> None:
         nxt = next_cache_prefetch_index(item.book, index)
         if nxt is None:
             return
+        chapter_url = item.book.chapters[nxt].url or ""
 
         def run():
             try:
-                with ctx.tasks.exclusive("Prefetching"):
+                with fetch_slot(chapter_url):
                     with item.lock:
                         if (item.book.chapters[nxt].html or "").strip():
                             return
@@ -164,10 +177,7 @@ def build_router(ctx) -> APIRouter:
             cache=session.cache,
             extra_chapters=extra,
         )
-        drive_id = (entry.drive_file_id if entry else "") or ""
-        result = resolve_reader_book(drive_file_id=drive_id, **kwargs)
-        if result.need_drive:
-            result = _from_drive(ctx, entry, kwargs) or resolve_reader_book(drive_file_id="", **kwargs)
+        result = resolve_reader_book(**kwargs)
         if result.error or result.book is None:
             return JSONResponse({"error": "nothing_to_read",
                                  "detail": result.error or "Nothing to read yet."}, status_code=404)
@@ -184,6 +194,7 @@ def build_router(ctx) -> APIRouter:
             "scroll": float((pos or {}).get("scroll") or 0.0) if pos else 0.0,
             "chapters": [{"index": c.index, "title": c.title, "ready": bool((c.html or "").strip())}
                          for c in book.chapters],
+            "bookmarks": get_bookmarks(book.source_url, data_dir=session.data_dir),
         }
 
     @r.get("/{book_id}/chapter/{index}")
@@ -201,7 +212,7 @@ def build_router(ctx) -> APIRouter:
                 return JSONResponse({"error": "not_in_epub",
                                      "detail": "This chapter is not in the EPUB."}, status_code=404)
             try:
-                with ctx.tasks.exclusive("Reading"):
+                with fetch_slot(ch.url or ""):
                     with item.lock:
                         if not (ch.html or "").strip():
                             fetch_chapter(item, index)
@@ -214,7 +225,7 @@ def build_router(ctx) -> APIRouter:
                                     status_code=502)
         if book.kind == KIND_CACHE and html_needs_live_translate(ch.html or ""):
             try:
-                with ctx.tasks.exclusive("Translating chapter"):
+                with ctx.tasks.reader_turn("Translating chapter"):
                     with item.lock:
                         live_translate(book, index)
             except Busy:
@@ -239,28 +250,19 @@ def build_router(ctx) -> APIRouter:
                      data_dir=session.data_dir)
         return {"ok": True}
 
+    @r.post("/{book_id}/bookmark")
+    def bookmark(book_id: str, body: PositionIn):
+        item = ctx.readers.get(book_id)
+        if item is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        book = item.book
+        if not book.source_url or not 0 <= body.index < len(book.chapters):
+            return JSONResponse({"error": "bad_index"}, status_code=400)
+        ch = book.chapters[body.index]
+        marked = toggle_bookmark(
+            book.source_url, chapter_url=(ch.url or ch.key), chapter_index=body.index,
+            scroll=min(1.0, max(0.0, float(body.scroll or 0.0))), data_dir=session.data_dir,
+        )
+        return {"marked": marked, "bookmarks": get_bookmarks(book.source_url, data_dir=session.data_dir)}
+
     return r
-
-
-def _from_drive(ctx, entry, kwargs):
-    """Pull the Drive EPUB into the books folder first (Drive must be connected)."""
-    if entry is None or not entry.drive_file_id:
-        return None
-    ds = getattr(ctx.session, "drive_sync", None)
-    try:
-        if ds is None or not ds.is_connected():
-            return None
-    except Exception:
-        return None
-    from core.download_runner import downloads_folder, epub_path
-
-    folder = downloads_folder(ctx.session.output_dir or "")
-    dest = epub_path(folder, kwargs.get("title") or "book",
-                     preferred_name=kwargs.get("epub_filename") or "",
-                     preferred_path=kwargs.get("output_path") or "")
-    try:
-        with ctx.tasks.exclusive("Downloading from Drive"):
-            saved = ds.download_epub(entry.drive_file_id, dest, allowed_root=folder)
-    except Exception:
-        return None
-    return resolve_reader_book(drive_file_id="", extra_epub_path=str(saved), **kwargs)

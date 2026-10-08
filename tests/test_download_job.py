@@ -1,4 +1,4 @@
-"""Tests for local incomplete-download job persistence (not Drive-synced)."""
+"""Tests for local incomplete-download job persistence."""
 
 from core.download_job import (
     JOB_VERSION,

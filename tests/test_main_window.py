@@ -108,33 +108,6 @@ def test_reader_font_button_and_translate_checkbox(window, qapp):
     assert window.options.translate_cb.isChecked() is False
 
 
-def test_silent_drive_sync_waits_until_update_is_declined(window, monkeypatch):
-    window.library.drive_enabled.setChecked(True)
-    bound = []
-    monkeypatch.setattr(
-        window, "_bind_and_run", lambda *a, **k: bound.append(True) or True
-    )
-    window._app_update_checking = True
-    window._start_drive_sync(silent=True)
-    assert bound == []
-    assert window._pending_drive_sync is True
-
-    window._app_update_checking = False
-    window._app_update_pending = True
-    window._start_drive_sync(silent=True)
-    assert bound == []
-
-    window._app_update_pending = False
-    window._release_deferred_drive_sync()
-    assert bound == [True]
-
-    window._app_update_installing = True
-    window._pending_drive_sync = True
-    window._start_drive_sync(silent=True)
-    assert bound == [True]
-    assert window._pending_drive_sync is False
-
-
 def test_accepting_update_hides_the_app_until_it_fails(window, qapp, monkeypatch):
     from PySide6.QtCore import Qt
 
@@ -150,13 +123,11 @@ def test_accepting_update_hides_the_app_until_it_fails(window, qapp, monkeypatch
     monkeypatch.setattr(
         "gui.main_window.show_warning", lambda *a, **k: warnings.append(a)
     )
-    window._pending_drive_sync = True
     try:
         window._on_update_check_ready(True, "9.9.9", "A new version is available.")
         qapp.processEvents()
         assert window._app_update_installing
         assert window.isVisible() is False
-        assert window._pending_drive_sync is False
         dlg = window._update_progress_dlg
         assert dlg is not None and dlg.isVisible()
         assert dlg.windowModality() == Qt.WindowModality.ApplicationModal
@@ -176,20 +147,6 @@ def test_accepting_update_hides_the_app_until_it_fails(window, qapp, monkeypatch
     finally:
         window._app_update_installing = False
         window._close_update_progress()
-
-
-def test_declining_update_runs_the_deferred_drive_sync(window, monkeypatch):
-    started = []
-    monkeypatch.setattr("gui.main_window.ask_yes_no", lambda *_a, **_k: False)
-    monkeypatch.setattr(
-        window, "_start_drive_sync", lambda silent=True: started.append(silent)
-    )
-    window._pending_drive_sync = True
-    window._app_update_checking = True
-    window._on_update_check_ready(True, "9.9.9", "A new version is available.")
-    assert started == [True]
-    assert window._app_update_pending is False
-    assert window._app_update_installing is False
 
 
 def _fake_exit_path(monkeypatch, window):

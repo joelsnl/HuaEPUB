@@ -14,10 +14,6 @@ APP_LICENSE = "MIT"
 DATA_DIR_NAME = ".huaepub"
 LEGACY_DATA_DIR_NAME = ".noveldownloader"
 
-# Default visible Google Drive folder
-DRIVE_FOLDER_NAME = "HuaEPUB"
-LEGACY_DRIVE_FOLDER_NAME = "NovelDownloader"
-
 # PyInstaller / release binary basenames (no extension)
 EXE_BASENAME = "HuaEPUB"
 LEGACY_EXE_BASENAME = "NovelDownloader"

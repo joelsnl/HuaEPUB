@@ -6,9 +6,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Slot
+from PySide6.QtCore import QThread, Qt, QTimer, Slot
 
-from core.download_runner import downloads_folder, epub_path
 from core.parser import get_parser_for_url
 from core.reader import (
     KIND_CACHE,
@@ -17,14 +16,11 @@ from core.reader import (
     resolve_reader_book,
     resume_index,
 )
-from core.reading import get_position, set_position
+from core.reading import get_bookmarks, get_position, set_position, toggle_bookmark
 from core.settings import set_setting
 from gui.dialogs import busy_message, pick_item, show_info, show_warning
-from gui.workers.reader_worker import (
-    DriveEpubDownloadWorker,
-    ReaderChapterFetchWorker,
-    ReaderTranslateWorker,
-)
+from gui.window.worker_host import _reap_qthread
+from gui.workers.reader_worker import ReaderChapterFetchWorker, ReaderTranslateWorker
 
 
 class ReaderActionsMixin:
@@ -36,7 +32,7 @@ class ReaderActionsMixin:
         title: str = "",
         extra_chapters=None,
     ):
-        """Open the Read tab on a just-written EPUB (no Drive fetch)."""
+        """Open the Read tab on a just-written EPUB."""
         dest = (path or "").strip()
         if not dest or not Path(dest).is_file():
             show_info(self, "Preview", "That EPUB is not on disk yet.")
@@ -48,7 +44,6 @@ class ReaderActionsMixin:
             epub_filename=Path(dest).name,
             extra_chapters=extra_chapters,
             extra_epub_path=dest,
-            allow_drive=False,
         )
 
     def _preview_multi_epubs(self, books: list):
@@ -77,7 +72,6 @@ class ReaderActionsMixin:
             title=entry.translated_title or entry.title or "",
             output_path=entry.output_path or "",
             epub_filename=entry.epub_filename or "",
-            drive_file_id=entry.drive_file_id or "",
         )
 
     @Slot()
@@ -92,7 +86,6 @@ class ReaderActionsMixin:
             title=self.single.translated_title or info.title or "",
             output_path=(entry.output_path if entry else "") or "",
             epub_filename=(entry.epub_filename if entry else "") or "",
-            drive_file_id=(entry.drive_file_id if entry else "") or "",
             extra_chapters=self.single.chapters,
         )
 
@@ -103,10 +96,8 @@ class ReaderActionsMixin:
         title: str,
         output_path: str = "",
         epub_filename: str = "",
-        drive_file_id: str = "",
         extra_chapters=None,
         extra_epub_path: str = "",
-        allow_drive: bool = True,
     ):
         self._save_reader_position()
         self._reader_open_gen += 1
@@ -115,128 +106,38 @@ class ReaderActionsMixin:
             title=title,
             output_path=output_path,
             epub_filename=epub_filename,
-            drive_file_id=drive_file_id if allow_drive else "",
             output_dir=self.session.output_dir,
             cache=self.session.cache,
             extra_chapters=extra_chapters,
             extra_epub_path=extra_epub_path,
         )
-        if result.need_drive:
-            if self._worker_busy or self.session.control.is_downloading:
-                show_warning(self, "Read", busy_message("open this book"))
-                return
-            if self.session.drive_sync.is_connected() and drive_file_id:
-                self._start_drive_epub_for_reader(
-                    source_url=source_url,
-                    title=title,
-                    output_path=output_path,
-                    epub_filename=epub_filename,
-                    drive_file_id=drive_file_id,
-                    extra_chapters=extra_chapters,
-                )
-                return
-            result = resolve_reader_book(
-                source_url=source_url,
-                title=title,
-                output_path=output_path,
-                epub_filename=epub_filename,
-                drive_file_id="",
-                output_dir=self.session.output_dir,
-                cache=self.session.cache,
-                extra_chapters=extra_chapters,
-            )
         if result.error or result.book is None:
             show_info(self, "Read", result.error or "Nothing to read yet.")
             return
         self._present_reader(result.book)
 
-    def _start_drive_epub_for_reader(
-        self,
-        *,
-        source_url: str,
-        title: str,
-        output_path: str,
-        epub_filename: str,
-        drive_file_id: str,
-        extra_chapters=None,
-    ):
-        folder = downloads_folder(self.session.output_dir)
-        dest = epub_path(
-            folder,
-            title or "book",
-            preferred_name=epub_filename,
-            preferred_path=output_path,
-        )
-        self._pending_reader_entry = {
-            "source_url": source_url,
-            "title": title,
-            "output_path": output_path,
-            "epub_filename": epub_filename,
-            "drive_file_id": drive_file_id,
-            "extra_chapters": extra_chapters,
-            "gen": self._reader_open_gen,
-        }
-        worker = DriveEpubDownloadWorker(
-            self.session.drive_sync, drive_file_id, dest, folder
-        )
-        self.progress.set_status("Downloading EPUB from Drive…")
-        if not self._bind_and_run(
-            worker,
-            (worker.status, self._set_status_safe),
-            (worker.finished, self._drive_epub_for_reader_done),
-            (worker.error, self._drive_epub_for_reader_error),
-        ):
-            self._pending_reader_entry = None
-            show_warning(self, "Read", busy_message("download this EPUB from Drive"))
-
-    @Slot(str)
-    def _drive_epub_for_reader_done(self, dest: str):
-        pending = self._pending_reader_entry or {}
-        self._pending_reader_entry = None
-        self._stop_thread(drain_pending_sync=False)
-        if pending.get("gen") != self._reader_open_gen:
-            return
-        self._open_reader(
-            source_url=pending.get("source_url") or "",
-            title=pending.get("title") or "",
-            output_path=pending.get("output_path") or "",
-            epub_filename=pending.get("epub_filename") or "",
-            drive_file_id=pending.get("drive_file_id") or "",
-            extra_chapters=pending.get("extra_chapters"),
-            extra_epub_path=dest,
-            allow_drive=False,
-        )
-
-    @Slot(str)
-    def _drive_epub_for_reader_error(self, msg: str):
-        pending = self._pending_reader_entry or {}
-        self._pending_reader_entry = None
-        self._stop_thread(drain_pending_sync=False)
-        if pending.get("gen") != self._reader_open_gen:
-            return
-        show_warning(self, "Read", f"Could not download the Drive EPUB.\n{msg}")
-        self._open_reader(
-            source_url=pending.get("source_url") or "",
-            title=pending.get("title") or "",
-            output_path=pending.get("output_path") or "",
-            epub_filename=pending.get("epub_filename") or "",
-            drive_file_id="",
-            extra_chapters=pending.get("extra_chapters"),
-            allow_drive=False,
-        )
-
     def _present_reader(self, book):
         pos = get_position(book.source_url, data_dir=self.session.data_dir)
         idx = resume_index(book, pos)
         scroll = float((pos or {}).get("scroll") or 0.0)
+        settings = self.session.settings
         try:
-            font_pt = int(self.session.settings.get("reader_font_pt") or 18)
+            font_pt = int(settings.get("reader_font_pt") or 18)
         except (TypeError, ValueError):
             font_pt = 18
+        marks = get_bookmarks(book.source_url, data_dir=self.session.data_dir)
         current = self.tabs.currentWidget()
         if current is not self.reader:
             self._reader_return = current
-        self.reader.load_book(book, index=idx, scroll=scroll, font_pt=font_pt)
+        self.reader.load_book(
+            book, index=idx, scroll=scroll, font_pt=font_pt,
+            theme=str(settings.get("reader_theme") or "paper"),
+            mode=str(settings.get("reader_mode") or "pages"),
+            face=str(settings.get("reader_face") or "serif"),
+            leading=str(settings.get("reader_leading") or "normal"),
+            align=str(settings.get("reader_align") or "justify"),
+            marks=marks,
+        )
         self.tabs.setCurrentWidget(self.reader)
         self._ensure_chapter_loaded(idx)
 
@@ -327,11 +228,28 @@ class ReaderActionsMixin:
         show_warning(self, "Read", msg)
 
     def _after_reader_chapter_ready(self, index: int):
-        if self.session.control.is_downloading:
-            return
         if self._maybe_live_translate(index):
             return
+        if self.session.control.is_downloading or self._worker_busy:
+            return
         self._queue_reader_n1(index)
+
+    def _translate_worker(self, index: int):
+        book = self.reader.book
+        ch = book.chapters[index]
+        return ReaderTranslateWorker(
+            index,
+            ch.url or "",
+            ch.html or "",
+            self.session.cache,
+            options=self.options.snapshot(),
+            novel_title=book.title or "",
+            detect_text=" ".join(
+                [book.title or ""] + [c.title or "" for c in book.chapters[:40]]
+            ),
+            chapter_title=ch.title or "",
+            source_url=book.source_url or "",
+        )
 
     def _maybe_live_translate(self, index: int) -> bool:
         book = self.reader.book
@@ -339,26 +257,15 @@ class ReaderActionsMixin:
             return False
         if not (0 <= index < len(book.chapters)):
             return False
-        o = self.options.snapshot()
-        if not o.get("translate"):
+        if not self.options.snapshot().get("translate"):
             return False
         ch = book.chapters[index]
         if not html_needs_live_translate(ch.html or ""):
             return False
-        if self._worker_busy or self.session.control.is_downloading:
-            return False
-        worker = ReaderTranslateWorker(
-            index,
-            ch.url or "",
-            ch.html or "",
-            self.session.cache,
-            options=o,
-            novel_title=book.title or "",
-            detect_text=" ".join(
-                [book.title or ""] + [c.title or "" for c in book.chapters[:40]]
-            ),
-        )
+        worker = self._translate_worker(index)
         self.reader.set_status("Translating chapter…")
+        if self._worker_busy or self.session.control.is_downloading or self._is_check_running():
+            return self._start_reader_side(worker)
         return self._bind_and_run(
             worker,
             (worker.status, self._on_reader_fetch_status),
@@ -366,8 +273,51 @@ class ReaderActionsMixin:
             (worker.error, self._reader_translate_error),
         )
 
+    def _start_reader_side(self, worker) -> bool:
+        """Translate while the download thread is busy. This thread is not that worker."""
+        if getattr(self, "_reader_tr_busy", False):
+            return True
+        self._stop_reader_side(wait_ms=0)
+        thread = QThread()
+        self._reader_tr_thread = thread
+        self._reader_tr_worker = worker
+        self._reader_tr_busy = True
+        worker.moveToThread(thread)
+        worker.status.connect(self._on_reader_fetch_status, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._reader_side_translated, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(self._reader_side_translate_error, Qt.ConnectionType.QueuedConnection)
+        thread.started.connect(worker.run, Qt.ConnectionType.QueuedConnection)
+        thread.start()
+        return True
+
+    def _stop_reader_side(self, wait_ms: int = 2000) -> None:
+        thread = getattr(self, "_reader_tr_thread", None)
+        worker = getattr(self, "_reader_tr_worker", None)
+        self._reader_tr_busy = False
+        self._reader_tr_thread = None
+        self._reader_tr_worker = None
+        _reap_qthread(thread, worker, wait_ms)
+
+    def _note_translated_title(self, index: int):
+        worker = self.sender()
+        title = getattr(worker, "translated_title", "") or ""
+        if title:
+            self.reader.set_chapter_title(index, title)
+
+    @Slot(int, str, str)
+    def _reader_side_translated(self, index: int, url: str, html: str):
+        self._note_translated_title(index)
+        self._stop_reader_side()
+        self._apply_reader_html(index, url, html)
+
+    @Slot(int, str)
+    def _reader_side_translate_error(self, index: int, msg: str):
+        self._stop_reader_side()
+        self.reader.set_status(msg)
+
     @Slot(int, str, str)
     def _reader_chapter_translated(self, index: int, url: str, html: str):
+        self._note_translated_title(index)
         self._finish_worker_later()
         if not self._apply_reader_html(index, url, html):
             return
@@ -424,6 +374,28 @@ class ReaderActionsMixin:
     def _on_reader_font(self, pt: int):
         self.session.settings["reader_font_pt"] = int(pt)
         set_setting("reader_font_pt", int(pt))
+
+    @Slot(str, str)
+    def _on_reader_prefs(self, key: str, value: str):
+        if key not in {"reader_theme", "reader_mode", "reader_face", "reader_leading", "reader_align"}:
+            return
+        self.session.settings[key] = value
+        set_setting(key, value)
+
+    @Slot(int)
+    def _on_reader_bookmark(self, index: int):
+        book = self.reader.book
+        if book is None or not book.source_url or not (0 <= index < len(book.chapters)):
+            return
+        ch = book.chapters[index]
+        toggle_bookmark(
+            book.source_url,
+            chapter_url=(ch.url or ch.key),
+            chapter_index=index,
+            scroll=self.reader.scroll_ratio(),
+            data_dir=self.session.data_dir,
+        )
+        self.reader.set_bookmarks(get_bookmarks(book.source_url, data_dir=self.session.data_dir))
 
     def _save_reader_position(self):
         book = self.reader.book

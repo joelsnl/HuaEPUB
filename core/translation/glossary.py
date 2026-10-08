@@ -15,7 +15,7 @@ dictionary). Auto attaches them only when the title/description/chapter list
 looks like cultivation. During a translate pass, character names are harvested
 into ``~/.huaepub/glossaries/<safe-title>.json`` so the next run (and the
 final pass of this run) can lock them. User terms live in
-``~/.huaepub/glossary.json``. None of these are Drive-synced.
+``~/.huaepub/glossary.json``. These stay on this PC.
 """
 
 from __future__ import annotations
@@ -182,7 +182,7 @@ def novel_glossaries_dir() -> Path:
 
 
 def save_glossary_file(path: Path, glossary: Glossary) -> None:
-    """Atomic tmp+replace. Never Drive-synced."""
+    """Atomic tmp+replace."""
     from core.atomic_io import atomic_write_json
 
     path = Path(path)

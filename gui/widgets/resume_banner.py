@@ -40,7 +40,7 @@ class ResumeBanner(QFrame):
             else "saved chapters will be reused"
         )
         self.label.setText(
-            f"Incomplete download: {title}\n{detail} — resume anytime (saved locally, not on Drive)."
+            f"Incomplete download: {title}\n{detail} — resume anytime (saved on this PC)."
         )
         self.setVisible(True)
 

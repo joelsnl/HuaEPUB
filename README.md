@@ -21,15 +21,14 @@ GUI is **PySide6 (Qt)**. Formerly *Novel Downloader & Translator* (CustomTkinter
 
 ## Features
 
-- **In-app reader** — **Read** tab (Library **Read** / double-click, or Single **Read** after fetch). Prefers the local EPUB (translated/polished English if that is what you downloaded). If the file is only on Drive, it is pulled into the books folder first. Otherwise it reads cached chapter HTML (usually the original site text) and fetches a missing chapter on demand — no EPUB rebuild, no translation/polish. Reading position stays in `~/.huaepub/reading.json` on this PC (not Drive).
+- **In-app reader** — **Read** tab (Library **Read** / double-click, or Single **Read** after fetch). Prefers the local EPUB (translated/polished English if that is what you downloaded). Otherwise it reads cached chapter HTML (usually the original site text) and fetches a missing chapter on demand — no EPUB rebuild, no translation/polish. Reading position stays in `~/.huaepub/reading.json` on this PC.
 - **Server mode** — use HuaEPUB from a web browser on your phone, another computer or this PC. **This network** signs in with an access code (or a QR code); **Anywhere** uses HTTPS and a password. Single, Multi, Library, Read and Settings all work in the browser on the same library, cache and reading position. See [Server mode](#server-mode).
 - **Looks** — View → **Look**: Auto follows your system (dark Graphite & Cyan, light Celadon Day), or pick Indigo & Jade, Ink & Gold, Cinnabar Night, Blue Mist, or Surprise me. The browser pages use the same palettes.
 - **Download novels** from hosts listed in `parsers/sites.json` (twkan, 69shuba, uukanshu, and hundreds of others)
 - **Generic fallback parser** (experimental) — tries a best-effort download for any other novel site; if a configured site’s content selector misses, the same heuristic is used and the completion dialog warns you
 - **Multi-download mode** — paste a block of novel URLs and download them sequentially with one click
-- **Library mode** — cover-grid or list shelf, track novels, multi-select for batch update/remove/EPUB download, pull only new chapters, rebuild full EPUBs (local cover/TOC caches; Drive syncs library.json + EPUBs only)
-- **Pause / Resume** — pause a long download, or close the app / shut down the PC and resume later from a banner on startup (local only; not synced to Drive)
-- **Optional Google Drive sync** — sync library metadata and/or EPUBs across devices (offline-first; off by default). After a Library Update / Update All, a silent sync is queued if Drive is enabled (it does not switch you to the Library tab). Single / Multi do not auto-sync in the desktop app (use **Sync Drive now**). In server mode the browser has no sync button, so Drive syncs on its own: when the server starts, and after downloads, Library updates and removals. Closing the app while a sync is running shows live progress and **Keep open** / **Wait, then close** / **Close anyway**.
+- **Library mode** — cover-grid or list shelf, track novels, multi-select for batch update/remove/EPUB download, pull only new chapters, rebuild full EPUBs
+- **Pause / Resume** — pause a long download, or close the app / shut down the PC and resume later from a banner on startup (local only)
 - **Remove watermarks** and ads automatically (learns repeated site junk across about a dozen chapters, then a wider pass)
 - **Translate to English** using Google (New/HTML/Old), Microsoft Edge, a LibreTranslate server, local **Ollama**, or **Offline NMT** (CTranslate2; optional xianxia/wuxia glossary)
 - **Novel glossary** — Auto (default) applies the built-in cultivation pack only when the book looks like xianxia/wuxia. Urban/romance skip it. The pack is a curated web-novel list (not a general Chinese dictionary). Each book **mines names, sects, and techniques** from its own Chinese into `~/.huaepub/glossaries/<title>.json` (pinyin, not Google). If the polish Qwen GGUF is already on disk (7B+), a classify pass can fix those names; **Help → Polish glossaries with Qwen…** shows Accept all / Discard. It will not start a GGUF download. You do not need to edit the JSON by hand.
@@ -54,8 +53,9 @@ Works on Windows, macOS, and Linux.
 2. Clone/download this folder
 3. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt -r requirements-gui.txt
    ```
+   A headless server (no window) only needs `requirements.txt`.
 4. Run the app:
    ```bash
    python app.py
@@ -74,7 +74,7 @@ Each zip is just `HuaEPUB` (`HuaEPUB.exe` on Windows). Each release also include
 
 1. Install dependencies + PyInstaller:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt -r requirements-gui.txt
    pip install pyinstaller
    ```
 2. Build:
@@ -134,7 +134,7 @@ Pick **Translator → Offline NMT** for a free local engine. This is not bundled
 pip install -r requirements-nmt.txt   # ctranslate2 + sentencepiece + CUDA 12 libs
 ```
 
-The first **translate** pass (after chapters are fetched) downloads Helsinki-NLP **opus-mt-zh-en** (CTranslate2, ~320 MB) into `~/.huaepub/nmt/` — not once per chapter. **Glossary** is Auto by default: the built-in web-novel pack (ranks like Grand Elder / Golden Core, plus cultivation items) is used only when the title or chapter list looks like cultivation. Romance, urban, and similar books skip it so 公子 is not forced to “Young Master.” That pack is **not** a general Chinese dictionary (pinning everyday words would wreck sentences). Character names are harvested from the book into `~/.huaepub/glossaries/<novel-title>.json` during the translate pass. You can also add names in `~/.huaepub/glossary.json` (same JSON shape as the polish glossary). Quality is below Google + Polish; use Polish English after Offline NMT if you want a copy-edit pass. Never Drive-synced.
+The first **translate** pass (after chapters are fetched) downloads Helsinki-NLP **opus-mt-zh-en** (CTranslate2, ~320 MB) into `~/.huaepub/nmt/` — not once per chapter. **Glossary** is Auto by default: the built-in web-novel pack (ranks like Grand Elder / Golden Core, plus cultivation items) is used only when the title or chapter list looks like cultivation. Romance, urban, and similar books skip it so 公子 is not forced to “Young Master.” That pack is **not** a general Chinese dictionary (pinning everyday words would wreck sentences). Character names are harvested from the book into `~/.huaepub/glossaries/<novel-title>.json` during the translate pass. You can also add names in `~/.huaepub/glossary.json` (same JSON shape as the polish glossary). Quality is below Google + Polish; use Polish English after Offline NMT if you want a copy-edit pass. The model stays on this PC.
 
 #### GPU (NVIDIA)
 
@@ -182,7 +182,7 @@ Long downloads can take hours. You do not have to leave the PC on the whole time
 
 **Download EPUB** stays disabled while a job is running so a second run cannot start on top of the first.
 
-Resume data is **local only**. Google Drive sync never uploads the chapter cache or the resume file.
+Resume data is **local only**.
 
 ### Single mode (details)
 
@@ -211,17 +211,17 @@ After you download a novel, it appears in **Library** so you can update it later
 4. Filter **All** or **Updates** (novels that have new chapters).
 5. Select novels with **Select All** / **Select None** / **Invert**, or Ctrl/Shift-click. **Read** (or double-click / Enter) opens the current book in the **Read** tab. **Update** rebuilds a full EPUB for every selected book (one book uses the single updater; several use the same sequential queue as Update All). Old chapters come from cache. ETA is based only on chapters that still need a network fetch, so a 500-chapter update with 3 new chapters will not show “ETA 0s”.
 6. **Update All** still updates every book Check has flagged, regardless of selection.
-7. **Open URL** uses the current book. **Download EPUB** / **Remove** apply to the whole selection. **Remove** deletes the local EPUB, that novel’s chapter/cover/TOC cache, the local reading position, and the Drive copy (`library.json` + EPUB) so sync cannot restore it. Shared translation cache is kept.
+7. **Open URL** uses the current book. **Download EPUB** / **Remove** apply to the whole selection. **Remove** deletes the local EPUB, that novel’s chapter/cover/TOC cache, and the local reading position. Shared translation cache is kept.
 
 The cover grid reflows when you resize the window and scrolls when there are more novels than fit on screen.
 
 ### In-app reader
 
-**Read** opens the local EPUB when it is already in your books folder (the same file Play Books would get). If that file is missing but Drive has it and sync is connected, HuaEPUB downloads the EPUB first. Otherwise it uses the cached table of contents plus cached chapter HTML — usually the original site text, not the translated EPUB. The badge at the top says **EPUB** or **Cached** so that is not a surprise.
+**Read** opens the local EPUB when it is already in your books folder. Otherwise it uses the cached table of contents plus cached chapter HTML — usually the original site text, not the translated EPUB. The badge at the top says **EPUB** or **Cached** so that is not a surprise.
 
 A missing cached chapter is fetched one at a time with the site delay (same as downloads). That writes the chapter to `cache.db` and shows it; it does not rebuild an EPUB or run translation/polish. If a download is already running, the fetch waits with a short status message.
 
-Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. It is never uploaded to Drive. Removing a novel from the library also clears that book’s position.
+Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. Removing a novel from the library also clears that book’s position.
 
 Use **Prev** / **Next** and **A-** / **A+** (or the slider) in the reader. Font size is remembered as `reader_font_pt`.
 
@@ -238,9 +238,18 @@ Server mode turns HuaEPUB into a small web app you open in a browser. Click **SE
 
 While serving, the desktop window shows the addresses, the code or password status, a QR code, what the browser is doing right now, **Open in browser** (signs this PC's browser in with a one-time link) and **Stop serving**. The desktop tabs are paused so the browser and the window never run jobs on the same library at once; on this PC you use the browser too.
 
-In the browser you get **Single**, **Multi**, **Library** (check, update, update all, remove, download EPUB, read), **Read** (the same `reading.json` position as the desktop reader) and **Settings** (translate, clean, cache, translator, glossary, workers, Polish). Finished EPUBs are saved in the books folder on the PC and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. One job runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
+In the browser you get **Single**, **Multi**, **Library** (check, update, update all, remove, download EPUB, read), **Read** (the same `reading.json` position as the desktop reader) and **Settings** (translate, clean, cache, translator, glossary, workers, Polish, the books folder, and installing Polish, Offline NMT or an Ollama model). Finished EPUBs are saved in the books folder on the computer that is serving and added to the Library as usual; the browser can also save a copy to the device's Downloads folder. You can keep reading a cached chapter while a download runs. A missing chapter from the same site waits until that download is done. One download runs at a time, and an unfinished download shows a Resume banner in the browser just like on the desktop.
 
-Things that stay in the desktop app: Google Drive sign-in, the save folder, app updates, and installing Polish, Offline NMT or Ollama. A browser job still uses Polish or Offline NMT if their models are already on this PC; it never starts those downloads.
+App updates stay in the desktop app.
+
+**No window.** On a machine with no desktop (a Raspberry Pi over SSH):
+
+```bash
+pip install -r requirements.txt
+python3 app.py --headless
+```
+
+That prints the address and the access code. Settings in the browser can install a systemd user service when one is not already there (`python3 app.py --install-service` does the same and then exits). An existing `huaepub.service` or `noveldownloader.service` is left as it is. The service does not print the access code; it is in `~/.huaepub/server/secret.json`.
 
 HuaEPUB remembers that server mode was on and starts serving again the next time it opens. If the port is taken, it says so and opens the desktop app instead.
 
@@ -251,33 +260,6 @@ HuaEPUB remembers that server mode was on and starts serving again the next time
 - Sessions are signed cookies (HttpOnly, SameSite=Strict, Secure over HTTPS). Every change needs a same-origin request with a custom header. After five wrong codes or passwords one address waits up to 15 minutes, and 30 failures from anywhere within 10 minutes pause all sign-ins for 10 minutes.
 - **Find my public address** in the dialog asks `api.ipify.org` once, only when you click it.
 
-### Google Drive sync (optional)
-
-Use this only if you want the same library list (and optionally EPUBs) on more than one PC.
-
-**Always local:** `~/.huaepub/` (`settings.json`, `library.json`, `cache.db`, covers, resume job, reading position, logs, polish models).
-
-**Drive can sync:** `library.json` and/or EPUB files — not the chapter cache, not pause/resume state, not `reading.json`, not `polish/`. Library uploads compare the last seen Drive revision so a second device’s delete/merge is not overwritten blindly.
-
-1. Create a Google Cloud project, enable **Google Drive API**, create an OAuth client (**Desktop app**).
-2. Save the client JSON as:
-   - Windows: `C:\Users\<you>\.huaepub\google_oauth_client.json`
-   - macOS / Linux: `~/.huaepub/google_oauth_client.json`
-3. In the app: **Library** → Google Drive panel → enable sync → **Connect** (browser login).
-4. Choose **Sync library** and/or **Sync EPUBs**.
-5. Files go to a visible Drive folder (default **My Drive → HuaEPUB**). Use **Change folder** / **Open folder** / **Sync Now** (or Library → **Sync Drive now**) as needed. Progress appears in the status bar while syncing.
-6. After a successful Library Update / Update All, HuaEPUB queues a **silent** Drive sync if sync is enabled. It does not switch you to the Library tab. Single / Multi do not auto-sync. Startup also runs a silent sync when Drive is already connected. If you close the window during a sync, a dialog shows the current step and lets you **Keep open**, **Wait, then close**, or **Close anyway**.
-
-If Drive is offline, downloads and the local library still work.
-
-**Second device shows an empty library after Connect:**
-
-1. Use the **same** `google_oauth_client.json` (same Google Cloud Desktop client) on every device — Drive’s `drive.file` scope only lets HuaEPUB manage folders **this app created**. A folder you made by hand (or with a different OAuth client) can look selectable but Sync will not read/write `library.json` / `books/` inside it.
-2. On the PC that already has novels: **Library → Open folder** and confirm `library.json` + `books/` are inside that Drive folder.
-3. On the new device: **Change folder** → paste that folder’s URL → the app checks list access and then syncs. You should see `library.json novels: N` in the confirmation.
-4. Status should look like `Synced “HuaEPUB”: library (N novel(s))`. If N is 0 or you get an access error, fix the OAuth client / folder — Sync will no longer silently invent a second empty HuaEPUB folder.
-5. EPUB sync uploads missing books and **overwrites Drive copies when your local EPUB is newer or a different size** (e.g. after a library update adds chapters). It will not overwrite a Drive file that is clearly newer than your local copy. On a new Mac, use **Download EPUB** per novel (or copy `books/` once) after the library list appears if the files are not on that machine yet.
-
 ### Where files live
 
 | Path | Contents |
@@ -285,17 +267,15 @@ If Drive is offline, downloads and the local library still work.
 | `~/.huaepub/books/` | Default EPUB output |
 | `~/.huaepub/library.json` | Tracked library + recent history |
 | `~/.huaepub/cache.db` | Chapter HTML, translations (including polished spans), covers, TOC snapshots. Local only; default 2 GB cap via Help → Cache… |
-| `~/.huaepub/polish/` | llama.cpp + Qwen GGUF for Polish English (first-run download; never Drive-synced) |
-| `~/.huaepub/nmt/` | Optional Offline NMT CTranslate2 model (~320 MB; never Drive-synced) |
+| `~/.huaepub/polish/` | llama.cpp + Qwen GGUF for Polish English (first-run download; stays on this PC) |
+| `~/.huaepub/nmt/` | Optional Offline NMT CTranslate2 model (~320 MB; stays on this PC) |
 | `~/.huaepub/glossary.json` | User novel terms (source/target). Always applied unless Glossary is Off |
 | `~/.huaepub/glossary-qwen.json` | Legacy extra terms (read only for cultivation books; new passes write per-novel files) |
 | `~/.huaepub/glossaries/` | Per-novel terms, including names harvested from that book |
-| `~/.huaepub/active_download.json` | Incomplete download resume point (if any; never Drive-synced) |
-| `~/.huaepub/reading.json` | In-app reader position (chapter + scroll; never Drive-synced) |
+| `~/.huaepub/active_download.json` | Incomplete download resume point (if any) |
+| `~/.huaepub/reading.json` | In-app reader position (chapter + scroll) |
 | `~/.huaepub/settings.json` | App options (atomic tmp+replace writes) |
-| `~/.huaepub/server/` | Server mode: signing key, access code, password hash and the generated HTTPS certificate (owner-only; never Drive-synced) |
-| `~/.huaepub/google_oauth_client.json` | Desktop OAuth client (you copy this in; keep private) |
-| `~/.huaepub/google_token.json` | Drive refresh token (owner-only when the OS allows) |
+| `~/.huaepub/server/` | Server mode: signing key, access code, password hash and the generated HTTPS certificate (owner-only) |
 | `~/.huaepub/logs/huaepub.log` | Diagnostics (1 MB rotate during a session; keep `.log.1`) |
 | `~/.huaepub/logs/huaepub.fault.log` | Native crash dumps (faulthandler) |
 
@@ -316,8 +296,8 @@ On Windows, `~` is your user folder (e.g. `C:\Users\YourName`).
 - If translation is rate-limited, lower **Translation Workers** (e.g. 30–50) and keep cache on.
 - Menus:
   - **File** — Open books folder, Open data folder, Open log file
-  - **Library** — Check for updates, Sync Drive now, Reset library…
-  - **Help** — Check for updates, Auto-check on startup, How translation works…, **Cache…**, About, Drive OAuth setup…
+  - **Library** — Check for updates, Reset library…
+  - **Help** — Check for updates, Auto-check on startup, How translation works…, **Cache…**, About
 
 ## Supported Sites
 
@@ -351,7 +331,7 @@ Optional fields: `description`, `cover`, `chapter_title`, `remove`, `toc_link`, 
 The test suite is fully offline (HTML fixtures, no network needed):
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-gui.txt -r requirements-dev.txt
 python -m pytest tests/
 python -m ruff check .
 ```
@@ -365,7 +345,8 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 ├── app.py              # Entry → gui.app.run()
 ├── gui/                # PySide6 UI (main window, pages, workers, Slips theme)
 ├── web/                # Server mode: FastAPI app, sign-in, TLS, browser pages (web/static)
-├── requirements.txt    # Python dependencies
+├── requirements.txt    # Server and download dependencies
+├── requirements-gui.txt # Desktop window (PySide6)
 ├── requirements-dev.txt # pytest, ruff, pinned PyInstaller
 ├── build.py            # PyInstaller build (regenerates HuaEPUB.spec; do not commit a stale spec)
 ├── core/
@@ -378,15 +359,14 @@ CI runs this suite on Ubuntu, Windows, and macOS (Python 3.11 and 3.12). A `v*` 
 │   ├── polish/         # llama.cpp serve + span copy-edit (pinned hosts + hashes)
 │   ├── epub_builder.py # EPUB creation (atomic write; skip second clean after translate)
 │   ├── download_runner.py  # Pause/cancel/chapter download + translate_then_build
-│   ├── tasks.py        # Single / Multi / Library update / Drive sync jobs shared by desktop and server
+│   ├── tasks.py        # Single / Multi / Library update jobs shared by desktop and server
 │   ├── session.py      # Shared app state (settings, cache, library, download control)
 │   ├── settings.py     # Persistent app settings (atomic tmp+replace)
 │   ├── cache.py        # Chapter + translation + cover + TOC caches (SQLite, 2 GB LRU)
-│   ├── download_job.py # Local incomplete-download resume (not Drive)
-│   ├── reading.py      # Local reading position (not Drive)
+│   ├── download_job.py # Local incomplete-download resume
+│   ├── reading.py      # Local reading position
 │   ├── reader.py       # In-app reader: EPUB vs cache HTML
 │   ├── library.py      # Library + history store
-│   ├── drive_sync.py   # Optional Google Drive sync (library.json + EPUBs only)
 │   ├── security.py     # SSRF guards, safe zip/tar extract, secret file perms
 │   ├── notify.py       # Desktop notifications
 │   ├── logger.py       # Log-to-file setup

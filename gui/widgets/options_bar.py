@@ -315,7 +315,7 @@ class OptionsBar(QWidget):
             "protects names and ranks so they are not translated literally — "
             "but only when Glossary is Auto and the book looks like cultivation, "
             "or you pick Cultivation pack. "
-            "This folder is never synced to Google Drive.\n\n"
+            "The model stays on this PC.\n\n"
             "Quality is below Google + Polish, but it is free and works offline.\n\n"
             "Use Offline NMT?",
         ):
@@ -381,7 +381,7 @@ class OptionsBar(QWidget):
             "The first run downloads about 2–9 GB (3B, 7B, or 14B, whichever "
             "fits this machine) into:\n"
             f"{polish_dir}\n\n"
-            "Nothing is uploaded. This folder is never synced to Google Drive.\n"
+            "Nothing is uploaded. The model stays on this PC.\n"
             "Help → How translation works has more detail.\n\n"
             "Turn on Polish English?",
         ):

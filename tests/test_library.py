@@ -94,14 +94,13 @@ class TestLibraryStore:
         assert tombs[0].source_url == "http://x/book"
         assert tombs[0].epub_filename == "Book.epub"
 
-    def test_preserves_drive_fields_on_upsert(self, tmp_path):
+    def test_preserves_epub_filename_on_upsert(self, tmp_path):
         store = LibraryStore(tmp_path / "library.json")
         store.upsert_library(
             source_url="http://x/book",
             title="Book",
             chapter_count=5,
             last_chapter_url="http://x/5",
-            drive_file_id="fid123",
             epub_filename="Book.epub",
         )
         store.upsert_library(
@@ -111,7 +110,6 @@ class TestLibraryStore:
             last_chapter_url="http://x/6",
         )
         entry = store.get_library_entry("http://x/book")
-        assert entry.drive_file_id == "fid123"
         assert entry.epub_filename == "Book.epub"
         assert entry.chapter_count == 6
 
@@ -153,14 +151,12 @@ class TestMergeLibrary:
                 chapter_count=12,
                 last_downloaded_at=200,
                 last_chapter_url="http://a/12",
-                drive_file_id="remote-id",
             )
         ])
         merged = merge_library(local, remote)
         assert len(merged.library) == 1
         assert merged.library[0].chapter_count == 12
         assert merged.library[0].last_chapter_url == "http://a/12"
-        assert merged.library[0].drive_file_id == "remote-id"
 
     def test_union_of_novels(self):
         local = LibraryData(library=[
@@ -187,7 +183,6 @@ class TestMergeLibrary:
                 source_url="http://a",
                 chapter_count=9,
                 last_downloaded_at=90,
-                drive_file_id="fid",
                 epub_filename="A.epub",
             )
         ])
@@ -195,7 +190,7 @@ class TestMergeLibrary:
         e = merged.library[0]
         assert e.chapter_count == 9
         assert e.output_path == "/local/A.epub"
-        assert e.drive_file_id == "fid"
+        assert e.epub_filename == "A.epub"
 
     def test_history_cap_and_newest(self):
         local = LibraryData(history=[

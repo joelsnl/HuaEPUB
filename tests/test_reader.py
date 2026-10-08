@@ -14,6 +14,7 @@ from core.reader import (
     find_local_epub,
     html_needs_live_translate,
     next_cache_prefetch_index,
+    reader_fetch_waits,
     resolve_reader_book,
     resume_index,
     sanitize_reader_html,
@@ -89,17 +90,16 @@ class TestResolveEpub:
             output_path=str(epub), output_dir=str(books)
         ) is None
 
-    def test_need_drive_when_no_local_file(self, tmp_path):
+    def test_nothing_to_read_without_epub_or_toc(self, tmp_path):
         books = tmp_path / "books"
         books.mkdir()
         result = resolve_reader_book(
             source_url="https://example.com/book",
             title="Book",
-            drive_file_id="abc123",
             output_dir=str(books),
         )
-        assert result.need_drive is True
         assert result.book is None
+        assert result.error
 
 
 class TestResolveCache:
@@ -126,6 +126,26 @@ class TestResolveCache:
             assert "cached one" in result.book.chapters[0].html
             assert result.book.chapters[1].html == ""
             assert result.book.chapters[1].url == "https://example.com/2"
+        finally:
+            cache.close()
+
+    def test_cache_open_uses_stored_english_titles(self, tmp_path):
+        cache = NovelCache(tmp_path / "cache.db", max_bytes=0)
+        url = "https://example.com/book"
+        cache.put_chapter_list(
+            url,
+            [
+                {"url": "https://example.com/1", "title": "第一章"},
+                {"url": "https://example.com/2", "title": "第二章"},
+            ],
+        )
+        cache.put_english_chapter_titles(url, [{"url": "https://example.com/1", "title": "The Gate"}])
+        try:
+            result = resolve_reader_book(
+                source_url=url, title="Book", output_dir=str(tmp_path / "books"), cache=cache,
+            )
+            assert result.book.chapters[0].title == "The Gate"
+            assert result.book.chapters[1].title == "第二章"
         finally:
             cache.close()
 
@@ -158,6 +178,29 @@ class TestResolveCache:
             assert resume_index(book, None) == 0
         finally:
             cache.close()
+
+
+def test_bookmark_survives_saving_the_place(tmp_path):
+    from core.reading import get_bookmarks, set_position, toggle_bookmark
+
+    url = "https://example.com/book"
+    assert toggle_bookmark(url, chapter_url="https://example.com/2", chapter_index=1, scroll=0.4,
+                           data_dir=tmp_path) is True
+    assert toggle_bookmark(url, chapter_url="https://example.com/2", chapter_index=1, scroll=0.4,
+                           data_dir=tmp_path) is False
+    assert toggle_bookmark(url, chapter_url="https://example.com/2", chapter_index=1, scroll=0.4,
+                           data_dir=tmp_path) is True
+    set_position(url, chapter_url="https://example.com/3", chapter_index=2, scroll=0.1, data_dir=tmp_path)
+    marks = get_bookmarks(url, data_dir=tmp_path)
+    assert len(marks) == 1 and marks[0]["chapter_index"] == 1
+
+
+def test_reader_fetch_waits_for_the_same_site():
+    assert reader_fetch_waits(None, False, "https://a.example/1") is False
+    job = {"source_url": "https://a.example/book"}
+    assert reader_fetch_waits(job, True, "https://a.example/1") is True
+    assert reader_fetch_waits(job, True, "https://b.example/1") is False
+    assert reader_fetch_waits({}, True, "https://a.example/1") is True
 
 
 class TestReadingJson:

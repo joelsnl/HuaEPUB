@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from core.cache import english_chapter_title
 from core.cleaner import is_chinese
-from core.download_runner import downloads_folder, epub_path
 from core.parser import create_http_session
 from core.reader import find_local_epub, load_epub_chapters
 from core.security import fetch_cover_bytes
@@ -103,7 +102,6 @@ def _entry_payload(ctx: ServerContext, e) -> dict:
         "updated_at": float(e.last_downloaded_at or 0),
         "has_cover": bool(e.cover_url),
         "has_epub": local is not None,
-        "on_drive": bool(e.drive_file_id),
         "status": st.get("state") or "",
         "new_count": int(st.get("new_count") or 0),
         "status_error": st.get("error") or "",
@@ -218,7 +216,6 @@ def build_router(ctx: ServerContext) -> APIRouter:
         return {
             "entries": [_entry_payload(ctx, e) for e in entries],
             "checking": bool(check and check.kind == "check"),
-            "drive_connected": _drive_connected(ctx),
         }
 
     @r.get("/chapters")
@@ -323,7 +320,6 @@ def build_router(ctx: ServerContext) -> APIRouter:
                                    output_dir=session.output_dir, data_dir=session.data_dir)
         for url in urls:
             ctx.check_status.pop(url, None)
-        _sync_drive_quietly(ctx)
         return {"removed": removed}
 
     @r.post("/reset")
@@ -332,7 +328,6 @@ def build_router(ctx: ServerContext) -> APIRouter:
             raise Busy()
         session.library_store.clear(clear_library=True, clear_history=False)
         ctx.check_status.clear()
-        _sync_drive_quietly(ctx)
         return {"ok": True}
 
     @r.post("/epub")
@@ -345,20 +340,6 @@ def build_router(ctx: ServerContext) -> APIRouter:
                                 output_dir=session.output_dir or "")
         if local is not None:
             file = ctx.tasks.register_file(str(local))
-            if file:
-                return {"file": file}
-        if entry.drive_file_id and _drive_connected(ctx):
-            folder = downloads_folder(session.output_dir or "")
-            dest = epub_path(folder, entry.title or "book",
-                             preferred_name=entry.epub_filename or "")
-            with ctx.tasks.exclusive("Downloading from Drive"):
-                try:
-                    saved = session.drive_sync.download_epub(entry.drive_file_id, dest,
-                                                             allowed_root=folder)
-                except Exception as exc:
-                    return JSONResponse({"error": "drive_failed", "detail": str(exc)[:200]},
-                                        status_code=502)
-            file = ctx.tasks.register_file(str(saved))
             if file:
                 return {"file": file}
         return JSONResponse({"error": "no_epub"}, status_code=404)
@@ -374,26 +355,6 @@ def build_router(ctx: ServerContext) -> APIRouter:
         }
 
     return r
-
-
-def _drive_connected(ctx: ServerContext) -> bool:
-    if not ctx.session.settings.get("drive_sync_enabled"):
-        return False
-    ds = getattr(ctx.session, "drive_sync", None)
-    try:
-        return bool(ds is not None and ds.is_connected())
-    except Exception:
-        return False
-
-
-def _sync_drive_quietly(ctx: ServerContext) -> None:
-    """Desktop rule: removing a book syncs Drive right away when it is on."""
-    if not _drive_connected(ctx):
-        return
-    try:
-        books.start_drive_sync(ctx.tasks)
-    except Busy:
-        pass
 
 
 __all__ = [
