@@ -18,9 +18,10 @@ Also from fixTranslate.py:
 - Multi-pass retry translation (translate_texts_with_retry)
 """
 
+import hashlib
+import json
 import os
 import re
-import hashlib
 from typing import List, Optional, Callable, Tuple, Dict
 from pathlib import Path
 
@@ -38,6 +39,9 @@ from core.read_aloud import (
     overlay_css,
     smil_clock,
 )
+
+# Chapter file name -> source chapter URL, read back by core/reader.py.
+CHAPTER_MAP_NAME = "huaepub/chapters.json"
 
 # Shared session for image downloads (curl_cffi impersonation when available).
 # Lazy: importing this module must not leave an impersonated session open
@@ -256,6 +260,21 @@ class EPUBBuilder:
             content=css.encode('utf-8')
         )
         book.add_item(nav_css)
+
+        # Which source chapter each file holds, so a rebuilt book (Library update)
+        # reopens at the same chapter even if the site's list shifted. Not in the
+        # spine; other readers ignore it.
+        chapter_map = {
+            f"chapter_{idx:04d}.xhtml": (ch.url or "")
+            for idx, ch in enumerate(valid_chapters) if ch.url
+        }
+        if chapter_map:
+            book.add_item(epub.EpubItem(
+                uid="huaepub_chapters",
+                file_name=CHAPTER_MAP_NAME,
+                media_type="application/json",
+                content=json.dumps(chapter_map, ensure_ascii=False).encode("utf-8"),
+            ))
 
         if overlay_durations:
             total_seconds = sum(

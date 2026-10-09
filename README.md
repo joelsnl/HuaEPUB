@@ -221,7 +221,7 @@ The cover grid reflows when you resize the window and scrolls when there are mor
 
 A missing cached chapter is fetched one at a time with the site delay (same as downloads). That writes the chapter to `cache.db` and shows it; it does not rebuild an EPUB or run translation/polish. If a download is already running, the fetch waits with a short status message.
 
-Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. Removing a novel from the library also clears that book’s position.
+Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. Updating a book keeps your place: the reader reopens at the same chapter and page, even if the site inserted chapters before it. Removing a novel from the library also clears that book’s position.
 
 Use **Prev** / **Next** and **A-** / **A+** (or the slider) in the reader. Font size is remembered as `reader_font_pt`.
 
