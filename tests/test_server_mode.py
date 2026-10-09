@@ -1208,11 +1208,36 @@ def test_storage_reports_the_tightest_disk(session, monkeypatch, tmp_path):
     assert storage.storage_payload([]) is None
 
 
+def test_ram_on_a_pi_zero_is_low_and_swap_is_counted():
+    """The Zero 2 W serving this app: 416 MB RAM, ~105 MB available, ~26 MB swap used."""
+    from web import storage
+
+    text = (
+        "MemTotal:       426136 kB\n"
+        "MemFree:         52052 kB\n"
+        "MemAvailable:   107600 kB\n"
+        "SwapTotal:      425980 kB\n"
+        "SwapFree:       399236 kB\n"
+    )
+    total, free, swap_total, swap_used = storage._parse_meminfo(text)
+    assert (total, free, swap_total, swap_used) == (
+        436363264, 110182400, 436203520, 27385856,
+    )
+    assert storage.ram_level(free, total) == "low"
+    assert storage.ram_level(40 * storage.MIB, total) == "critical"
+    assert storage.ram_level(8 * storage.GIB, 32 * storage.GIB) == "ok"
+
+
 def test_storage_endpoint_needs_sign_in(session):
     ctx = _ctx(session)
     assert _client(ctx).get("/api/storage").status_code == 401
     got = _signed_in(ctx).get("/api/storage")
     assert got.status_code == 200
     body = got.json()
-    assert set(body) == {"free", "total", "used", "level", "where"}
+    assert {"free", "total", "used", "level", "where"} <= set(body)
     assert body["level"] in ("ok", "low", "critical") and body["total"] >= body["free"] > -1
+    ram = body.get("ram")
+    if ram is not None:
+        assert ram["total"] >= ram["free"] >= 0
+        assert ram["used"] == ram["total"] - ram["free"]
+        assert ram["level"] in ("ok", "low", "critical")

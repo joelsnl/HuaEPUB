@@ -67,7 +67,7 @@ a { color: inherit; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-name { font-family: var(--book); font-weight: 600; font-size: 22px; letter-spacing: -.01em; }
 .brand-tag { color: var(--muted); font-size: 13px; }
-.head-end { display: flex; align-items: center; gap: 16px; margin-left: auto; color: var(--muted); font-size: 13px; }
+.head-end { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 16px; margin-left: auto; color: var(--muted); font-size: 13px; }
 .head-version { font-family: var(--sans); }
 /* Free space on the server's disk. The header is hidden while reading, so this is too. */
 .storage { display: inline-flex; align-items: center; gap: 8px; font-family: var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }

@@ -16,18 +16,30 @@
     return text + ' ' + UNITS[u];
   }
 
-  function draw(s) {
-    var box = $('storage');
+  function paint(id, s, detail) {
+    var box = $(id);
+    if (!box) return;
     if (!s) { box.hidden = true; return; }
     var usedPct = s.total > 0 ? Math.min(100, Math.max(0, (s.used / s.total) * 100)) : 0;
     box.hidden = false;
     box.setAttribute('data-level', s.level);
-    $('storage-fill').style.width = usedPct.toFixed(1) + '%';
-    $('storage-text').textContent = size(s.free) + ' free';
-    var full = size(s.free) + ' free of ' + size(s.total) + ' on the disk for the ' + s.where + '.';
-    if (s.level !== 'ok') full += ' Running low: downloads may fail.';
-    box.title = full;
-    box.setAttribute('aria-label', 'Storage: ' + full);
+    $(id + '-fill').style.width = usedPct.toFixed(1) + '%';
+    $(id + '-text').textContent = size(s.free) + ' free';
+    box.title = detail;
+    box.setAttribute('aria-label', detail);
+  }
+
+  function draw(s) {
+    if (!s) { paint('storage', null, ''); paint('ram', null, ''); return; }
+    var disk = size(s.free) + ' free of ' + size(s.total) + ' on the disk for the ' + s.where + '.';
+    if (s.level !== 'ok') disk += ' Running low: downloads may fail.';
+    paint('storage', s, 'Storage: ' + disk);
+    var ram = s.ram;
+    if (!ram) { paint('ram', null, ''); return; }
+    var mem = size(ram.free) + ' free of ' + size(ram.total) + ' RAM.';
+    if (ram.swap_used) mem += ' ' + size(ram.swap_used) + ' of swap in use.';
+    if (ram.level !== 'ok') mem += ' Running low: translation may stall.';
+    paint('ram', ram, 'Memory: ' + mem);
   }
 
   var inflight = false;

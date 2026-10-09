@@ -38,7 +38,7 @@ from web.library_api import fetch_and_cache_cover, sniff_image
 from web.options import SettingsError, apply_settings, settings_payload
 from web.preview import PreviewError
 from web.reader_api import build_router as reader_router
-from web.storage import storage_payload
+from web.storage import memory_payload, storage_payload
 from web.tasks import Busy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -255,6 +255,9 @@ def create_app(ctx: ServerContext) -> FastAPI:
         payload = storage_payload(places)
         if payload is None:
             return JSONResponse({"error": "unavailable"}, status_code=503)
+        ram = memory_payload()
+        if ram is not None:
+            payload["ram"] = ram
         return payload
 
     @app.get("/api/events")
