@@ -61,6 +61,8 @@
     document.querySelectorAll('#read-display .chip').forEach(function (btn) {
       var field = PREF_FIELDS[btn.getAttribute('data-pref')];
       btn.classList.toggle('is-on', !!field && prefs[field] === btn.getAttribute('data-value'));
+      // Pages on screen means nothing in Scroll: shown, but not selectable there.
+      if (field === 'spread') btn.disabled = !paged();
     });
     $('read-size').value = String(fontPt);
     setText('read-size-n', String(fontPt));

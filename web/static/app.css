@@ -696,6 +696,7 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-progress, #read-size { width: 100%; accent-color: var(--paper-ink); background: transparent; margin: 0; }
 .book-btn, .book-link, .chip { font: inherit; color: var(--paper-ink); background: transparent; cursor: pointer; }
 .book-btn, .chip { min-height: 34px; padding: 0 12px; border: 1px solid var(--paper-rule); border-radius: 999px; font-size: 13px; }
+.chip:disabled { opacity: .4; cursor: default; }
 .book-btn.is-on, .chip.is-on { background: var(--paper-ink); color: var(--paper); border-color: var(--paper-ink); }
 .book-link { border: 0; padding: 4px 0; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--paper-faint); }
 #read-return { font-size: 13px; }
