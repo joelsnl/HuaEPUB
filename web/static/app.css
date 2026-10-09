@@ -582,6 +582,8 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-book[data-theme="night"] { --paper: #161b20; --paper-ink: #e4e0d6; --paper-faint: #8d948c; --paper-rule: #2b333a; }
 #read-book[hidden] { display: none; }
 #read-book.is-scroll { --read-lead: 1.7; }
+/* Settings that only mean something in one flow are shown only there. */
+#read-book.is-scroll .only-pages, #read-book.is-pages .only-scroll { display: none; }
 #read-book[data-leading="tight"] { --read-lead: 1.45; }
 #read-book[data-leading="loose"] { --read-lead: 2.05; }
 #read-book[data-face="sans"] .reader-text,
@@ -694,6 +696,7 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-progress, #read-size { width: 100%; accent-color: var(--paper-ink); background: transparent; margin: 0; }
 .book-btn, .book-link, .chip { font: inherit; color: var(--paper-ink); background: transparent; cursor: pointer; }
 .book-btn, .chip { min-height: 34px; padding: 0 12px; border: 1px solid var(--paper-rule); border-radius: 999px; font-size: 13px; }
+.chip:disabled { opacity: .4; cursor: default; }
 .book-btn.is-on, .chip.is-on { background: var(--paper-ink); color: var(--paper); border-color: var(--paper-ink); }
 .book-link { border: 0; padding: 4px 0; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--paper-faint); }
 #read-return { font-size: 13px; }
