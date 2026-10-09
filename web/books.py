@@ -9,6 +9,7 @@ folder and Library as one built at the PC.
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import Any, Dict, List, Optional
 
 from core import tasks as core_tasks
@@ -36,6 +37,27 @@ from web.preview import Preview, PreviewError, build_preview, translate_preview
 from web.tasks import TaskContext, TaskManager
 
 MAX_MULTI = 50
+
+
+def shelved_note(store, url: str, title: str):
+    """What the Add pages show when a looked-up book was shelved before, else None.
+
+    Matches the link, or the original title (the same novel on another site).
+    """
+    entry = store.find_shelved(url, title)
+    if entry is None:
+        return None
+    return {
+        "title": entry.translated_title or entry.title or entry.source_url,
+        "at": float(entry.shelved_at or 0),
+        "same_link": entry.source_url == (url or "").strip(),
+    }
+
+
+def shelved_line(note: dict) -> str:
+    when = time.strftime("%d %b %Y", time.localtime(note["at"])) if note.get("at") else ""
+    where = "" if note.get("same_link") else " (same title, another site)"
+    return f"You shelved “{note['title']}”{' on ' + when if when else ''}{where}."
 
 
 def _flagged(chapters, titles) -> List[int]:
@@ -102,8 +124,9 @@ def _start_single_job(manager, parser, info, chapters, out, translated_title, jo
 def start_lookup(manager: TaskManager, urls: List[str], store, *, preview_builder=build_preview,
                  preview_translator=translate_preview):
     rows = [{"url": u, "status": "Waiting", "preview_id": "", "title": "", "title_en": "",
-             "chapters": 0, "error": ""} for u in urls]
+             "chapters": 0, "error": "", "shelved": None} for u in urls]
     session = manager.session
+    store_lib = session.library_store
 
     def body(ctx: TaskContext) -> Dict[str, Any]:
         total = len(urls)
@@ -125,9 +148,12 @@ def start_lookup(manager: TaskManager, urls: List[str], store, *, preview_builde
             if job_options(session.settings)["translate"]:
                 preview_translator(item, cache=session.cache)
             store.put(item)
+            shelved = shelved_note(store_lib, item.info.source_url or item.url, item.info.title)
+            # A shelved book is not built with the rest; Add a book can still build it.
             ctx.task.set_row(
-                i, status="Ready", preview_id=item.id, title=item.info.title,
-                title_en=item.title_en, chapters=len(item.chapters),
+                i, status="Shelved" if shelved else "Ready", preview_id=item.id,
+                title=item.info.title, title_en=item.title_en, chapters=len(item.chapters),
+                shelved=shelved, error=shelved_line(shelved) if shelved else "",
             )
         ready = sum(1 for r in ctx.task.rows if r.get("status") == "Ready")
         return {"ready": ready, "total": total}

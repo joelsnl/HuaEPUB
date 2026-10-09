@@ -331,6 +331,8 @@ def create_app(ctx: ServerContext) -> FastAPI:
         payload = item.to_payload()
         entry = session.library_store.get_library_entry(item.info.source_url or item.url)
         payload["in_library"] = entry is not None
+        payload["shelved"] = books.shelved_note(session.library_store, item.info.source_url or item.url,
+                                          item.info.title)
         return payload
 
     @app.get("/api/preview/{preview_id}/cover")

@@ -34,15 +34,20 @@
 
   // Sort and filter are remembered in this browser; the search is not.
   function savePrefs() {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ filter: filter, sort: sort })); } catch (err) { /* ignore */ }
+    // The shelved list is a place you visit, not a view to come back to.
+    var keep = filter === 'shelved' ? 'all' : filter;
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ filter: keep, sort: sort })); } catch (err) { /* ignore */ }
   }
 
   var FILTERS = {
     all: function () { return true; },
     reading: function (e) { return e.read_chapter > 0; },
     unopened: function (e) { return !e.read_chapter; },
-    updates: function (e) { return e.status === 'update'; }
+    updates: function (e) { return e.status === 'update'; },
+    shelved: function (e) { return !!e.shelved_at; }
   };
+
+  function active() { return entries.filter(function (e) { return !e.shelved_at; }); }
 
   function lastTouched(e) { return Math.max(e.read_at || 0, e.updated_at || 0); }
   function leftToRead(e) { return Math.max(0, (e.chapters || 0) - (e.read_chapter || 0)); }
@@ -68,7 +73,8 @@
     var words = query.toLowerCase().split(/\s+/).filter(Boolean);
     var keep = FILTERS[filter] || FILTERS.all;
     return entries.filter(function (e) {
-      if (!keep(e)) return false;
+      // Shelved books only show on the shelved list.
+      if (!!e.shelved_at !== (filter === 'shelved') || !keep(e)) return false;
       var hay = searchText(e);
       return words.every(function (w) { return hay.indexOf(w) >= 0; });
     }).sort(SORTS[sort] || SORTS.recent);
@@ -104,6 +110,7 @@
   }
 
   function badge(e) {
+    if (e.shelved_at) return { text: 'Shelved', cls: 'is-wait' };
     if (e.status === 'update') return { text: '+' + e.new_count + ' new', cls: 'is-new' };
     if (e.status === 'checking') return { text: 'Checking…', cls: 'is-wait' };
     if (e.status === 'error') return { text: 'Check failed', cls: 'is-err' };
@@ -128,7 +135,7 @@
     if (entries.length && !list.length) setText('shelf-none-text', noMatchText());
     drawContinue();
     list.forEach(function (e) {
-      var li = H.el('li', 'tile' + (selected[e.url] ? ' is-sel' : ''));
+      var li = H.el('li', 'tile' + (selected[e.url] ? ' is-sel' : '') + (e.shelved_at ? ' is-shelved' : ''));
       var btn = H.el('button', 'tile-btn');
       btn.type = 'button';
       btn.setAttribute('aria-haspopup', 'dialog');
@@ -178,6 +185,8 @@
     if (filter === 'reading') return 'You have not opened any of these books yet.';
     if (filter === 'unopened') return 'You have started every book.';
     if (filter === 'updates') return 'No new chapters. Check for updates to look again.';
+    if (filter === 'shelved') return 'Nothing is shelved.';
+    if (!active().length) return 'Every book is shelved.';
     return 'No books here.';
   }
 
@@ -185,9 +194,9 @@
   function drawContinue() {
     var last = null;
     entries.forEach(function (e) {
-      if (e.read_at && (!last || e.read_at > last.read_at)) last = e;
+      if (e.read_at && !e.shelved_at && (!last || e.read_at > last.read_at)) last = e;
     });
-    show('lib-continue', !!last);
+    show('lib-continue', !!last && filter !== 'shelved');
     if (!last) return;
     $('lib-continue').dataset.url = last.url;
     setText('lib-continue-title', last.title);
@@ -199,9 +208,11 @@
   }
 
   // Messages from actions. Kept apart from the lede, which every state tick rewrites.
-  function note(text) {
+  // ok: a confirmation rather than a problem.
+  function note(text, ok) {
     var where = detailUrl ? 'lib-detail-note' : 'lib-note';
     setText(where, text || '');
+    $(where).classList.toggle('is-ok', !!ok);
     show(where, !!text);
   }
 
@@ -223,18 +234,27 @@
     $('lib-epub').disabled = !sel.some(function (e) { return e.has_epub; });
     $('lib-remove').disabled = busy || n === 0;
     setText('lib-remove', n > 1 ? 'Remove (' + n + ')' : 'Remove');
-    var withUpdates = entries.filter(function (e) { return e.status === 'update'; }).length;
+    var books = active();
+    var shelvedCount = entries.length - books.length;
+    var withUpdates = books.filter(function (e) { return e.status === 'update'; }).length;
     $('lib-update-all').disabled = busy || !withUpdates;
     setText('lib-update-all', withUpdates ? 'Update all (' + withUpdates + ')' : 'Update all');
-    $('lib-check').disabled = busy || !entries.length;
+    $('lib-check').disabled = busy || !books.length;
+    var allShelved = n > 0 && sel.every(function (e) { return e.shelved_at; });
+    $('lib-shelve').disabled = n === 0;
+    setText('lib-shelve', (allShelved ? 'Put back' : 'Shelve') + (n > 1 ? ' (' + n + ')' : ''));
+    show('lib-shelved', shelvedCount > 0 && filter !== 'shelved');
+    setText('lib-shelved', 'Shelved books (' + shelvedCount + ')');
+    show('lib-shelved-head', filter === 'shelved');
+    document.querySelector('.lib-filter').classList.toggle('is-off', filter === 'shelved');
     setText('lib-lede', entries.length
-      ? H.plural(entries.length, 'book') + ' in the catalogue.' +
+      ? H.plural(books.length, 'book') + ' in the catalogue' +
+        (shelvedCount ? ', ' + shelvedCount + ' shelved.' : '.') +
         (withUpdates ? ' ' + withUpdates + (withUpdates === 1 ? ' has' : ' have') + ' new chapters.' : '')
       : 'Books you have downloaded on this PC.');
     var shown = $('shelf').children.length;
-    if (entries.length && shown !== entries.length) {
-      setText('lib-count', n + ' selected, ' + shown + ' of ' + entries.length + ' shown');
-    }
+    var pool = filter === 'shelved' ? shelvedCount : books.length;
+    if (pool && shown !== pool) setText('lib-count', n + ' selected, ' + shown + ' of ' + pool + ' shown');
   }
 
   // Shelf covers are kept and moved into the rebuilt cards, so a redraw never reloads them.
@@ -282,6 +302,7 @@
   }
 
   function statusLine(e) {
+    if (e.shelved_at) return 'Shelved on ' + savedOn(e.shelved_at);
     var b = badge(e);
     if (b && e.status === 'error' && e.status_error) return b.text + ' — ' + e.status_error;
     if (b) return b.text;
@@ -317,6 +338,7 @@
     $('lib-detail-epub').disabled = !e.has_epub;
     setText('lib-detail-select', selected[e.url] ? 'Selected' : 'Select');
     setText('lib-detail-read', e.read_chapter ? 'Continue reading' : 'Start reading');
+    setText('lib-detail-shelve', e.shelved_at ? 'Put back' : 'Shelve');
     loadToc(e);
   }
 
@@ -406,6 +428,26 @@
     }).catch(function () { note(H.ERRORS.network); });
   }
 
+  // Shelve keeps the card (and its files) but takes it out of the way for good.
+  function shelve(urls, on) {
+    if (!urls.length) return;
+    post('/api/library/shelve', { urls: urls, shelved: on }, function () {
+      selected = {};
+      load();
+      note(on ? H.plural(urls.length, 'book') + ' shelved. Find ' + (urls.length === 1 ? 'it' : 'them') +
+        ' under Shelved books.' : H.plural(urls.length, 'book') + ' back in the library.', true);
+    }, on ? 'shelve these books' : 'put these books back');
+  }
+
+  function setFilter(value) {
+    filter = value;
+    note('');
+    document.querySelectorAll('input[name="lib-filter"]').forEach(function (r) { r.checked = r.value === value; });
+    selected = {};
+    savePrefs();
+    draw();
+  }
+
   function askRemove() {
     var sel = selection();
     if (!sel.length) return;
@@ -478,17 +520,14 @@
   $('lib-sort').value = sort;
   document.querySelectorAll('input[name="lib-filter"]').forEach(function (e) {
     e.checked = e.value === filter;
-    e.addEventListener('change', function () { filter = e.value; savePrefs(); draw(); });
+    e.addEventListener('change', function () { setFilter(e.value); });
   });
   $('lib-sort').addEventListener('change', function () { sort = $('lib-sort').value; savePrefs(); draw(); });
   $('lib-search').addEventListener('input', function () { query = $('lib-search').value; draw(); });
   $('lib-show-all').addEventListener('click', function () {
     query = '';
     $('lib-search').value = '';
-    filter = 'all';
-    document.querySelector('input[name="lib-filter"][value="all"]').checked = true;
-    savePrefs();
-    draw();
+    setFilter('all');
   });
   $('lib-continue').addEventListener('click', function () {
     var url = $('lib-continue').dataset.url;
@@ -514,6 +553,18 @@
   $('lib-open').addEventListener('click', function () { var s = selection()[0]; if (s) H.go('single', { url: s.url }); });
   $('lib-epub').addEventListener('click', downloadSelected);
   $('lib-remove').addEventListener('click', askRemove);
+  $('lib-shelve').addEventListener('click', function () {
+    var sel = selection();
+    shelve(sel.map(function (e) { return e.url; }), !sel.every(function (e) { return e.shelved_at; }));
+  });
+  $('lib-shelved').addEventListener('click', function () { setFilter('shelved'); window.scrollTo(0, 0); });
+  $('lib-shelved-back').addEventListener('click', function () { setFilter('all'); });
+  $('lib-detail-shelve').addEventListener('click', function () {
+    var e = detailEntry();
+    if (!e) return;
+    closeDetail();
+    shelve([e.url], !e.shelved_at);
+  });
   $('lib-reset').addEventListener('click', askReset);
   $('lib-confirm-yes').addEventListener('click', confirmYes);
   $('lib-confirm-no').addEventListener('click', function () { pendingRemove = null; show('lib-confirm', false); });

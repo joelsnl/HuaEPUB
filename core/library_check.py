@@ -277,7 +277,8 @@ def run_library_check(
     Novels on different hosts run concurrently (capped). Same-host TOCs
     share one session and wait ``request_delay`` between network fetches.
     """
-    items = list(entries or [])
+    # Shelved books were put away on purpose: never spend requests on them.
+    items = [e for e in (entries or []) if not getattr(e, "shelved_at", 0)]
     total = len(items)
     if total == 0:
         return 0, 0

@@ -309,8 +309,15 @@ fieldset.card > legend.block-title + * { clear: both; }
 }
 .shelf-empty p { margin: 0; }
 .shelf-empty p:first-child { font-family: var(--book); font-weight: 600; font-size: 18px; }
-.lib-foot { padding-top: 8px; }
+.lib-foot { padding-top: 8px; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.shelved-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; max-width: 48rem;
+}
+.shelved-head p { margin: 0; color: var(--muted); }
+.lib-filter.is-off { opacity: .55; }
+.tile.is-shelved .tile-cover { filter: grayscale(1); opacity: .7; }
 .lib-note { margin: 0; font-size: 14px; color: var(--flag); }
+.lib-note.is-ok { color: var(--muted); }
 .detail-note { flex-basis: 100%; }
 
 /* Continue reading: the last book opened, as a card pulled half out of the drawer. */
