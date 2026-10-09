@@ -586,41 +586,106 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-book[data-leading="loose"] { --read-lead: 2.05; }
 #read-book[data-face="sans"] .reader-text,
 #read-book[data-face="sans"] .reader-book { font-family: var(--sans); }
-.leaf { position: absolute; inset: 0; overflow: hidden; }
-#read-book.is-pages .leaf { scroll-behavior: auto; }
-#read-book.is-scroll .leaf { overflow-y: auto; }
+/* Margins: the side margin of a page, and the longest comfortable line. On a wide screen the
+   line stops growing and the page centres it, so a monitor never gets 200-character lines. */
+#read-book { --margin: 6%; --measure: 36em; --page-top: max(44px, 7vh); --page-bottom: max(48px, 8vh); }
+#read-book[data-margin="narrow"] { --margin: 3%; --measure: 46em; }
+#read-book[data-margin="wide"] { --margin: 11%; --measure: 30em; }
+.leaf {
+  position: absolute; top: 0; bottom: 0; overflow: hidden;
+  left: env(safe-area-inset-left, 0px); right: env(safe-area-inset-right, 0px);
+}
+/* Pages: every page gets the top and bottom margin (the leaf's padding), not just the first. */
+#read-book.is-pages .leaf {
+  overflow: clip;
+  padding: calc(env(safe-area-inset-top, 0px) + var(--page-top)) 0 calc(env(safe-area-inset-bottom, 0px) + var(--page-bottom));
+}
+#read-book.is-scroll .leaf { overflow-y: auto; overscroll-behavior: contain; }
 .spread { height: 100%; }
-#read-book.is-pages .spread { column-width: var(--page); column-gap: 0; column-fill: auto; height: 100%; }
-.running {
-  position: absolute; top: 2.2vh; left: 8vw; right: 8vw; margin: 0; z-index: 1; pointer-events: none;
+#read-book.is-pages .spread {
+  column-count: var(--cols, 1); column-gap: 0; column-fill: auto; height: 100%; will-change: transform;
+}
+/* A spread: a faint fold between the two pages. */
+#read-book.is-two .leaf::after {
+  content: ""; position: absolute; left: 50%; width: 1px; z-index: 1; pointer-events: none;
+  top: calc(env(safe-area-inset-top, 0px) + var(--page-top));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + var(--page-bottom));
+  background: linear-gradient(transparent, var(--paper-rule) 15%, var(--paper-rule) 85%, transparent);
+}
+.running, .folio {
+  position: absolute; left: 0; right: 0; margin: 0 auto; z-index: 1; pointer-events: none;
+  width: min(calc(100% - 2 * max(16px, var(--margin))), 70rem);
   font-family: var(--serif); font-size: 12px; color: var(--paper-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.running { top: calc(env(safe-area-inset-top, 0px) + max(14px, 2.4vh)); text-align: center; }
+.folio {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + max(14px, 2.6vh)); text-align: center;
+  font-family: var(--sans); font-variant-numeric: tabular-nums;
+}
+#read-book.is-scroll .folio { display: none; }
 .reader-text {
   font-family: Georgia, var(--serif); font-size: var(--read-size); line-height: var(--read-lead);
-  overflow-wrap: anywhere; color: var(--paper-ink);
+  overflow-wrap: anywhere; color: var(--paper-ink); orphans: 2; widows: 2;
 }
-#read-book.is-pages .reader-text { padding: 8vh 8vw 11vh; }
-#read-book.is-scroll .spread { height: auto; max-width: 40rem; margin: 0 auto; }
-#read-book.is-scroll .reader-text { display: block; padding: 12vh 8vw 22vh; }
+/* Percentages here are of one page (one column), so each page of a spread gets its own margins. */
+#read-book.is-pages .reader-text {
+  padding: 0 max(16px, var(--margin), calc((100% - var(--measure)) / 2));
+}
+#read-book.is-scroll .spread { height: auto; padding: 0 max(16px, var(--margin)); }
+#read-book.is-scroll .reader-text {
+  display: block; max-width: var(--measure); margin: 0 auto;
+  padding: calc(env(safe-area-inset-top, 0px) + 12vh) 0 6vh;
+}
 #read-book[data-align="justify"] .reader-text p { text-align: justify; hyphens: auto; }
-.reader-text h1, .reader-text h2, .reader-text h3 { font-weight: 600; line-height: 1.3; text-align: left; }
+.reader-text h1, .reader-text h2, .reader-text h3 {
+  font-weight: 600; line-height: 1.3; text-align: left; break-after: avoid; break-inside: avoid;
+}
 .reader-text p { margin: 0.8em 0; }
 .reader-text img { display: none; }
+/* Scroll mode: the end of a chapter leads on to the next one. */
+.chapter-end {
+  max-width: calc(var(--measure) * 0.5); margin: 0 auto;
+  padding: 2vh 0 calc(env(safe-area-inset-bottom, 0px) + 18vh); font-size: var(--read-size);
+}
+.chapter-end[hidden], #read-book.is-pages .chapter-end { display: none; }
+#read-book .chapter-end-btn {
+  width: 100%; min-height: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  border-radius: 10px; padding: 14px 18px; text-align: left;
+}
+.chapter-end-title { font-family: var(--serif); font-size: 17px; }
 .leaf-hit { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
 .leaf-note {
   position: absolute; left: 8vw; right: 8vw; bottom: 11vh; margin: 0; z-index: 2; pointer-events: none;
   text-align: center; color: var(--paper-faint); font-size: 13px;
 }
+/* Mouse only: quiet arrows at the page edges, as in Play Books on the web. */
+.leaf-arrow { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  #read-book.is-pages .leaf-arrow {
+    display: flex; align-items: center; justify-content: center; position: absolute; z-index: 2;
+    top: 50%; transform: translateY(-50%); width: 44px; height: 30vh; padding: 0; border: 0;
+    background: transparent; color: var(--paper-ink); font-size: 34px; line-height: 1;
+    cursor: pointer; opacity: 0; transition: opacity 160ms linear;
+  }
+  #read-book.is-pages .leaf-prev { left: env(safe-area-inset-left, 0px); }
+  #read-book.is-pages .leaf-next { right: env(safe-area-inset-right, 0px); }
+  #read-book.is-pages .leaf-arrow:hover, #read-book.is-pages .leaf-arrow:focus-visible { opacity: .55; }
+  #read-book.is-pages.is-chrome .leaf-arrow { opacity: .3; }
+}
 .chrome {
   position: absolute; left: 0; right: 0; z-index: 3; display: flex; gap: 12px; align-items: center;
-  padding: 12px 5vw; background: color-mix(in srgb, var(--paper) 94%, transparent);
+  padding: 12px max(5vw, env(safe-area-inset-right, 0px)) 12px max(5vw, env(safe-area-inset-left, 0px));
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
   color: var(--paper-ink); opacity: 0; pointer-events: none; transition: opacity 180ms linear;
 }
 #read-book.is-chrome .chrome { opacity: 1; pointer-events: auto; }
-.chrome-top { top: 0; border-bottom: 1px solid var(--paper-rule); }
-.chrome-bot { bottom: 0; flex-direction: column; align-items: stretch; gap: 8px; border-top: 1px solid var(--paper-rule); }
-.chrome-row { display: flex; align-items: center; gap: 8px; }
+.chrome-top { top: 0; border-bottom: 1px solid var(--paper-rule); padding-top: max(12px, env(safe-area-inset-top, 0px)); }
+.chrome-bot {
+  bottom: 0; flex-direction: column; align-items: stretch; gap: 8px; border-top: 1px solid var(--paper-rule);
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+}
+.chrome-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .reader-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .reader-book { font-family: var(--serif); font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .running-label { font-size: 13px; color: var(--paper-faint); }
@@ -630,22 +695,56 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 .book-btn, .chip { min-height: 34px; padding: 0 12px; border: 1px solid var(--paper-rule); border-radius: 999px; font-size: 13px; }
 .book-btn.is-on, .chip.is-on { background: var(--paper-ink); color: var(--paper); border-color: var(--paper-ink); }
 .book-link { border: 0; padding: 4px 0; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--paper-faint); }
+#read-return { font-size: 13px; }
+@media (pointer: coarse) {
+  .book-btn, .chip { min-height: 40px; }
+}
 .sheet {
   position: absolute; z-index: 4; left: 0; right: 0; bottom: 0; max-height: 72vh; overflow: auto;
+  overscroll-behavior: contain;
   background: var(--paper); color: var(--paper-ink); border-top: 1px solid var(--paper-rule);
-  padding: 16px 5vw 28px; display: flex; flex-direction: column; gap: 14px;
+  padding: 16px max(5vw, env(safe-area-inset-right, 0px)) calc(28px + env(safe-area-inset-bottom, 0px)) max(5vw, env(safe-area-inset-left, 0px));
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, .12);
+}
+/* A wide screen opens Contents and Display as a side panel beside the page (Kindle, Apple Books). */
+@media (min-width: 900px) {
+  .sheet {
+    top: 0; left: auto; width: min(26rem, 40vw); max-height: none;
+    border-top: 0; border-left: 1px solid var(--paper-rule);
+    padding: 20px 24px 28px; box-shadow: -10px 0 30px rgba(0, 0, 0, .12);
+  }
 }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet-part { display: flex; flex-direction: column; gap: 8px; }
+.sheet-part[hidden] { display: none; }
 .sheet-list { list-style: none; margin: 0; padding: 0; }
+.sheet-list li[hidden] { display: none; }
 .sheet-list button {
   width: 100%; display: flex; gap: 12px; align-items: baseline; text-align: left;
   background: none; border: 0; border-bottom: 1px solid var(--paper-rule); color: var(--paper-ink);
   padding: 10px 0; cursor: pointer; font: inherit;
 }
+@media (hover: hover) {
+  .sheet-list button:hover .toc-name { text-decoration: underline; text-underline-offset: 3px; }
+}
 .sheet-list button.is-here { font-weight: 600; }
 .sheet-list .mark { color: var(--paper-faint); width: 1rem; flex-shrink: 0; }
+.toc-name { flex: 1; min-width: 0; }
+.toc-at { color: var(--paper-faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+#read-book .toc-find {
+  margin: 0; padding: 8px 0; font: inherit; font-size: 15px; color: var(--paper-ink); background: transparent;
+  border: 0; border-bottom: 1px solid var(--paper-rule); border-radius: 0; outline-offset: 2px;
+}
+#read-book .toc-find[hidden] { display: none; }
+#read-book .toc-find::placeholder { color: var(--paper-faint); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.size-row { display: flex; align-items: center; gap: 10px; }
+.size-btn { flex: 0 0 auto; width: 40px; padding: 0; font-family: var(--serif); font-size: 13px; }
+.size-btn.size-big { font-size: 19px; }
 .display-line { font-size: 13px; color: var(--paper-faint); }
+.keys-hint { margin: 0; line-height: 1.5; }
+@media (hover: none), (pointer: coarse) { .keys-hint { display: none; } }
 
 /* ------------------------------------------------------------------ settings */
 .settings { display: grid; gap: 18px; max-width: 44rem; }

@@ -31,6 +31,8 @@ GLOSSARIES = [
 _BACKEND_IDS = {b for b, _ in BACKENDS}
 _GLOSSARY_IDS = {g for g, _ in GLOSSARIES}
 MAX_WORKERS = 500
+READER_SPREADS = ("auto", "one", "two")
+READER_MARGINS = ("narrow", "normal", "wide")
 
 
 def nmt_ready() -> bool:
@@ -117,6 +119,8 @@ def settings_payload(settings: Dict[str, Any]) -> Dict[str, Any]:
         "reader_face": _choice(settings.get("reader_face"), ("serif", "sans"), "serif"),
         "reader_leading": _choice(settings.get("reader_leading"), ("tight", "normal", "loose"), "normal"),
         "reader_align": _choice(settings.get("reader_align"), ("justify", "left"), "justify"),
+        "reader_spread": _choice(settings.get("reader_spread"), READER_SPREADS, "auto"),
+        "reader_margin": _choice(settings.get("reader_margin"), READER_MARGINS, "normal"),
         "output_dir": opts["output_dir"],
         "max_workers": MAX_WORKERS,
     }
@@ -152,7 +156,7 @@ def apply_settings(settings: Dict[str, Any], changes: Dict[str, Any]) -> None:
     """Validate and write the browser-editable keys. Unknown keys are refused."""
     allowed = {"translate", "clean", "use_cache", "workers", "backend", "glossary", "polish",
                "reader_font_pt", "reader_theme", "reader_mode", "reader_face",
-               "reader_leading", "reader_align", "output_dir"}
+               "reader_leading", "reader_align", "reader_spread", "reader_margin", "output_dir"}
     unknown = set(changes) - allowed
     if unknown:
         raise SettingsError(f"Not editable from the browser: {', '.join(sorted(unknown))}")
@@ -194,6 +198,8 @@ def apply_settings(settings: Dict[str, Any], changes: Dict[str, Any]) -> None:
         ("reader_face", ("serif", "sans")),
         ("reader_leading", ("tight", "normal", "loose")),
         ("reader_align", ("justify", "left")),
+        ("reader_spread", READER_SPREADS),
+        ("reader_margin", READER_MARGINS),
     ):
         if key in changes:
             if changes[key] not in allowed_values:

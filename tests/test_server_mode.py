@@ -260,7 +260,7 @@ def test_apply_settings_validates_every_key(home):
 
 
 def test_browser_can_set_an_existing_books_folder(home):
-    from web.options import SettingsError, apply_settings
+    from web.options import SettingsError, apply_settings, settings_payload
 
     books = home / "books"
     books.mkdir()
@@ -273,6 +273,13 @@ def test_browser_can_set_an_existing_books_folder(home):
     assert settings["reader_theme"] == "sepia" and settings["reader_mode"] == "scroll"
     with pytest.raises(SettingsError):
         apply_settings(settings, {"reader_theme": "neon"})
+    apply_settings(settings, {"reader_spread": "two", "reader_margin": "wide"})
+    assert settings["reader_spread"] == "two" and settings["reader_margin"] == "wide"
+    payload = settings_payload(settings)
+    assert payload["reader_spread"] == "two" and payload["reader_margin"] == "wide"
+    for bad in ({"reader_spread": "three"}, {"reader_margin": 5}):
+        with pytest.raises(SettingsError):
+            apply_settings(settings, bad)
     for bad in ("books", str(home / "missing")):
         with pytest.raises(SettingsError):
             apply_settings(settings, {"output_dir": bad})

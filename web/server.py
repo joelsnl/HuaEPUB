@@ -408,7 +408,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
         busy = ctx.tasks.active()
         if busy is not None and set(changes) - {
             "reader_font_pt", "reader_theme", "reader_mode", "reader_face",
-            "reader_leading", "reader_align",
+            "reader_leading", "reader_align", "reader_spread", "reader_margin",
         }:
             # A running job keeps the options it started with; change them after.
             raise Busy(busy.id, busy.label)
