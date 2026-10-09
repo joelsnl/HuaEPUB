@@ -520,6 +520,46 @@ def test_library_entries_say_when_a_book_was_last_read(session):
     assert rows[read]["read_at"] >= before and rows[unread]["read_at"] == 0
 
 
+def test_shelving_from_the_browser_marks_the_book(session):
+    url = "https://example.com/book/1"
+    session.library_store.upsert_library(url, title="A Test Novel", translated_title="Meh")
+    c = _signed_in(_ctx(session))
+    assert c.post("/api/library/shelve", json={"urls": [url]}, headers=H).json() == {"changed": 1}
+    entries = c.get("/api/library").json()["entries"]
+    assert [e["shelved_at"] > 0 for e in entries if e["url"] == url] == [True]
+
+
+def test_looking_up_a_shelved_book_says_so(session):
+    url = "https://example.com/book/1"
+    session.library_store.upsert_library(url, title="A Test Novel", translated_title="Meh")
+    session.library_store.set_shelved([url], True)
+    other_site = _ctx(session, builder=lambda u: _preview(url="https://other.test/n/7"))
+    note = _signed_in(other_site).post("/api/preview", json={"url": "https://other.test/n/7"},
+                                       headers=H).json()["shelved"]
+    assert note["title"] == "Meh" and note["same_link"] is False
+
+
+def test_add_several_does_not_build_a_shelved_book(session):
+    url = "https://example.com/book/1"
+    session.library_store.upsert_library(url, title="A Test Novel", translated_title="Meh")
+    session.library_store.set_shelved([url], True)
+    ctx = _ctx(session, builder=lambda u: _preview(url=u, title="A Test Novel" if u == url
+                                                   else "Another Novel"))
+    c = _signed_in(ctx)
+    assert c.post("/api/multi/lookup", json={"urls": [url, "https://example.com/book/2"]},
+                  headers=H).status_code == 202
+    snap = _wait_done(ctx)
+    statuses = [r["status"] for r in snap["rows"]]
+    assert statuses == ["Shelved", "Ready"]
+
+
+def test_check_for_updates_leaves_shelved_books_alone(session):
+    session.library_store.upsert_library("https://example.com/book/9", title="Gone")
+    session.library_store.set_shelved(["https://example.com/book/9"], True)
+    c = _signed_in(_ctx(session))
+    assert c.post("/api/library/check", headers=H).json()["error"] == "empty_library"
+
+
 def test_code_link_and_login_set_a_cookie(session):
     ctx = _ctx(session)
     c = _client(ctx)

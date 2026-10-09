@@ -27,7 +27,7 @@
       tr.appendChild(t);
       tr.appendChild(H.el('td', 'num mono', r.chapters ? String(r.chapters) : '—'));
       var st = H.el('td', 'cell-status', r.status || '');
-      if (/fail/i.test(r.status || '')) st.classList.add('flag');
+      if (/fail|shelved/i.test(r.status || '')) st.classList.add('flag');
       if (/done|ready|finished/i.test(r.status || '')) st.classList.add('ok');
       if (r.error) st.appendChild(H.el('span', 'muted small', ' ' + r.error));
       tr.appendChild(st);

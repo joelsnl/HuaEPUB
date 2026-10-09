@@ -225,6 +225,23 @@ def test_run_library_check_reports_updates(tmp_path):
         cache.close()
 
 
+def test_run_library_check_skips_shelved_books(tmp_path):
+    cache = NovelCache(tmp_path / "cache.db")
+    rec = _Rec([])
+    shelved = _entry("https://b.test/b", count=2, last="https://b.test/b/c2")
+    shelved.shelved_at = 1.0
+    seen = []
+    try:
+        _with_updates, total = run_library_check(
+            [_entry("https://a.test/a", count=2, last="https://a.test/a/c2"), shelved],
+            cache, force=True, get_parser=lambda _u: rec,
+            on_entry=lambda u, st: seen.append(u), max_workers=2,
+        )
+        assert total == 1 and seen == ["https://a.test/a"]
+    finally:
+        cache.close()
+
+
 def test_chapters_from_toc_rows():
     ch = chapters_from_toc_rows(
         [{"url": "https://x/1", "title": "One"}, {"url": "", "title": "skip"}]

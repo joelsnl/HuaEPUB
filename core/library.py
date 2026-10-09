@@ -54,6 +54,9 @@ class LibraryEntry:
     output_path: str = ""
     epub_filename: str = ""
     description: str = ""
+    # When the reader put it away as not worth reading (0 = on the shelf as usual).
+    # Kept, not removed, so looking the book up again says it was already tried.
+    shelved_at: float = 0.0
 
 
 @dataclass
@@ -107,6 +110,7 @@ def _library_from_dict(e: dict) -> Optional[LibraryEntry]:
             output_path=e.get('output_path', '') or '',
             epub_filename=e.get('epub_filename', '') or '',
             description=e.get('description', '') or '',
+            shelved_at=float(e.get('shelved_at') or 0),
         )
     except (TypeError, ValueError):
         return None
@@ -187,6 +191,7 @@ def _prefer_library_entry(a: LibraryEntry, b: LibraryEntry) -> LibraryEntry:
         merged.author = loser.author
     if not merged.description and loser.description:
         merged.description = loser.description
+    merged.shelved_at = max(a.shelved_at, b.shelved_at)
     return merged
 
 
@@ -384,6 +389,7 @@ class LibraryStore:
                 output_path=output_path or (prev.output_path if prev else ''),
                 epub_filename=epub_filename or (prev.epub_filename if prev else ''),
                 description=description or (prev.description if prev else ''),
+                shelved_at=prev.shelved_at if prev else 0.0,
             )
             self._data.library = [
                 e for e in self._data.library if e.source_url != source_url
@@ -422,6 +428,35 @@ class LibraryStore:
                         e.description = description
                     self._save()
                     return
+
+    def set_shelved(self, urls: List[str], shelved: bool) -> int:
+        """Shelve (or bring back) these books. Returns how many changed."""
+        wanted = {(u or '').strip() for u in urls if (u or '').strip()}
+        stamp = time.time() if shelved else 0.0
+        changed = 0
+        with self._lock:
+            for e in self._data.library:
+                if e.source_url in wanted and bool(e.shelved_at) != shelved:
+                    e.shelved_at = stamp
+                    changed += 1
+            if changed:
+                self._save()
+        return changed
+
+    def find_shelved(self, source_url: str = '', title: str = '') -> Optional[LibraryEntry]:
+        """A shelved book with this link, or with this original title (the same
+        novel on another site)."""
+        url = (source_url or '').strip()
+        name = _title_key(title)
+        with self._lock:
+            for e in self._data.library:
+                if not e.shelved_at:
+                    continue
+                if url and e.source_url == url:
+                    return e
+                if name and _title_key(e.title) == name:
+                    return e
+        return None
 
     def get_library(self) -> List[LibraryEntry]:
         with self._lock:
@@ -505,6 +540,13 @@ class LibraryStore:
             if clear_history:
                 self._data.history = []
             self._save()
+
+
+def _title_key(title: str) -> str:
+    """Comparable form of a novel title: no spaces, case-folded; '' when too short
+    to identify a book."""
+    key = ''.join((title or '').split()).casefold()
+    return key if len(key) >= 2 else ''
 
 
 def new_chapters_since(

@@ -53,6 +53,16 @@
   };
 
   // Render the stage + rail. `task` is the live single task (or null).
+  // "You shelved “Title” on 9 Oct 2026." (same_link false: matched by title on another site)
+  function shelvedLine(note) {
+    var when = '';
+    try {
+      if (note.at) when = new Date(note.at * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (err) { when = ''; }
+    return 'You shelved “' + note.title + '”' + (when ? ' on ' + when : '') +
+      (note.same_link ? '' : ', the same title on another site') + '.';
+  }
+
   function render(task) {
     var s = state;
     var busy = s === 'resolving' || s === 'running';
@@ -80,6 +90,10 @@
         ? 'Each strip is about ' + H.plural(per, 'chapter') + '. Change the range, or build the whole book.'
         : 'Check the chapter range.';
       if (preview.in_library) line += ' This book is already in your Library; building replaces its EPUB.';
+      if (preview.shelved) {
+        title = 'You shelved this book.';
+        line = shelvedLine(preview.shelved) + ' Build it only if you want to give it another go.';
+      }
       H.drawSlips($('slips'), count, 0, 0, -1);
       setSteps(-1, false);
     } else if (task) {

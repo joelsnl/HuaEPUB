@@ -281,3 +281,39 @@ class TestMergeLibrary:
         )
         purge_novel_artifacts(entry, extra_dirs=[books], data_dir=tmp_path)
         assert victim.exists()
+
+
+class TestShelving:
+    def test_shelved_book_is_kept_and_found_again(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library("https://a.test/book/1", title="废柴逆袭", translated_title="Bad Book")
+        assert store.set_shelved(["https://a.test/book/1"], True) == 1
+        again = LibraryStore(tmp_path / "library.json")       # survives a restart
+        found = again.find_shelved("https://a.test/book/1")
+        assert found is not None and found.shelved_at > 0
+
+    def test_same_title_on_another_site_is_recognised(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library("https://a.test/book/1", title="废柴 逆袭", translated_title="Bad Book")
+        store.set_shelved(["https://a.test/book/1"], True)
+        found = store.find_shelved("https://b.test/novel/99", "废柴逆袭")
+        assert found is not None and found.source_url == "https://a.test/book/1"
+
+    def test_books_not_shelved_are_not_reported(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library("https://a.test/book/1", title="好书")
+        assert store.find_shelved("https://a.test/book/1", "好书") is None
+
+    def test_update_keeps_the_book_shelved(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library("https://a.test/book/1", title="书名", chapter_count=3)
+        store.set_shelved(["https://a.test/book/1"], True)
+        store.upsert_library("https://a.test/book/1", title="书名", chapter_count=5)
+        assert store.get_library_entry("https://a.test/book/1").shelved_at > 0
+
+    def test_put_back_clears_the_shelf(self, tmp_path):
+        store = LibraryStore(tmp_path / "library.json")
+        store.upsert_library("https://a.test/book/1", title="书名")
+        store.set_shelved(["https://a.test/book/1"], True)
+        assert store.set_shelved(["https://a.test/book/1"], False) == 1
+        assert store.find_shelved("https://a.test/book/1") is None

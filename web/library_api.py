@@ -36,6 +36,11 @@ class UrlIn(BaseModel):
     url: str
 
 
+class ShelveIn(BaseModel):
+    urls: List[str]
+    shelved: bool = True
+
+
 def fetch_and_cache_cover(cache, cover_url: str, source_url: str, *, timeout: float) -> bytes:
     """Fetch a cover through the SSRF guard and keep it in the cover cache. Raises on failure."""
     http = create_http_session()
@@ -119,6 +124,7 @@ def _entry_payload(ctx: ServerContext, e, mark=None) -> dict:
         # 1-based chapter the reader is on (0 = not opened yet), from reading.json.
         "read_chapter": read_index + 1 if read_index >= 0 else 0,
         "read_at": float(read_at) if read_index >= 0 else 0.0,
+        "shelved_at": float(getattr(e, "shelved_at", 0) or 0),
     }
 
 
@@ -263,7 +269,7 @@ def build_router(ctx: ServerContext) -> APIRouter:
 
     @r.post("/check")
     def check():
-        entries = session.library_store.get_library()
+        entries = [e for e in session.library_store.get_library() if not e.shelved_at]
         if not entries:
             return JSONResponse({"error": "empty_library"}, status_code=400)
 
@@ -336,6 +342,18 @@ def build_router(ctx: ServerContext) -> APIRouter:
         for url in urls:
             ctx.check_status.pop(url, None)
         return {"removed": removed}
+
+    @r.post("/shelve")
+    def shelve(body: ShelveIn):
+        urls = [(u or "").strip() for u in body.urls[:MAX_SELECTION] if (u or "").strip()]
+        if not urls:
+            return JSONResponse({"error": "nothing_selected"}, status_code=400)
+        changed = session.library_store.set_shelved(urls, body.shelved)
+        if body.shelved:
+            with ctx.check_lock:
+                for url in urls:
+                    ctx.check_status.pop(url, None)
+        return {"changed": changed}
 
     @r.post("/reset")
     def reset():

@@ -113,6 +113,10 @@
       </div>
     </div>
     <p class="lib-note" id="lib-note" role="status" hidden></p>
+    <div class="shelved-head" id="lib-shelved-head" hidden>
+      <p>Books you put away. They are not checked for updates, and looking one up again tells you it was shelved.</p>
+      <button type="button" class="btn-link small" id="lib-shelved-back">Back to the library</button>
+    </div>
     <div class="toolbar toolbar-sel">
       <span class="sel-count" id="lib-count">0 selected</span>
       <button type="button" class="btn-link small" id="lib-all">Select all</button>
@@ -123,6 +127,7 @@
       <button type="button" class="btn btn-quiet" id="lib-update" disabled>Update</button>
       <button type="button" class="btn btn-quiet" id="lib-epub" disabled>Download EPUB</button>
       <button type="button" class="btn btn-quiet" id="lib-open" disabled>Open link</button>
+      <button type="button" class="btn btn-quiet" id="lib-shelve" disabled>Shelve</button>
       <button type="button" class="btn btn-quiet btn-danger" id="lib-remove" disabled>Remove</button>
     </div>
     <div class="confirm" id="lib-confirm" role="alertdialog" aria-labelledby="lib-confirm-text" hidden>
@@ -143,6 +148,7 @@
       <a class="btn btn-main btn-auto" href="#single" data-view="single">Add a book</a>
     </div>
     <div class="lib-foot">
+      <button type="button" class="btn-link small" id="lib-shelved" hidden>Shelved books</button>
       <button type="button" class="btn-link small" id="lib-reset">Reset library…</button>
     </div>
   </section>
@@ -437,6 +443,7 @@
     <button type="button" class="btn btn-quiet" id="lib-detail-epub">Download EPUB</button>
     <button type="button" class="btn btn-quiet" id="lib-detail-open">Open link</button>
     <button type="button" class="btn btn-quiet" id="lib-detail-select">Select</button>
+    <button type="button" class="btn btn-quiet" id="lib-detail-shelve">Shelve</button>
     <button type="button" class="btn btn-quiet btn-danger" id="lib-detail-remove">Remove</button>
     <span class="grow"></span>
     <button type="button" class="btn-link" id="lib-detail-close">Close</button>
