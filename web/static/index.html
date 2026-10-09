@@ -384,20 +384,26 @@
           <button type="button" class="chip" data-pref="reader_mode" data-value="pages">Pages</button>
           <button type="button" class="chip" data-pref="reader_mode" data-value="scroll">Scroll</button>
         </div>
-        <span class="display-line">Pages on screen</span>
-        <div class="chips" role="group" aria-label="Pages on screen">
+        <p class="display-line only-scroll">Scroll shows one long column. Pick Pages to choose one or
+          two pages side by side.</p>
+        <span class="display-line only-pages">Pages on screen</span>
+        <div class="chips only-pages" role="group" aria-label="Pages on screen">
           <button type="button" class="chip" data-pref="reader_spread" data-value="auto">Auto</button>
           <button type="button" class="chip" data-pref="reader_spread" data-value="one">One page</button>
           <button type="button" class="chip" data-pref="reader_spread" data-value="two">Two pages</button>
         </div>
+        <p class="display-line only-pages" id="read-spread-note" hidden>This screen is too narrow for two
+          pages, so it shows one. Turn the device sideways or make the window wider.</p>
         <span class="display-line">Margins</span>
         <div class="chips" role="group" aria-label="Margins">
           <button type="button" class="chip" data-pref="reader_margin" data-value="narrow">Narrow</button>
           <button type="button" class="chip" data-pref="reader_margin" data-value="normal">Normal</button>
           <button type="button" class="chip" data-pref="reader_margin" data-value="wide">Wide</button>
         </div>
-        <p class="display-line keys-hint">Keys: ← → or Page Up / Down or Space turn pages · Home / End jump to the
+        <p class="display-line keys-hint only-pages">Keys: ← → or Page Up / Down or Space turn pages · Home / End jump to the
           start or end of the chapter · Esc closes this panel. The mouse wheel turns pages too.</p>
+        <p class="display-line keys-hint only-scroll">Keys: ↑ ↓ scroll · Page Up / Down or Space move a screen ·
+          Home / End jump to the start or end of the chapter · Esc closes this panel.</p>
       </div>
     </div>
   </section>

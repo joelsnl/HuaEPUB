@@ -582,6 +582,8 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-book[data-theme="night"] { --paper: #161b20; --paper-ink: #e4e0d6; --paper-faint: #8d948c; --paper-rule: #2b333a; }
 #read-book[hidden] { display: none; }
 #read-book.is-scroll { --read-lead: 1.7; }
+/* Settings that only mean something in one flow are shown only there. */
+#read-book.is-scroll .only-pages, #read-book.is-pages .only-scroll { display: none; }
 #read-book[data-leading="tight"] { --read-lead: 1.45; }
 #read-book[data-leading="loose"] { --read-lead: 2.05; }
 #read-book[data-face="sans"] .reader-text,

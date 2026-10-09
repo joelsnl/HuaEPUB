@@ -83,6 +83,8 @@
     cols = wantedCols(lf.clientWidth || 1, lf.clientHeight || 1);
     lf.style.setProperty('--cols', String(cols));
     root().classList.toggle('is-two', cols === 2);
+    // "Two pages" on a screen too narrow for them shows one; say so instead of ignoring the choice.
+    show('read-spread-note', paged() && prefs.spread === 'two' && cols === 1);
   }
 
   // One screen: both pages of a spread, or the one page.
