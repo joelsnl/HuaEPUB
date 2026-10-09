@@ -84,11 +84,35 @@
         <button type="button" class="btn btn-main btn-auto" id="lib-check">Check for updates</button>
         <button type="button" class="btn btn-outline" id="lib-update-all" disabled>Update all</button>
       </div>
-      <div class="seg" role="radiogroup" aria-label="Show">
-        <label><input type="radio" name="lib-filter" value="all" checked><span>All books</span></label>
+    </div>
+    <button type="button" class="resume" id="lib-continue" hidden>
+      <span class="resume-cover" id="lib-continue-cover" aria-hidden="true"></span>
+      <span class="resume-text">
+        <span class="resume-label">Continue reading</span>
+        <span class="resume-title" id="lib-continue-title"></span>
+        <span class="resume-where" id="lib-continue-where"></span>
+      </span>
+    </button>
+    <div class="lib-find" id="lib-find">
+      <input type="search" class="field lib-search" id="lib-search" aria-label="Search the library"
+             placeholder="Search by title, author or site" autocomplete="off" spellcheck="false" enterkeyhint="search">
+      <label class="lib-sort"><span class="field-label">Sort</span>
+        <select class="select" id="lib-sort">
+          <option value="recent">Recent</option>
+          <option value="title">Title</option>
+          <option value="author">Author</option>
+          <option value="left">Most left to read</option>
+          <option value="chapters">Longest</option>
+        </select>
+      </label>
+      <div class="seg lib-filter" role="radiogroup" aria-label="Show">
+        <label><input type="radio" name="lib-filter" value="all" checked><span>All</span></label>
+        <label><input type="radio" name="lib-filter" value="reading"><span>Reading</span></label>
+        <label><input type="radio" name="lib-filter" value="unopened"><span>Not started</span></label>
         <label><input type="radio" name="lib-filter" value="updates"><span>New chapters</span></label>
       </div>
     </div>
+    <p class="lib-note" id="lib-note" role="status" hidden></p>
     <div class="toolbar toolbar-sel">
       <span class="sel-count" id="lib-count">0 selected</span>
       <button type="button" class="btn-link small" id="lib-all">Select all</button>
@@ -109,6 +133,10 @@
       </div>
     </div>
     <ul class="shelf" id="shelf"></ul>
+    <div class="shelf-empty" id="shelf-none" hidden>
+      <p id="shelf-none-text">No books match.</p>
+      <button type="button" class="btn-link" id="lib-show-all">Show every book</button>
+    </div>
     <div class="shelf-empty" id="shelf-empty" hidden>
       <p>The catalogue is empty.</p>
       <p class="muted">Add a book from its novel link and its card is filed here.</p>
@@ -399,6 +427,8 @@
       <div><dt>Status</dt><dd id="lib-detail-status"></dd></div>
     </dl>
     <p class="detail-blurb" id="lib-detail-blurb"></p>
+    <input type="search" class="field toc-find" id="lib-detail-find" aria-label="Find a chapter"
+           placeholder="Find a chapter by number or name" autocomplete="off" spellcheck="false" hidden>
     <ol class="detail-toc" id="lib-detail-toc"></ol>
   </div>
   <div class="detail-actions actions-row">
@@ -410,6 +440,7 @@
     <button type="button" class="btn btn-quiet btn-danger" id="lib-detail-remove">Remove</button>
     <span class="grow"></span>
     <button type="button" class="btn-link" id="lib-detail-close">Close</button>
+    <p class="lib-note detail-note" id="lib-detail-note" role="status" hidden></p>
   </div>
 </dialog>
 <script src="/static/app.js" defer></script>

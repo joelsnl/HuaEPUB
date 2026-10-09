@@ -508,6 +508,18 @@ def test_library_entries_carry_the_reading_position(session):
     assert [e["read_chapter"] for e in entries if e["url"] == url] == [4]
 
 
+def test_library_entries_say_when_a_book_was_last_read(session):
+    from core.reading import set_position
+
+    read, unread = "https://example.com/book/r", "https://example.com/book/u"
+    for url in (read, unread):
+        session.library_store.upsert_library(url, title="书", translated_title="B", chapter_count=3)
+    before = time.time()
+    set_position(read, chapter_index=0, data_dir=session.data_dir)
+    rows = {e["url"]: e for e in _signed_in(_ctx(session)).get("/api/library").json()["entries"]}
+    assert rows[read]["read_at"] >= before and rows[unread]["read_at"] == 0
+
+
 def test_code_link_and_login_set_a_cookie(session):
     ctx = _ctx(session)
     c = _client(ctx)

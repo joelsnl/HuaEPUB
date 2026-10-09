@@ -310,6 +310,43 @@ fieldset.card > legend.block-title + * { clear: both; }
 .shelf-empty p { margin: 0; }
 .shelf-empty p:first-child { font-family: var(--book); font-weight: 600; font-size: 18px; }
 .lib-foot { padding-top: 8px; }
+.lib-note { margin: 0; font-size: 14px; color: var(--flag); }
+.detail-note { flex-basis: 100%; }
+
+/* Continue reading: the last book opened, as a card pulled half out of the drawer. */
+.resume {
+  display: flex; align-items: center; gap: 16px; width: 100%; max-width: 34rem; text-align: left;
+  background: var(--card); color: var(--ink); border: 0; border-radius: var(--radius); cursor: pointer;
+  padding: 12px 18px 12px 14px; box-shadow: inset 3px 0 0 var(--accent), 0 1px 0 var(--line),
+    0 0 0 1px color-mix(in srgb, var(--line) 45%, transparent);
+}
+.resume:hover { box-shadow: inset 3px 0 0 var(--accent), 0 1px 0 var(--line), 0 0 0 1px var(--line); }
+.resume:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.resume-cover {
+  position: relative; flex-shrink: 0; width: 38px; height: 54px; overflow: hidden; margin-left: 4px;
+  background: var(--rule); display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.resume-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.resume-text { display: flex; flex-direction: column; min-width: 0; }
+.resume-label { font-size: 13px; color: var(--accent); font-weight: 600; }
+.resume-title {
+  font-family: var(--book); font-weight: 600; font-size: 17px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.resume-where { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Find: search, sort and which books to show. */
+.lib-find { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 20px; }
+.lib-search { flex: 1 1 16rem; width: auto; }
+.lib-search::placeholder, .toc-find::placeholder { color: var(--muted); opacity: .8; }
+.lib-sort { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 719px) {
+  .lib-search { flex-basis: 100%; }
+  .lib-filter { display: flex; width: 100%; }
+  .lib-filter label { flex: 1 1 auto; }
+  .lib-filter span { padding: 7px 8px; text-align: center; }
+}
 
 /* Detail: the same card, pulled out of the drawer */
 .detail {
@@ -361,6 +398,10 @@ dialog.detail:not([open]) { display: none; }
 .toc-n { width: 3.4rem; flex-shrink: 0; color: var(--muted); text-align: right; }
 .toc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-toc .muted { padding: 0 2px; }
+.toc-row.is-here { box-shadow: inset 3px 0 0 var(--accent); }
+.toc-row.is-here .toc-name { color: var(--accent); font-weight: 600; }
+.toc-find { flex: 0 0 auto; margin-top: var(--line-h); font-size: 15px; padding: 6px 0; }
+.toc-find + .detail-toc { margin-top: 8px; }
 .detail-actions {
   flex-shrink: 0; background: var(--card); border-radius: var(--radius); padding: 10px 12px;
   box-shadow: 0 1px 0 var(--line), 0 0 0 1px color-mix(in srgb, var(--line) 45%, transparent);

@@ -253,3 +253,51 @@ def test_html_needs_live_translate():
     assert html_needs_live_translate("") is False
     assert html_needs_live_translate("<p>Hello there.</p>") is False
     assert html_needs_live_translate("<p>这是一段用于测试的中文正文内容</p>") is True
+
+
+def _build(dest: Path, numbers) -> None:
+    info = NovelInfo(title="Shifting Book", author="A", source_url="https://example.com/shift")
+    chapters = [Chapter(title=f"Chapter {n}", url=f"https://example.com/shift/{n}",
+                        content=f"<p>Text of chapter {n}.</p>") for n in numbers]
+    EPUBBuilder().build(info, chapters, str(dest))
+
+
+def _reopen(dest: Path, data_dir: Path) -> int:
+    from core.reader import load_epub_chapters
+
+    book = ReaderBook(source_url="https://example.com/shift", title="Shifting Book",
+                      kind=KIND_EPUB, chapters=load_epub_chapters(dest))
+    return resume_index(book, get_position("https://example.com/shift", data_dir=data_dir))
+
+
+def _save_like_the_reader(dest: Path, data_dir: Path, index: int) -> None:
+    from core.reader import load_epub_chapters
+
+    ch = load_epub_chapters(dest)[index]
+    set_position("https://example.com/shift", chapter_url=ch.url or ch.key,
+                 chapter_index=index, scroll=0.4, data_dir=data_dir)
+
+
+def test_update_that_shifts_the_chapter_list_reopens_at_the_same_chapter(tmp_path):
+    dest = tmp_path / "Shifting Book.epub"
+    _build(dest, [1, 2, 3, 4, 5])
+    _save_like_the_reader(dest, tmp_path, 3)          # reading chapter 4
+    _build(dest, [0, 1, 2, 3, 4, 5, 6, 7])            # site added a prologue and two new chapters
+    assert _reopen(dest, tmp_path) == 4               # still chapter 4, now the fifth file
+
+
+def test_cached_chapter_position_carries_into_the_rebuilt_epub(tmp_path):
+    dest = tmp_path / "Shifting Book.epub"
+    set_position("https://example.com/shift", chapter_url="https://example.com/shift/3",
+                 chapter_index=0, data_dir=tmp_path)  # first in an older, shorter cached TOC
+    _build(dest, [1, 2, 3])
+    assert _reopen(dest, tmp_path) == 2
+
+
+def test_position_saved_against_an_older_epub_keeps_its_chapter_number(tmp_path):
+    dest = tmp_path / "Shifting Book.epub"
+    _build(dest, [1, 2, 3, 4])
+    set_position("https://example.com/shift", chapter_url="chapter_0002.xhtml",
+                 chapter_index=2, data_dir=tmp_path)  # what a pre-3.1.6 reader saved
+    _build(dest, [1, 2, 3, 4, 5])
+    assert _reopen(dest, tmp_path) == 2

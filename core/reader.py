@@ -9,6 +9,7 @@ Read tab and the browser reader.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from urllib.parse import urlsplit
 from lxml import html as lxml_html
 
 from core.download_runner import downloads_folder
+from core.epub_builder import CHAPTER_MAP_NAME
 from core.security import is_allowed_epub_path, safe_epub_basename
 from core.settings import get_default_books_dir
 
@@ -185,6 +187,7 @@ def load_epub_chapters(path: Path, *, bodies: bool = True) -> List[ReaderChapter
         name = getattr(item, "file_name", None)
         if name:
             by_name[name] = item
+    source_urls = _epub_chapter_map(by_name.get(CHAPTER_MAP_NAME))
 
     ordered = []
     seen = set()
@@ -234,9 +237,23 @@ def load_epub_chapters(path: Path, *, bodies: bool = True) -> List[ReaderChapter
                 title = _title_from_html(html) or f"Chapter {len(chapters) + 1}"
         key = name or str(getattr(item, "id", "") or len(chapters))
         chapters.append(
-            ReaderChapter(title=title, key=key, index=len(chapters), html=html)
+            ReaderChapter(title=title, key=key, index=len(chapters), html=html,
+                          url=source_urls.get(name, ""))
         )
     return chapters
+
+
+def _epub_chapter_map(item) -> dict:
+    """Chapter file name -> source URL, from an EPUB HuaEPUB wrote (empty for others)."""
+    if item is None:
+        return {}
+    try:
+        raw = json.loads(item.get_content().decode("utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
 
 
 def chapters_from_toc(

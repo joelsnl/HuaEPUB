@@ -221,7 +221,7 @@ The cover grid reflows when you resize the window and scrolls when there are mor
 
 A missing cached chapter is fetched one at a time with the site delay (same as downloads). That writes the chapter to `cache.db` and shows it; it does not rebuild an EPUB or run translation/polish. If a download is already running, the fetch waits with a short status message.
 
-Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. Removing a novel from the library also clears that book’s position.
+Reading position (chapter + scroll) is stored only in `~/.huaepub/reading.json` on this PC. Updating a book keeps your place: the reader reopens at the same chapter and page, even if the site inserted chapters before it. Removing a novel from the library also clears that book’s position.
 
 Use **Prev** / **Next** and **A-** / **A+** (or the slider) in the reader. Font size is remembered as `reader_font_pt`.
 
@@ -240,7 +240,7 @@ While serving, the desktop window shows the addresses, the code or password stat
 
 In the browser you get:
 
-- **Library** (the home page) — one catalogue card per book: a call number from its source link, the English and Chinese titles, the author, the chapter count, the chapter you are on, and a red **+N new** stamp after **Check for updates**. Tap a card for its synopsis, chapter list and actions (Read, Update, Download EPUB, Open link, Remove); tick cards to update, download or remove several at once.
+- **Library** (the home page) — one catalogue card per book: a call number from its source link, the English and Chinese titles, the author, the chapter count, the chapter you are on, and a red **+N new** stamp after **Check for updates**. **Continue reading** at the top reopens the book you read last where you left off. Search by title (English or Chinese), author or site (press **/** to jump to the box), sort by Recent, Title, Author, Most left to read or Longest, and show All, Reading, Not started or New chapters; the sort and list are remembered in that browser. Tap a card for its synopsis, chapter list (opened at your chapter, with a finder for long books) and actions (Read, Update, Download EPUB, Open link, Remove); tick cards to update, download or remove several at once.
 - **Add a book** / **Add several** — the Single and Multi downloads.
 - **Read** — the same `reading.json` position as the desktop reader. In **Pages** mode a page follows your finger and slides on, like Play Books; taps on the edges and the arrow keys slide too. While a download runs, a progress button in the reader's top bar ("Translating 38%") opens a card with the whole job (steps, counts, notes, files) and **Pause** / **Cancel** / **Hide**; it never covers the text on its own.
 - **Settings** (translate, clean, cache, translator, glossary, workers, Polish, the books folder, and installing Polish, Offline NMT or an Ollama model).
