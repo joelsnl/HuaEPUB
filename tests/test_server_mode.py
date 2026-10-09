@@ -1176,3 +1176,43 @@ def test_card_description_turns_site_markup_into_lines():
 
     raw = "[Cultivation] + [Stable]<br /> Han Xuanji &amp; <b>friends</b>.<br/><br/>  Next   line"
     assert card_description(raw) == "[Cultivation] + [Stable]\nHan Xuanji & friends.\nNext line"
+
+
+def test_storage_reports_the_tightest_disk(session, monkeypatch, tmp_path):
+    from web import storage
+
+    assert storage.level(50 * storage.GIB, 100 * storage.GIB) == "ok"
+    assert storage.level(15 * storage.GIB, 100 * storage.GIB) == "ok"
+    assert storage.level(5 * storage.GIB, 100 * storage.GIB) == "low"      # under 10%
+    assert storage.level(int(1.5 * storage.GIB), 8 * storage.GIB) == "low"  # under 2 GiB
+    assert storage.level(1 * storage.GIB, 100 * storage.GIB) == "critical"  # under 3%
+    assert storage.level(100 * storage.MIB, 100 * storage.GIB) == "critical"
+    assert storage.level(0, 0) == "ok"
+
+    a, b = tmp_path / "disk-a", tmp_path / "disk-b"
+    a.mkdir()
+    b.mkdir()
+    disks = {a: (1, 100 * storage.GIB, 60 * storage.GIB), b: (2, 32 * storage.GIB, 1 * storage.GIB)}
+    monkeypatch.setattr(storage, "_device", lambda p: disks[p][0])
+    monkeypatch.setattr(storage, "_usage", lambda p: (disks[p][1], disks[p][2]))
+    got = storage.storage_payload([("books folder", a), ("app data", b)])
+    assert got["free"] == 1 * storage.GIB and got["total"] == 32 * storage.GIB
+    assert got["level"] == "low" and got["where"] == "app data"
+    # One disk for both: the labels are joined and no path leaks.
+    both = storage.storage_payload([("books folder", a), ("app data", a)])
+    assert both["where"] == "books folder and app data" and str(a) not in str(both)
+    # A books folder that is not made yet reports the disk of its nearest parent.
+    monkeypatch.undo()
+    new = storage.storage_payload([("books folder", tmp_path / "not" / "made" / "yet")])
+    assert new and new["total"] > 0 and new["free"] <= new["total"]
+    assert storage.storage_payload([]) is None
+
+
+def test_storage_endpoint_needs_sign_in(session):
+    ctx = _ctx(session)
+    assert _client(ctx).get("/api/storage").status_code == 401
+    got = _signed_in(ctx).get("/api/storage")
+    assert got.status_code == 200
+    body = got.json()
+    assert set(body) == {"free", "total", "used", "level", "where"}
+    assert body["level"] in ("ok", "low", "critical") and body["total"] >= body["free"] > -1

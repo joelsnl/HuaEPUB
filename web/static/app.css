@@ -69,6 +69,13 @@ a { color: inherit; }
 .brand-tag { color: var(--muted); font-size: 13px; }
 .head-end { display: flex; align-items: center; gap: 16px; margin-left: auto; color: var(--muted); font-size: 13px; }
 .head-version { font-family: var(--sans); }
+/* Free space on the server's disk. The header is hidden while reading, so this is too. */
+.storage { display: inline-flex; align-items: center; gap: 8px; font-family: var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage[hidden] { display: none; }
+.storage-bar { width: 56px; height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
+.storage-fill { display: block; height: 100%; width: 0; background: var(--accent); transition: width 300ms ease; }
+.storage[data-level="low"] .storage-fill, .storage[data-level="critical"] .storage-fill { background: var(--flag); }
+.storage[data-level="critical"] .storage-text { color: var(--flag); font-weight: 600; }
 .look { display: inline-flex; align-items: center; gap: 8px; }
 .look-select { padding: 4px 8px; font-size: 13px; }
 
@@ -92,6 +99,7 @@ a { color: inherit; }
   .nav-long { display: none; }
   .nav-short { display: inline; }
   .head-version { display: none; }
+  .storage-bar { width: 36px; }
   .head-end { margin-left: auto; }
   .toolbar-sel:not(.has-sel) .btn { display: none; }
 }

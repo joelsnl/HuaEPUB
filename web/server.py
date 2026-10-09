@@ -32,12 +32,13 @@ from core.branding import APP_TITLE
 from core.security import UnsafeURLError
 from web import books
 from web.auth import COOKIE_NAME, LAN_COOKIE_DAYS, REMOTE_COOKIE_DAYS
-from web.context import ServerContext
+from web.context import ServerContext, book_roots
 from web.library_api import build_router as library_router
 from web.library_api import fetch_and_cache_cover, sniff_image
 from web.options import SettingsError, apply_settings, settings_payload
 from web.preview import PreviewError
 from web.reader_api import build_router as reader_router
+from web.storage import storage_payload
 from web.tasks import Busy
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -245,6 +246,15 @@ def create_app(ctx: ServerContext) -> FastAPI:
     def state():
         payload = state_payload()
         payload.update({"version": ctx.version, "mode": ctx.mode})
+        return payload
+
+    @app.get("/api/storage")
+    def storage_state():
+        places = [("books folder", root) for root in book_roots(session)]
+        places.append(("app data", session.data_dir))
+        payload = storage_payload(places)
+        if payload is None:
+            return JSONResponse({"error": "unavailable"}, status_code=503)
         return payload
 
     @app.get("/api/events")
