@@ -5,7 +5,12 @@
 
   var entries = [];
   var selected = {};      // url -> true
-  var filter = 'all';
+  var PREFS_KEY = 'huaepub-library';
+  var prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') || {}; } catch (err) { prefs = {}; }
+  var filter = prefs.filter || 'all';
+  var sort = prefs.sort || 'recent';
+  var query = '';
   var lastKey = '';
   var loading = false;
   var pendingRemove = null;
@@ -27,8 +32,46 @@
     }).catch(function () { loading = false; });
   }
 
+  // Sort and filter are remembered in this browser; the search is not.
+  function savePrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({ filter: filter, sort: sort })); } catch (err) { /* ignore */ }
+  }
+
+  var FILTERS = {
+    all: function () { return true; },
+    reading: function (e) { return e.read_chapter > 0; },
+    unopened: function (e) { return !e.read_chapter; },
+    updates: function (e) { return e.status === 'update'; }
+  };
+
+  function lastTouched(e) { return Math.max(e.read_at || 0, e.updated_at || 0); }
+  function leftToRead(e) { return Math.max(0, (e.chapters || 0) - (e.read_chapter || 0)); }
+  function byTitle(a, b) { return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }); }
+
+  // Array.sort is stable, so ties keep the Library's own order.
+  var SORTS = {
+    recent: function (a, b) { return lastTouched(b) - lastTouched(a); },
+    title: byTitle,
+    author: function (a, b) {
+      if (!a.author !== !b.author) return a.author ? -1 : 1;  // books without an author go last
+      return (a.author || '').localeCompare(b.author || '', undefined, { sensitivity: 'base' }) || byTitle(a, b);
+    },
+    left: function (a, b) { return leftToRead(b) - leftToRead(a); },
+    chapters: function (a, b) { return (b.chapters || 0) - (a.chapters || 0); }
+  };
+
+  function searchText(e) {
+    return [e.title, e.title_original, e.author, callNumber(e.url), e.url].join(' ').toLowerCase();
+  }
+
   function visible() {
-    return entries.filter(function (e) { return filter === 'all' || e.status === 'update'; });
+    var words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    var keep = FILTERS[filter] || FILTERS.all;
+    return entries.filter(function (e) {
+      if (!keep(e)) return false;
+      var hay = searchText(e);
+      return words.every(function (w) { return hay.indexOf(w) >= 0; });
+    }).sort(SORTS[sort] || SORTS.recent);
   }
 
   function selection() { return entries.filter(function (e) { return selected[e.url]; }); }
@@ -47,7 +90,17 @@
 
   function readLine(e) {
     if (!e.read_chapter) return 'Not opened';
-    return 'On chapter ' + Math.min(e.read_chapter, e.chapters || e.read_chapter);
+    if (e.chapters && e.read_chapter >= e.chapters) return 'Caught up';
+    return 'On chapter ' + e.read_chapter;
+  }
+
+  // Where the reader left off, e.g. "Chapter 38 of 120, 82 left".
+  function whereLine(e) {
+    var line = 'Chapter ' + Math.min(e.read_chapter, e.chapters || e.read_chapter) +
+      (e.chapters ? ' of ' + e.chapters : '');
+    var left = leftToRead(e);
+    if (!e.chapters) return line;
+    return line + (left ? ', ' + left + ' left' : ', caught up');
   }
 
   function badge(e) {
@@ -70,6 +123,10 @@
     shelf.textContent = '';
     var list = visible();
     show('shelf-empty', entries.length === 0);
+    show('lib-find', entries.length > 0);
+    show('shelf-none', entries.length > 0 && list.length === 0);
+    if (entries.length && !list.length) setText('shelf-none-text', noMatchText());
+    drawContinue();
     list.forEach(function (e) {
       var li = H.el('li', 'tile' + (selected[e.url] ? ' is-sel' : ''));
       var btn = H.el('button', 'tile-btn');
@@ -115,6 +172,39 @@
     }
   }
 
+  function noMatchText() {
+    var q = query.trim();
+    if (q) return 'No books match “' + q + '”' + (filter === 'all' ? '.' : ' in this list.');
+    if (filter === 'reading') return 'You have not opened any of these books yet.';
+    if (filter === 'unopened') return 'You have started every book.';
+    if (filter === 'updates') return 'No new chapters. Check for updates to look again.';
+    return 'No books here.';
+  }
+
+  // The book read most recently, one tap from where it was left.
+  function drawContinue() {
+    var last = null;
+    entries.forEach(function (e) {
+      if (e.read_at && (!last || e.read_at > last.read_at)) last = e;
+    });
+    show('lib-continue', !!last);
+    if (!last) return;
+    $('lib-continue').dataset.url = last.url;
+    setText('lib-continue-title', last.title);
+    setText('lib-continue-where', whereLine(last));
+    var cover = $('lib-continue-cover');
+    cover.textContent = '';
+    cover.appendChild(H.el('span', 'tile-glyph', (last.title_original || last.title || '?').trim().charAt(0)));
+    if (last.has_cover) cover.appendChild(coverImage(last));
+  }
+
+  // Messages from actions. Kept apart from the lede, which every state tick rewrites.
+  function note(text) {
+    var where = detailUrl ? 'lib-detail-note' : 'lib-note';
+    setText(where, text || '');
+    show(where, !!text);
+  }
+
   // Buttons, counts and the summary line: cheap, safe on every state tick.
   function drawControls() {
     if (detailUrl) {
@@ -130,7 +220,7 @@
     $('lib-open').disabled = n !== 1;
     $('lib-update').disabled = busy || n === 0;
     setText('lib-update', n > 1 ? 'Update (' + n + ')' : 'Update');
-    $('lib-epub').disabled = n === 0;
+    $('lib-epub').disabled = !sel.some(function (e) { return e.has_epub; });
     $('lib-remove').disabled = busy || n === 0;
     setText('lib-remove', n > 1 ? 'Remove (' + n + ')' : 'Remove');
     var withUpdates = entries.filter(function (e) { return e.status === 'update'; }).length;
@@ -141,6 +231,10 @@
       ? H.plural(entries.length, 'book') + ' in the catalogue.' +
         (withUpdates ? ' ' + withUpdates + (withUpdates === 1 ? ' has' : ' have') + ' new chapters.' : '')
       : 'Books you have downloaded on this PC.');
+    var shown = $('shelf').children.length;
+    if (entries.length && shown !== entries.length) {
+      setText('lib-count', n + ' selected, ' + shown + ' of ' + entries.length + ' shown');
+    }
   }
 
   // Shelf covers are kept and moved into the rebuilt cards, so a redraw never reloads them.
@@ -220,7 +314,9 @@
     var busy = H.state().busy;
     $('lib-detail-update').disabled = !!busy;
     $('lib-detail-remove').disabled = !!busy;
+    $('lib-detail-epub').disabled = !e.has_epub;
     setText('lib-detail-select', selected[e.url] ? 'Selected' : 'Select');
+    setText('lib-detail-read', e.read_chapter ? 'Continue reading' : 'Start reading');
     loadToc(e);
   }
 
@@ -230,6 +326,8 @@
     var seq = ++tocSeq;
     var list = $('lib-detail-toc');
     list.textContent = '';
+    $('lib-detail-find').value = '';
+    show('lib-detail-find', false);
     list.appendChild(H.el('li', 'muted small', 'Loading chapters…'));
     H.api('GET', '/api/library/chapters?u=' + encodeURIComponent(e.url)).then(function (res) {
       if (seq !== tocSeq || detailUrl !== e.url) return;
@@ -239,9 +337,17 @@
         list.appendChild(H.el('li', 'muted small', res.ok ? 'No chapter list on this PC yet.' : H.errorText(res.data)));
         return;
       }
+      var here = null;
       rows.forEach(function (ch, i) {
         var li = document.createElement('li');
+        li.dataset.n = String(ch.n || i + 1);
+        li.dataset.find = (li.dataset.n + ' ' + (ch.title || '')).toLowerCase();
         var b = H.el('button', 'toc-row');
+        if (i + 1 === e.read_chapter) {
+          b.classList.add('is-here');
+          b.setAttribute('aria-current', 'true');
+          here = li;
+        }
         b.type = 'button';
         b.appendChild(H.el('span', 'mono toc-n', String(ch.n || i + 1)));
         b.appendChild(H.el('span', 'toc-name', ch.title || ('Chapter ' + (i + 1))));
@@ -253,6 +359,9 @@
         li.appendChild(b);
         list.appendChild(li);
       });
+      // A long book gets a finder, and its list opens at the chapter being read.
+      show('lib-detail-find', rows.length > 30);
+      if (here) list.scrollTop = Math.max(0, here.offsetTop - list.offsetTop - list.clientHeight / 3);
     }).catch(function () {
       if (seq !== tocSeq) return;
       list.textContent = '';
@@ -260,7 +369,18 @@
     });
   }
 
+  // A number finds that chapter; words find titles containing them.
+  function findChapter() {
+    var q = $('lib-detail-find').value.trim().toLowerCase();
+    var num = /^\d+$/.test(q);
+    Array.prototype.forEach.call($('lib-detail-toc').children, function (li) {
+      if (!li.dataset.find) return;
+      li.hidden = !!q && (num ? li.dataset.n !== q : li.dataset.find.indexOf(q) < 0);
+    });
+  }
+
   function openDetail(e) {
+    note('');
     detailUrl = e.url;
     fillDetail(e);
     var d = $('lib-detail');
@@ -268,6 +388,7 @@
   }
 
   function closeDetail() {
+    show('lib-detail-note', false);
     detailUrl = '';
     tocUrl = '';
     tocSeq += 1;
@@ -277,11 +398,12 @@
 
   function post(path, body, after, action) {
     return H.api('POST', path, body).then(function (res) {
-      if (!res.ok) { setText('lib-lede', H.errorText(res.data, '', action)); return null; }
+      if (!res.ok) { note(H.errorText(res.data, '', action)); return null; }
+      note('');
       H.refresh();
       if (after) after(res.data);
       return res.data;
-    }).catch(function () { setText('lib-lede', H.ERRORS.network); });
+    }).catch(function () { note(H.ERRORS.network); });
   }
 
   function askRemove() {
@@ -320,18 +442,19 @@
     var sel = selection();
     var missing = 0;
     var chain = Promise.resolve();
+    note('');
     sel.forEach(function (e) {
       chain = chain.then(function () {
         return H.api('POST', '/api/library/epub', { url: e.url }).then(function (res) {
           if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
           else if (res.data && res.data.error === 'busy') {
-            setText('lib-lede', H.errorText(res.data, '', 'download this EPUB'));
+            note(H.errorText(res.data, '', 'download this EPUB'));
           } else missing += 1;
-        });
+        }).catch(function () { missing += 1; });
       });
     });
     chain.then(function () {
-      if (missing) setText('lib-lede', H.plural(missing, 'book') + ' had no EPUB on this PC.');
+      if (missing) note(H.plural(missing, 'book') + ' had no EPUB on this PC.');
     });
   }
 
@@ -350,8 +473,35 @@
     }
   }
 
+  if (!FILTERS[filter]) filter = 'all';
+  if (!SORTS[sort]) sort = 'recent';
+  $('lib-sort').value = sort;
   document.querySelectorAll('input[name="lib-filter"]').forEach(function (e) {
-    e.addEventListener('change', function () { filter = e.value; draw(); });
+    e.checked = e.value === filter;
+    e.addEventListener('change', function () { filter = e.value; savePrefs(); draw(); });
+  });
+  $('lib-sort').addEventListener('change', function () { sort = $('lib-sort').value; savePrefs(); draw(); });
+  $('lib-search').addEventListener('input', function () { query = $('lib-search').value; draw(); });
+  $('lib-show-all').addEventListener('click', function () {
+    query = '';
+    $('lib-search').value = '';
+    filter = 'all';
+    document.querySelector('input[name="lib-filter"][value="all"]').checked = true;
+    savePrefs();
+    draw();
+  });
+  $('lib-continue').addEventListener('click', function () {
+    var url = $('lib-continue').dataset.url;
+    if (url) H.go('read', { url: url });
+  });
+  $('lib-detail-find').addEventListener('input', findChapter);
+  // "/" jumps to the search box, as on most sites that have one.
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== '/' || H.view() !== 'library' || detailUrl || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    var t = ev.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    ev.preventDefault();
+    $('lib-search').focus();
   });
   $('lib-check').addEventListener('click', function () { post('/api/library/check', {}, null, 'check for updates'); });
   $('lib-update-all').addEventListener('click', function () {
@@ -402,9 +552,9 @@
     H.api('POST', '/api/library/epub', { url: e.url }).then(function (res) {
       if (res.ok && res.data && res.data.file) H.triggerDownload(res.data.file);
       else if (res.data && res.data.error === 'busy') {
-        setText('lib-lede', H.errorText(res.data, '', 'download this EPUB'));
-      } else setText('lib-lede', 'No EPUB on this PC.');
-    });
+        note(H.errorText(res.data, '', 'download this EPUB'));
+      } else note('No EPUB on this PC.');
+    }).catch(function () { note(H.ERRORS.network); });
   });
   $('lib-detail-select').addEventListener('click', function () {
     var e = detailEntry();

@@ -15,7 +15,7 @@ from core.cache import english_chapter_title
 from core.cleaner import is_chinese
 from core.parser import create_http_session
 from core.reader import find_local_epub, load_epub_chapters
-from core.reading import chapter_indexes
+from core.reading import reading_marks
 from core.security import fetch_cover_bytes
 from web import books
 from web.context import ServerContext
@@ -94,7 +94,8 @@ def card_description(text: str) -> str:
     return raw
 
 
-def _entry_payload(ctx: ServerContext, e, read_index: int = -1) -> dict:
+def _entry_payload(ctx: ServerContext, e, mark=None) -> dict:
+    read_index, read_at = mark if mark else (-1, 0.0)
     st = ctx.check_status.get(e.source_url) or {}
     local = find_local_epub(
         output_path=e.output_path or "",
@@ -117,6 +118,7 @@ def _entry_payload(ctx: ServerContext, e, read_index: int = -1) -> dict:
         "status_error": st.get("error") or "",
         # 1-based chapter the reader is on (0 = not opened yet), from reading.json.
         "read_chapter": read_index + 1 if read_index >= 0 else 0,
+        "read_at": float(read_at) if read_index >= 0 else 0.0,
     }
 
 
@@ -225,9 +227,9 @@ def build_router(ctx: ServerContext) -> APIRouter:
     def listing():
         entries = session.library_store.get_library()
         check = ctx.tasks.active()
-        read = chapter_indexes(data_dir=session.data_dir)
+        marks = reading_marks(data_dir=session.data_dir)
         return {
-            "entries": [_entry_payload(ctx, e, read.get(e.source_url, -1)) for e in entries],
+            "entries": [_entry_payload(ctx, e, marks.get(e.source_url)) for e in entries],
             "checking": bool(check and check.kind == "check"),
         }
 

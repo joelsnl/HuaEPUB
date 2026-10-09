@@ -12,7 +12,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from core.settings import get_data_dir
 
@@ -69,18 +69,24 @@ def get_position(source_url: str, *, data_dir: Optional[Path] = None) -> Optiona
         return None
 
 
-def chapter_indexes(*, data_dir: Optional[Path] = None) -> Dict[str, int]:
-    """Every book's saved chapter index, from one read of the file (Library lists)."""
+def reading_marks(*, data_dir: Optional[Path] = None) -> Dict[str, Tuple[int, float]]:
+    """Every book's saved chapter index and when it was last read, from one read of
+    the file (Library lists)."""
     with _lock:
         data = _load_unlocked(_path(data_dir))
-    out: Dict[str, int] = {}
+    out: Dict[str, Tuple[int, float]] = {}
     for url, raw in data.items():
         if not isinstance(raw, dict):
             continue
         try:
-            out[url] = max(0, int(raw.get("chapter_index") or 0))
+            index = max(0, int(raw.get("chapter_index") or 0))
         except (TypeError, ValueError):
             continue
+        try:
+            at = float(raw.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            at = 0.0
+        out[url] = (index, at)
     return out
 
 
