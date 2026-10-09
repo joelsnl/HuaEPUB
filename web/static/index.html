@@ -304,10 +304,19 @@
         <p class="running" id="read-running"></p>
         <div class="spread" id="read-spread">
           <article class="reader-text" id="read-text"></article>
+          <nav class="chapter-end" id="read-end" aria-label="Next chapter" hidden>
+            <button type="button" class="book-btn chapter-end-btn" id="read-end-btn">
+              <span class="running-label">Next chapter</span>
+              <span class="chapter-end-title" id="read-end-title"></span>
+            </button>
+          </nav>
         </div>
         <div class="leaf-hit" id="read-hit"></div>
         <p class="leaf-note" id="read-status" aria-live="polite"></p>
+        <p class="folio" id="read-folio"></p>
       </div>
+      <button type="button" class="leaf-arrow leaf-prev" id="read-prev" aria-label="Previous page"><span aria-hidden="true">‹</span></button>
+      <button type="button" class="leaf-arrow leaf-next" id="read-next" aria-label="Next page"><span aria-hidden="true">›</span></button>
       <header class="chrome chrome-top">
         <button type="button" class="book-link" id="read-back">Library</button>
         <div class="reader-title">
@@ -315,11 +324,13 @@
           <span class="running-label" id="read-kind"></span>
         </div>
         <button type="button" class="book-btn read-job" id="read-job" aria-pressed="false" aria-controls="dock" hidden></button>
+        <button type="button" class="book-btn" id="read-full" aria-pressed="false" hidden>Full screen</button>
       </header>
       <footer class="chrome chrome-bot">
         <input type="range" id="read-progress" min="0" max="1000" value="0" aria-label="Place in the book">
         <div class="chrome-row">
           <span class="running-label" id="read-place"></span>
+          <button type="button" class="book-link" id="read-return" hidden></button>
           <span class="grow"></span>
           <button type="button" class="book-btn" id="read-contents-btn">Contents</button>
           <button type="button" class="book-btn" id="read-display-btn" aria-label="Text settings">Aa</button>
@@ -330,6 +341,13 @@
         <div class="sheet-head">
           <span class="sheet-title">Contents</span>
           <button type="button" class="book-link" id="read-contents-close">Close</button>
+        </div>
+        <input type="search" class="toc-find" id="read-toc-find" aria-label="Find a chapter"
+          placeholder="Chapter number or words in the title" hidden>
+        <div class="sheet-part" id="read-marks" hidden>
+          <span class="display-line">Bookmarks</span>
+          <ul class="sheet-list" id="read-marks-list"></ul>
+          <span class="display-line">Chapters</span>
         </div>
         <ul class="sheet-list" id="read-toc-list"></ul>
       </div>
@@ -344,7 +362,11 @@
           <button type="button" class="chip" data-pref="reader_theme" data-value="night">Night</button>
         </div>
         <label class="display-line" for="read-size">Text size <span id="read-size-n">18</span></label>
-        <input type="range" id="read-size" min="12" max="36" value="18" aria-label="Text size">
+        <div class="size-row">
+          <button type="button" class="book-btn size-btn" id="read-smaller" aria-label="Smaller text">A</button>
+          <input type="range" id="read-size" min="12" max="36" value="18" aria-label="Text size">
+          <button type="button" class="book-btn size-btn size-big" id="read-bigger" aria-label="Bigger text">A</button>
+        </div>
         <div class="chips" role="group" aria-label="Type">
           <button type="button" class="chip" data-pref="reader_face" data-value="serif">Serif</button>
           <button type="button" class="chip" data-pref="reader_face" data-value="sans">Sans</button>
@@ -362,6 +384,20 @@
           <button type="button" class="chip" data-pref="reader_mode" data-value="pages">Pages</button>
           <button type="button" class="chip" data-pref="reader_mode" data-value="scroll">Scroll</button>
         </div>
+        <span class="display-line">Pages on screen</span>
+        <div class="chips" role="group" aria-label="Pages on screen">
+          <button type="button" class="chip" data-pref="reader_spread" data-value="auto">Auto</button>
+          <button type="button" class="chip" data-pref="reader_spread" data-value="one">One page</button>
+          <button type="button" class="chip" data-pref="reader_spread" data-value="two">Two pages</button>
+        </div>
+        <span class="display-line">Margins</span>
+        <div class="chips" role="group" aria-label="Margins">
+          <button type="button" class="chip" data-pref="reader_margin" data-value="narrow">Narrow</button>
+          <button type="button" class="chip" data-pref="reader_margin" data-value="normal">Normal</button>
+          <button type="button" class="chip" data-pref="reader_margin" data-value="wide">Wide</button>
+        </div>
+        <p class="display-line keys-hint">Keys: ← → or Page Up / Down or Space turn pages · Home / End jump to the
+          start or end of the chapter · Esc closes this panel. The mouse wheel turns pages too.</p>
       </div>
     </div>
   </section>
