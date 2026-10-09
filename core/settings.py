@@ -83,8 +83,6 @@ DEFAULTS: Dict[str, Any] = {
     'reader_face': 'serif',  # serif | sans
     'reader_leading': 'normal',  # tight | normal | loose
     'reader_align': 'justify',  # justify | left
-    'reader_spread': 'auto',  # auto | one | two (browser reader, Pages mode)
-    'reader_margin': 'normal',  # narrow | normal | wide (browser reader)
     # Main window geometry. 0 width/height means "use the built-in default".
     'window_x': 0,
     'window_y': 0,

@@ -624,6 +624,7 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
   font-family: var(--sans); font-variant-numeric: tabular-nums;
 }
 #read-book.is-scroll .folio { display: none; }
+#read-book.is-chrome .running { visibility: hidden; }
 .reader-text {
   font-family: Georgia, var(--serif); font-size: var(--read-size); line-height: var(--read-lead);
   overflow-wrap: anywhere; color: var(--paper-ink); orphans: 2; widows: 2;

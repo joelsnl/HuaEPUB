@@ -12,6 +12,12 @@
     reader_align: 'align', reader_spread: 'spread', reader_margin: 'margin'
   };
 
+  var CHOICES = {
+    theme: ['paper', 'sepia', 'night'], mode: ['pages', 'scroll'], face: ['serif', 'sans'],
+    leading: ['tight', 'normal', 'loose'], align: ['justify', 'left'],
+    spread: ['auto', 'one', 'two'], margin: ['narrow', 'normal', 'wide']
+  };
+
   var book = null;
   var index = 0;
   var logicalPage = 0;
@@ -233,21 +239,34 @@
     var kept = book ? chapterRatio() : 0;
     Object.keys(PREF_FIELDS).forEach(function (key) {
       var field = PREF_FIELDS[key];
-      if (next[field]) prefs[field] = next[field];
+      if (CHOICES[field].indexOf(next[field]) >= 0) prefs[field] = next[field];
     });
     if (typeof next.font === 'number') fontPt = Math.max(12, Math.min(36, next.font));
     paint();
     layout();
     if (book) requestAnimationFrame(function () { layout(); reveal(kept); });
-    if (persistKey) {
-      var body = {};
-      body[persistKey] = persistKey === 'reader_font_pt' ? fontPt : prefs[PREF_FIELDS[persistKey]];
-      H.api('PUT', '/api/settings', body).catch(function () {});
-    }
+    if (persistKey) saveLocal();
   }
 
   function setFont(pt, persist) {
     apply({ font: pt }, persist ? 'reader_font_pt' : '');
+  }
+
+  // Display settings belong to this device: a phone and a monitor want different text sizes
+  // and margins. Until a device picks its own, it starts from the PC's reader settings.
+  var LOCAL_KEY = 'huaepub-reader';
+
+  function loadLocal() {
+    try {
+      var raw = JSON.parse(window.localStorage.getItem(LOCAL_KEY) || 'null');
+      return raw && typeof raw === 'object' ? raw : null;
+    } catch (e) { return null; }
+  }
+
+  function saveLocal() {
+    var row = { font: fontPt };
+    Object.keys(PREF_FIELDS).forEach(function (key) { row[PREF_FIELDS[key]] = prefs[PREF_FIELDS[key]]; });
+    try { window.localStorage.setItem(LOCAL_KEY, JSON.stringify(row)); } catch (e) { /* private mode */ }
   }
 
   function pickList() {
@@ -808,16 +827,18 @@
     if (!book) pickList();
     else { document.body.classList.add('is-reading'); keepAwake(); }
   });
-  paint();
+  if (loadLocal()) apply(loadLocal(), '');
+  else paint();
   syncFullscreen();
   window.HuaRead = {
     setFont: setFont,
     applyPrefs: function (s) {
+      var mine = loadLocal();
+      if (mine) { apply(mine, ''); return; }
       if (!s) return;
       apply({
         theme: s.reader_theme, mode: s.reader_mode, face: s.reader_face,
-        leading: s.reader_leading, align: s.reader_align, spread: s.reader_spread,
-        margin: s.reader_margin, font: s.reader_font_pt || fontPt
+        leading: s.reader_leading, align: s.reader_align, font: s.reader_font_pt || fontPt
       }, '');
     }
   };
