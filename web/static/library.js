@@ -474,11 +474,14 @@
     pendingRemove = null;
     show('lib-confirm', false);
     if (what === 'reset') {
-      post('/api/library/reset', {}, function () { selected = {}; load(); }, 'reset the library');
+      post('/api/library/reset', {}, function () { selected = {}; load(); freed(); }, 'reset the library');
       return;
     }
-    if (what) post('/api/library/remove', { urls: what }, function () { selected = {}; load(); }, 'remove these books');
+    if (what) post('/api/library/remove', { urls: what }, function () { selected = {}; load(); freed(); }, 'remove these books');
   }
+
+  // Removing books frees disk space; the header's storage figure should show it at once.
+  function freed() { if (window.HuaStorage) window.HuaStorage.refresh(); }
 
   function downloadSelected() {
     var sel = selection();
