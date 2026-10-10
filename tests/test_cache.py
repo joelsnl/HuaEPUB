@@ -217,12 +217,41 @@ class TestCacheEviction:
 
 
 class TestBrokenCache:
-    def test_unwritable_path_degrades_gracefully(self, tmp_path):
-        # A directory as the db path makes sqlite fail to open
-        bad = NovelCache(tmp_path)
-        assert bad.get_chapter('https://x') is None
-        bad.put_chapter('b', 'https://x', 't', 'c')  # must not raise
-        assert bad.get_translation('你好', 'google') is None
-        assert bad.get_cover(cover_url='https://x/c') is None
-        bad.put_cover(b'x', cover_url='https://x/c')
-        bad.close()
+    """A failing cache must never stop a download, but it should not fail silently either."""
+
+    @staticmethod
+    def _failing(cache, monkeypatch):
+        import sqlite3
+
+        class FullDisk:
+            def __getattr__(self, name):
+                def fail(*_a, **_k):
+                    raise sqlite3.OperationalError('database or disk is full')
+                return fail
+
+        monkeypatch.setattr(cache, '_conn', FullDisk())
+
+    def test_a_failing_write_never_raises_and_is_reported_once(self, cache, capsys, monkeypatch):
+        from core import utils
+
+        monkeypatch.setattr(utils, '_reported', set())
+        self._failing(cache, monkeypatch)
+        cache.put_chapter('book', 'https://x/1', 'title', '<p>text</p>')
+        cache.put_chapter('book', 'https://x/2', 'title', '<p>text</p>')
+        out = capsys.readouterr().out
+        assert out.count('Cache: put_chapter failed') == 1
+        assert 'database or disk is full' in out and 'continuing without it' in out
+
+    def test_a_failing_read_is_just_a_miss(self, cache, monkeypatch):
+        self._failing(cache, monkeypatch)
+        assert cache.get_chapter('https://x/1') is None
+
+    def test_each_kind_of_failure_is_reported_separately(self, cache, capsys, monkeypatch):
+        from core import utils
+
+        monkeypatch.setattr(utils, '_reported', set())
+        self._failing(cache, monkeypatch)
+        cache.put_chapter('book', 'https://x/1', 'title', '<p>text</p>')
+        cache.put_cover(b'img', cover_url='https://x/c.jpg', source_url='https://x/')
+        out = capsys.readouterr().out
+        assert 'put_chapter failed' in out and 'put_cover failed' in out

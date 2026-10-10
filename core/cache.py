@@ -30,6 +30,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from core.utils import report_once
+
+
+def _cache_write_failed(action: str, exc: Exception) -> None:
+    """The cache is best effort (a failing cache must not stop a download), but say so once."""
+    report_once(f"cache:{action}",
+                f"  Cache: {action} failed ({type(exc).__name__}: {exc}); continuing without it.")
+
+
 _WS = re.compile(r"\s+")
 _CHAPTER_FP_PREFIX = "\x01ch\x01"
 _IN_BATCH = 400
@@ -148,8 +157,8 @@ class NovelCache:
                 self._conn.commit()
                 self._pending = 0
             self.maybe_evict()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("put_chapter", exc)
 
     def sample_chapter_contents(
         self,
@@ -231,8 +240,8 @@ class NovelCache:
             with self._lock:
                 self._conn.execute("DELETE FROM chapters WHERE book_key = ?", (book_key,))
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("clear_book", exc)
 
     def delete_cover(self, cover_url: str = "", source_url: str = ""):
         key = self.cover_key(cover_url, source_url)
@@ -242,8 +251,8 @@ class NovelCache:
             with self._lock:
                 self._conn.execute("DELETE FROM covers WHERE key = ?", (key,))
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("delete_cover", exc)
 
     def delete_chapter_list(self, source_url: str):
         if not self._conn or not source_url:
@@ -255,8 +264,8 @@ class NovelCache:
                     (source_url.strip(),),
                 )
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("delete_chapter_list", exc)
 
     def purge_book(self, source_url: str, cover_url: str = ""):
         """Drop chapter HTML, TOC snapshot, English titles, and cover bytes for one novel."""
@@ -376,8 +385,8 @@ class NovelCache:
                     self._pending = 0
             if commit:
                 self.maybe_evict()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("put_translation", exc)
 
     def flush(self):
         """Commit batched translation writes."""
@@ -389,8 +398,8 @@ class NovelCache:
                     self._conn.commit()
                     self._pending = 0
             self.maybe_evict()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("flush", exc)
 
     def delete_translation(self, source: str, backend: str):
         """Drop a cached translation (used before retrying failed segments)."""
@@ -420,8 +429,8 @@ class NovelCache:
                         batch,
                     )
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("delete_translations", exc)
 
     def get_chapter_translation(
         self, fingerprint: str, backend: str
@@ -523,8 +532,8 @@ class NovelCache:
                 self._conn.commit()
                 self._pending = 0
             self.maybe_evict()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("put_cover", exc)
 
     # ------------------------------------------------------------------
     # Chapter lists / TOC snapshots (local only)
@@ -616,8 +625,8 @@ class NovelCache:
                 self._conn.commit()
                 self._pending = 0
             self.maybe_evict()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("put_chapter_list", exc)
 
     def get_english_chapter_titles(self, source_url: str) -> Optional[List[Dict[str, str]]]:
         """English titles saved after a translated build, or None if we have not saved any.
@@ -671,8 +680,8 @@ class NovelCache:
                     (source_url.strip(), json.dumps(payload, ensure_ascii=False)),
                 )
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("put_english_chapter_titles", exc)
 
     def delete_english_chapter_titles(self, source_url: str):
         if not self._conn or not source_url:
@@ -684,8 +693,8 @@ class NovelCache:
                     (source_url.strip(),),
                 )
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("delete_english_chapter_titles", exc)
 
     # ------------------------------------------------------------------
     # Size cap / LRU eviction
@@ -809,8 +818,8 @@ class NovelCache:
                 self._pending = 0
                 self._conn.execute("VACUUM")
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("clear_chapter_data", exc)
 
     def clear_all(self):
         """Drop every cache table, including translations."""
@@ -826,8 +835,8 @@ class NovelCache:
                 self._pending = 0
                 self._conn.execute("VACUUM")
                 self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cache_write_failed("clear_all", exc)
 
     def close(self):
         if self._conn:
@@ -837,8 +846,8 @@ class NovelCache:
                         self._conn.commit()
                         self._pending = 0
                     self._conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _cache_write_failed("close", exc)
             self._conn = None
 
 
@@ -883,8 +892,8 @@ def save_english_chapter_title(cache, source_url: str, url: str, title: str) -> 
     rows.append({"url": chapter_url, "title": shown})
     try:
         put(book, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        _cache_write_failed("save_english_chapter_title", exc)
 
 
 def remember_english_chapter_titles(cache, source_url: str, chapters) -> None:
@@ -906,5 +915,5 @@ def remember_english_chapter_titles(cache, source_url: str, chapters) -> None:
         return
     try:
         put(source_url, rows)
-    except Exception:
-        pass
+    except Exception as exc:
+        _cache_write_failed("remember_english_chapter_titles", exc)

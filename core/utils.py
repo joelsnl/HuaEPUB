@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import re
 import sys
-from typing import List
+import threading
+from typing import List, Set
 from urllib.parse import urlparse
 
 # http(s) URLs, allowing common novel-site punctuation in paths
@@ -58,6 +59,24 @@ def sanitize_runtime_env() -> list:
             os.environ.pop(key, None)
             cleared.append(key)
     return cleared
+
+
+_reported: Set[str] = set()
+_reported_lock = threading.Lock()
+
+
+def report_once(key: str, message: str) -> None:
+    """Print ``message`` the first time ``key`` is seen.
+
+    For best-effort work that must not stop the app when it fails (a cache write, saving a
+    setting) but should still be visible in the log. Later failures of the same kind stay quiet,
+    so a full disk does not write the same line thousands of times.
+    """
+    with _reported_lock:
+        if key in _reported:
+            return
+        _reported.add(key)
+    print(message)
 
 
 def in_pytest() -> bool:
