@@ -160,12 +160,6 @@ class LibraryPage(QWidget):
     def _apply_view(self):
         self.stack.setCurrentWidget(self.grid if self._view == "grid" else self.table)
 
-    def show_all(self):
-        """Ensure the All filter is active (Updates hides novels until Check runs)."""
-        if self._filter != "all":
-            self._set_filter("all")
-        else:
-            self.refresh()
 
     def filtered_entries(self):
         entries = self.session.library_store.get_library()

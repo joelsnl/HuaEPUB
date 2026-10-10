@@ -61,7 +61,7 @@ from gui.window.reader_actions import ReaderActionsMixin
 from gui.window.server_actions import ServerActionsMixin
 from gui.window.worker_host import WorkerHostMixin
 
-import parsers  # noqa: F401 — register site parsers
+import parsers  # noqa: F401 - registers the site parsers
 
 
 class MainWindow(
@@ -96,7 +96,6 @@ class MainWindow(
         self._check_worker = None
         self._check_busy = False
         self._exiting_for_update = False
-        self._force_close = False
         self._app_update_checking = False
         self._app_update_pending = False
         self._app_update_installing = False
@@ -449,7 +448,6 @@ class MainWindow(
             self._close_keeping_server(event)
             return
         update_exit = bool(getattr(self, "_exiting_for_update", False))
-        force_close = bool(getattr(self, "_force_close", False))
         if getattr(self, "_app_update_installing", False) and not update_exit:
             event.ignore()
             return
@@ -496,7 +494,7 @@ class MainWindow(
             return
         self.session.control.active_job = job
         self.resume_banner.show_job(job, self.session.cache)
-        self.progress.set_status(f"Incomplete download ready: resume available")
+        self.progress.set_status("Incomplete download ready: resume available")
 
     def _on_discard_job(self):
         if not ask_yes_no(

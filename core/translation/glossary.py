@@ -141,20 +141,6 @@ class GlossaryEngine:
             out = self.glossary.apply_to_text(out)
         return out
 
-    def protect_many(self, texts: list[str]) -> list[ProtectedText]:
-        return [self.protect(t) for t in texts]
-
-    def restore_many(self, texts: list[str], protected: list[ProtectedText]) -> list[str]:
-        out: list[str] = []
-        for i, text in enumerate(texts):
-            job = protected[i] if i < len(protected) else None
-            out.append(self.restore(text, job))
-        return out
-
-
-def package_terms_path() -> Path:
-    return _BUILTIN
-
 
 def user_glossary_path() -> Path:
     from core.settings import get_data_dir

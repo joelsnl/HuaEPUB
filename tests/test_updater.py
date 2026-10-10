@@ -378,8 +378,8 @@ class TestReplacementHelper:
             monkeypatch.setattr(updater.sys, "executable", str(tmp_path / "HuaEPUB"))
             calls = []
 
-            def fake_popen(args, **kwargs):
-                calls.append((args, kwargs))
+            def fake_popen(args, _calls=calls, **kwargs):
+                _calls.append((args, kwargs))
                 class P:
                     pass
                 return P()

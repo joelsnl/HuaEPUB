@@ -305,13 +305,6 @@ class LibraryStore:
         except Exception as e:
             print(f"Failed to save library.json to {self._path}: {e}")
 
-    def get_data(self) -> LibraryData:
-        with self._lock:
-            return LibraryData(
-                history=list(self._data.history),
-                library=list(self._data.library),
-                removed=list(self._data.removed),
-            )
 
     def reload(self) -> None:
         """Re-read library.json from disk into memory."""
@@ -400,34 +393,6 @@ class LibraryStore:
             ]
             self._save()
 
-    def update_metadata(
-        self,
-        source_url: str,
-        *,
-        title: str = '',
-        translated_title: str = '',
-        author: str = '',
-        cover_url: str = '',
-        description: str = '',
-    ) -> None:
-        """Update display metadata without bumping last_downloaded_at."""
-        if not source_url:
-            return
-        with self._lock:
-            for e in self._data.library:
-                if e.source_url == source_url:
-                    if title:
-                        e.title = title
-                    if translated_title:
-                        e.translated_title = translated_title
-                    if author:
-                        e.author = author
-                    if cover_url:
-                        e.cover_url = cover_url
-                    if description:
-                        e.description = description
-                    self._save()
-                    return
 
     def set_shelved(self, urls: List[str], shelved: bool) -> int:
         """Shelve (or bring back) these books. Returns how many changed."""

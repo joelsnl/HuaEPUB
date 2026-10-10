@@ -507,15 +507,6 @@ def live_translate_chapter(
     return out, title
 
 
-def live_translate_html(html: str, *, cache, options: dict, novel_title: str = "",
-                        detect_text: str = "") -> str:
-    """Translate one cache chapter for the reader (check ``html_needs_live_translate`` first)."""
-    text, _title = live_translate_chapter(
-        html, cache=cache, options=options, novel_title=novel_title, detect_text=detect_text,
-    )
-    return text
-
-
 def resume_index(book: ReaderBook, position: Optional[dict]) -> int:
     if not book.chapters:
         return 0

@@ -91,14 +91,6 @@ def write_secret_file(path: Path, data: str) -> None:
         pass
 
 
-def tighten_file_permissions(path: Path) -> None:
-    """Best-effort owner-only perms on an existing file."""
-    try:
-        os.chmod(Path(path), stat.S_IRUSR | stat.S_IWUSR)
-    except Exception:
-        pass
-
-
 def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     return bool(
         ip.is_private
@@ -207,7 +199,7 @@ def validate_fetch_url(
         except ValueError:
             h = host.lower().rstrip(".")
             if h in _BLOCKED_HOSTNAMES or h.endswith(".localhost"):
-                raise UnsafeURLError(f"Blocked hostname: {h}")
+                raise UnsafeURLError(f"Blocked hostname: {h}") from None
         return
 
     blocked, reason = _hostname_resolves_to_blocked(host)

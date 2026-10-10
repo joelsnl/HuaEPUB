@@ -52,28 +52,6 @@ class Glossary:
             lines.append(f"- {term.source} → {term.target}{extra}")
         return "Glossary (use these exact renderings):\n" + "\n".join(lines)
 
-    def as_stable_prompt(self, limit: int = 80) -> str:
-        """Fixed glossary block for prefix-cache hits across every REPLACE pack."""
-        seen: set[tuple[str, str]] = set()
-        lines: list[str] = []
-        terms = [
-            term
-            for term in self.terms
-            if term.source and term.target and term.source != term.target
-        ]
-        terms.sort(key=lambda term: (-len(term.source), term.source.casefold()))
-        for term in terms:
-            key = (term.source.casefold(), term.target)
-            if key in seen:
-                continue
-            seen.add(key)
-            extra = f" ({term.notes})" if term.notes else ""
-            lines.append(f"- {term.source} → {term.target}{extra}")
-            if len(lines) >= limit:
-                break
-        if not lines:
-            return ""
-        return "Glossary (use these exact renderings):\n" + "\n".join(lines)
 
     def unapplied_hits(self, text: str) -> list[Term]:
         return [term for term in self.relevant(text) if term.source != term.target]
@@ -93,22 +71,6 @@ class Glossary:
                 text = pattern.sub(term.target, text)
         return text
 
-    def hit_counts(self, text: str) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        terms = [
-            term
-            for term in self.terms
-            if term.source and term.target and term.source != term.target
-        ]
-        terms.sort(key=lambda term: len(term.source), reverse=True)
-        for term in terms:
-            if FOREIGN_SCRIPT_RE.search(term.source):
-                n = text.count(term.source)
-            else:
-                n = len(re.findall(rf"\b{re.escape(term.source)}\b", text, re.IGNORECASE))
-            if n:
-                counts[f"{term.source} → {term.target}"] = n
-        return counts
 
     def to_dict(self) -> dict[str, Any]:
         return {

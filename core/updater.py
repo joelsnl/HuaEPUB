@@ -189,11 +189,6 @@ def spawn_detached(argv, cwd, env):
 '''
 
 
-def get_pending_relaunch() -> Optional[Path]:
-    """Executable path to start after a successful in-place Windows update."""
-    return _pending_relaunch_exe
-
-
 def clear_pending_relaunch() -> None:
     global _pending_relaunch_exe
     _pending_relaunch_exe = None

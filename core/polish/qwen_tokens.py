@@ -82,10 +82,6 @@ def qwen_token_count(text: str) -> int:
     return len(ids)
 
 
-def tokenizer_label() -> str:
-    return "Qwen2.5 tokenizer.json" if _hf_tokenizer() is not None else "Qwen2.5 estimate"
-
-
 def prompt_token_budget(num_ctx: int) -> int:
     """Pack REPLACE jobs until the prompt hits about half the context window."""
     return max(256, num_ctx // 2)

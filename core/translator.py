@@ -1483,28 +1483,8 @@ class GoogleTranslator:
         chinese_count = len(_CJK_RE.findall(text))
         return chinese_count > len(text) * 0.1  # More than 10% Chinese
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get translation statistics."""
-        return self.stats.copy()
 
-    def reset_stats(self) -> None:
-        """Reset statistics."""
-        self.stats = {
-            'requests': 0,
-            'paragraphs_translated': 0,
-            'characters_translated': 0,
-            'cache_hits': 0,
-            'errors': 0,
-            'retries': 0,
-            'retry_passes': 0,
-            'throttles': 0,
-        }
-        self.failed_texts.clear()
     
-    def clear_cache(self) -> None:
-        """Clear the translation cache."""
-        with self.cache_lock:
-            self.cache.clear()
 
 
 _SEGMENT_MARK = re.compile(r'<<<(\d+)>>>\s*')

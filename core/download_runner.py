@@ -342,7 +342,6 @@ def _translation_status_line(
 
 StatusFn = Callable[[str], None]
 ProgressFn = Callable[..., None]
-PersistFn = Callable[[], None]
 
 
 def _forward_progress(
@@ -550,7 +549,6 @@ def download_chapters_with_cache(
     total = len(chapters)
     delay = getattr(parser, "request_delay", 2.0)
     failed: List[Chapter] = []
-    paused_for = 0.0
     _bind_translator(control, translator)
 
     def _cancel_download():
@@ -581,7 +579,7 @@ def download_chapters_with_cache(
     last_cache_ui = 0.0
 
     for idx, chapter in enumerate(chapters):
-        paused_for += control.wait_while_paused(set_status)
+        control.wait_while_paused(set_status)
         if control.cancel_requested:
             _cancel_download()
 
@@ -645,7 +643,6 @@ def download_chapters_with_cache(
         control.persist_job()
         if idx < total - 1:
             paused_here += control.interruptible_delay(delay, set_status)
-        paused_for += paused_here
         uncached_done += 1
         network_elapsed += max(0.0, (time.monotonic() - t0) - paused_here)
 
@@ -654,10 +651,10 @@ def download_chapters_with_cache(
         set_status(f"Retrying {format_count(len(failed))} failed chapters…")
         print(f"Retrying {len(failed)} failed chapter(s)...")
         for chapter in failed:
-            paused_for += control.wait_while_paused(set_status)
+            control.wait_while_paused(set_status)
             if control.cancel_requested:
                 _cancel_download()
-            paused_for += control.interruptible_delay(delay, set_status)
+            control.interruptible_delay(delay, set_status)
             try:
                 chapter.content = parser.get_chapter_content(chapter)
                 if use_cache:
@@ -1187,43 +1184,6 @@ def _prefetch_chapter(translator, cleaner, chapter, control=None) -> None:
             print(f"  Translation prefetch skipped: {exc}")
     except Exception as exc:
         print(f"  Translation prefetch skipped: {exc}")
-
-
-def speculative_prefetch_cached_chapters(
-    *,
-    cache: NovelCache,
-    chapters: List[Chapter],
-    translator,
-    cleaner=None,
-) -> int:
-    """
-    Warm translation for already-cached chapter HTML (no extra site fetches).
-    Used after Library Check when Translate is on.
-    """
-    if translator is None or cache is None or not chapters:
-        return 0
-    warmed_chapters = []
-    for chapter in chapters:
-        html = ""
-        try:
-            html = cache.get_chapter(chapter.url) or ""
-        except Exception:
-            html = ""
-        if not html:
-            continue
-        chapter.content = html
-        warmed_chapters.append(chapter)
-    _learn_site_junk(cleaner, warmed_chapters, finalize=True)
-    for chapter in warmed_chapters:
-        _prefetch_chapter(translator, cleaner, chapter)
-    warmed = len(warmed_chapters)
-    wait = getattr(translator, "wait_prefetch", None)
-    if callable(wait):
-        try:
-            wait()
-        except Exception:
-            pass
-    return warmed
 
 
 def build_epub(

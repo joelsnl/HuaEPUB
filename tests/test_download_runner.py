@@ -78,7 +78,7 @@ def test_pause_and_cancel():
     ctrl.cancel_requested = True
     try:
         ctrl.wait_while_paused()
-        assert False, "expected cancel"
+        raise AssertionError("expected cancel")
     except DownloadCancelled:
         pass
 

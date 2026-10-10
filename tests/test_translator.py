@@ -939,7 +939,7 @@ class TestHttpSession:
         monkeypatch.setattr(t, "_get_http_session", lambda: _FakeSession(on_request=on_request))
         try:
             t._request_google("你好")
-            assert False, "expected RateLimitedError"
+            raise AssertionError("expected RateLimitedError")
         except RateLimitedError as exc:
             assert exc.retry_after == 1.5
 

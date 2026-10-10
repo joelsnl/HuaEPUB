@@ -14,13 +14,13 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("cryptography")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from core.parser import Chapter, NovelInfo  # noqa: E402
-from web.auth import (  # noqa: E402
+from core.parser import Chapter, NovelInfo
+from web.auth import (
     COOKIE_NAME, LoginLimiter, OpenLinks, PasswordTooShort, ServerSecrets, normalize_code,
 )
-from web.preview import Preview  # noqa: E402
+from web.preview import Preview
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ("127.0.0.1", 50000)
@@ -726,7 +726,7 @@ def test_resume_payload_and_discard(session):
 def test_library_list_and_reader_from_cache(session, monkeypatch):
     from web import reader_api
 
-    fake = lambda _u: _Parser("<p>Second chapter text.</p>")  # noqa: E731
+    fake = lambda _u: _Parser("<p>Second chapter text.</p>")
     monkeypatch.setattr(reader_api, "get_parser_for_url", fake)
     monkeypatch.setattr("core.parser.get_parser_for_url", fake)  # fetch_reader_chapter
     url = "https://example.com/book/9"

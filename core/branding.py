@@ -20,7 +20,6 @@ LEGACY_EXE_BASENAME = "NovelDownloader"
 
 LOG_FILE_NAME = "huaepub.log"
 FAULT_LOG_FILE_NAME = "huaepub.fault.log"
-LEGACY_LOG_FILE_NAME = "novel_downloader.log"
 
 # GitHub release source archive name
 SOURCE_ASSET_NAME = "HuaEPUB-source.zip"

@@ -205,7 +205,7 @@ class EPUBBuilder:
             # Validate content isn't empty after cleaning
             if not content or len(content.strip()) < 10:
                 print(f"Warning: Chapter {idx} '{chapter.title}' has empty content, using placeholder")
-                content = f"<p>Chapter content not available.</p>"
+                content = "<p>Chapter content not available.</p>"
 
             id_prefix = f"s{idx:04d}"
             marked, fragments = mark_narration_fragments(content, id_prefix)
@@ -528,7 +528,7 @@ class TranslatedEPUBBuilder(EPUBBuilder):
         """
         self.chapters_with_chinese = []
         
-        for idx, chapter in enumerate(chapters):
+        for chapter in chapters:
             if not chapter.content:
                 continue
             

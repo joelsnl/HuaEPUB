@@ -153,16 +153,6 @@ class ReaderPage(QWidget):
     def set_status(self, text: str):
         self.status_lbl.setText(text or "")
 
-    def show_empty(self, message: str = ""):
-        self.book = None
-        self._index = 0
-        self._filling = True
-        self.toc.clear()
-        self._filling = False
-        self.title_lbl.setText(message or "Open a novel from Library or Single to read.")
-        self.source_lbl.setText("")
-        self.view.clear()
-        self._set_nav_enabled(False)
 
     def load_book(self, book: ReaderBook, *, index: int = 0, scroll: float = 0.0, font_pt: int = 18,
                   theme: str = "paper", mode: str = "pages", face: str = "serif",

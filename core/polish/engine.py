@@ -24,9 +24,6 @@ class EngineError(RuntimeError):
     pass
 
 
-OllamaError = EngineError
-
-
 def strip_model_noise(text: str) -> str:
     text = THINK_RE.sub("", text)
     text = THINKING_RE.sub("", text)
@@ -455,21 +452,3 @@ class LLMEngine:
         return strip_model_noise("".join(chunks))
 
 
-class OllamaClient(LLMEngine):
-    """Backward-compatible wrapper used by older call sites."""
-
-    def __init__(
-        self,
-        host: str = "http://127.0.0.1:11434",
-        model: str = "qwen2.5:3b",
-        temperature: float = 0.25,
-        num_ctx: int = 8192,
-        timeout: float = 600.0,
-    ) -> None:
-        super().__init__(
-            EngineInfo("ollama", host.rstrip("/"), "Ollama"),
-            model=model,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            timeout=timeout,
-        )
