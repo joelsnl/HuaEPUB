@@ -118,37 +118,69 @@ class EPUBBuilder:
         Returns:
             Path to the created EPUB file
         """
-        # Validate we have chapters with content
         valid_chapters = [ch for ch in chapters if ch.content and len(ch.content.strip()) > 0]
         if not valid_chapters:
             raise ValueError("No chapters with content to build EPUB")
-        
+
         lang = epub_language_code(
             language or novel_info.language,
             translated=language is None and skip_html_clean,
         )
-        
+
         print(f"Building EPUB with {len(valid_chapters)} chapters (from {len(chapters)} total)")
         print(f"  Title: {novel_info.title}")
         print(f"  Author: {novel_info.author}")
         print(f"  Language: {lang} (Play Books Read Aloud)")
-        
+
         book = epub.EpubBook()
-        
-        # Set metadata (md5 keeps the identifier stable across runs,
-        # unlike hash() which is randomized per process)
+        self._add_metadata(book, novel_info, lang)
+        self._add_cover(book, novel_info)
+        epub_chapters, spine, overlay_durations = self._add_chapters(
+            book, valid_chapters, lang, skip_html_clean, progress_callback
+        )
+        if not epub_chapters:
+            raise ValueError("No valid chapters to include in EPUB")
+
+        # Navigation (grouped by volume when titles carry volume prefixes), then the required
+        # NCX and Nav documents and the stylesheet.
+        book.toc = self._build_toc(epub_chapters)
+        book.spine = spine
+        book.add_item(epub.EpubNcx())
+        book.add_item(epub.EpubNav())
+        self._add_stylesheet(book)
+        self._add_chapter_map(book, valid_chapters)
+        self._add_narration_durations(book, overlay_durations, lang)
+
+        total = len(valid_chapters)
+        if progress_callback:
+            progress_callback(total, total, "Writing EPUB file...")
+
+        print(f"Writing EPUB to: {output_path}")
+        try:
+            write_epub_atomic(output_path, book)
+            file_size = os.path.getsize(output_path)
+            print(f"EPUB written successfully: {file_size} bytes ({file_size/1024:.1f} KB)")
+        except Exception as e:
+            print(f"Error writing EPUB: {e}")
+            raise
+
+        return output_path
+
+    @staticmethod
+    def _add_metadata(book, novel_info: NovelInfo, lang: str) -> None:
+        # md5 keeps the identifier stable across runs, unlike hash() which is randomized per process
         id_source = novel_info.source_url or novel_info.title
         book.set_identifier(f"novel-{hashlib.md5(id_source.encode('utf-8')).hexdigest()[:16]}")
         book.set_title(novel_info.title)
         book.set_language(lang)
         book.add_author(novel_info.author)
-        
+
         if novel_info.description:
             book.add_metadata('DC', 'description', novel_info.description)
-        
+
         if novel_info.source_url:
             book.add_metadata('DC', 'source', novel_info.source_url)
-        
+
         for tag in novel_info.tags:
             book.add_metadata('DC', 'subject', tag)
 
@@ -165,43 +197,47 @@ class EPUBBuilder:
             None, "meta", "synchronizedAudioText",
             {"property": "schema:accessibilityFeature"},
         )
-        
-        # Add cover image if available
-        if novel_info.cover_url:
-            try:
-                print(f"  Downloading cover from: {novel_info.cover_url}")
-                cover_data = self._download_image(novel_info.cover_url)
-                if cover_data:
-                    print(f"  Cover downloaded: {len(cover_data)} bytes")
-                    # Determine image type
-                    ext = 'jpg'
-                    if novel_info.cover_url.lower().endswith('.png'):
-                        ext = 'png'
-                    elif novel_info.cover_url.lower().endswith('.gif'):
-                        ext = 'gif'
-                    
-                    book.set_cover(f"cover.{ext}", cover_data)
-                    print(f"  Cover added to EPUB as cover.{ext}")
-                else:
-                    print("  Warning: Cover download returned no data")
-            except Exception as e:
-                print(f"  Warning: Could not download cover image: {e}")
-        
-        # Create chapter items
+
+    def _add_cover(self, book, novel_info: NovelInfo) -> None:
+        """Add the cover image when there is one; a failed download never stops the build."""
+        if not novel_info.cover_url:
+            return
+        try:
+            print(f"  Downloading cover from: {novel_info.cover_url}")
+            cover_data = self._download_image(novel_info.cover_url)
+            if cover_data:
+                print(f"  Cover downloaded: {len(cover_data)} bytes")
+                ext = 'jpg'
+                if novel_info.cover_url.lower().endswith('.png'):
+                    ext = 'png'
+                elif novel_info.cover_url.lower().endswith('.gif'):
+                    ext = 'gif'
+
+                book.set_cover(f"cover.{ext}", cover_data)
+                print(f"  Cover added to EPUB as cover.{ext}")
+            else:
+                print("  Warning: Cover download returned no data")
+        except Exception as e:
+            print(f"  Warning: Could not download cover image: {e}")
+
+    def _add_chapters(self, book, valid_chapters, lang, skip_html_clean, progress_callback):
+        """Add one XHTML file per chapter (plus its Read Aloud overlay).
+
+        Returns ``(epub_chapters, spine, overlay_durations)``.
+        """
         epub_chapters = []
         spine = ['nav']
         overlay_durations = []
-        
+
         total = len(valid_chapters)
         for idx, chapter in enumerate(valid_chapters):
             if progress_callback:
                 progress_callback(idx + 1, total, f"Adding chapter: {chapter.title[:30]}...")
-            
-            # Clean content
+
             content = chapter.content
             if self.cleaner and not skip_html_clean:
                 content = self.cleaner.clean_html(content)
-            
+
             # Validate content isn't empty after cleaning
             if not content or len(content.strip()) < 10:
                 print(f"Warning: Chapter {idx} '{chapter.title}' has empty content, using placeholder")
@@ -213,7 +249,7 @@ class EPUBBuilder:
             overlay_id = f"overlay_{idx:04d}"
             spoken = " ".join(text for _sid, text in fragments)
             duration = smil_clock(estimate_narration_seconds(spoken or marked, lang))
-            
+
             epub_chapter = epub.EpubHtml(
                 title=chapter.title,
                 file_name=chapter_filename,
@@ -225,7 +261,7 @@ class EPUBBuilder:
             )
             xhtml_content = self._wrap_xhtml(chapter.title, marked, lang=lang)
             epub_chapter.content = xhtml_content.encode('utf-8')
-            
+
             book.add_item(epub_chapter)
             epub_chapters.append(epub_chapter)
             spine.append(epub_chapter)
@@ -238,20 +274,9 @@ class EPUBBuilder:
                 )
                 book.add_item(smil_item)
                 overlay_durations.append((overlay_id, duration, spoken or marked))
-        
-        # Validate we have chapters
-        if not epub_chapters:
-            raise ValueError("No valid chapters to include in EPUB")
-        
-        # Add navigation (grouped by volume when titles carry volume prefixes)
-        book.toc = self._build_toc(epub_chapters)
-        book.spine = spine
-        
-        # Add required NCX and Nav
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        
-        # Add CSS
+        return epub_chapters, spine, overlay_durations
+
+    def _add_stylesheet(self, book) -> None:
         css = self._get_default_css()
         nav_css = epub.EpubItem(
             uid="style_nav",
@@ -261,9 +286,11 @@ class EPUBBuilder:
         )
         book.add_item(nav_css)
 
-        # Which source chapter each file holds, so a rebuilt book (Library update)
-        # reopens at the same chapter even if the site's list shifted. Not in the
-        # spine; other readers ignore it.
+    @staticmethod
+    def _add_chapter_map(book, valid_chapters) -> None:
+        """Record which source chapter each file holds, so a rebuilt book (Library update)
+        reopens at the same chapter even if the site's list shifted. Not in the spine;
+        other readers ignore it."""
         chapter_map = {
             f"chapter_{idx:04d}.xhtml": (ch.url or "")
             for idx, ch in enumerate(valid_chapters) if ch.url
@@ -276,37 +303,25 @@ class EPUBBuilder:
                 content=json.dumps(chapter_map, ensure_ascii=False).encode("utf-8"),
             ))
 
-        if overlay_durations:
-            total_seconds = sum(
-                estimate_narration_seconds(text, lang)
-                for _oid, _clock, text in overlay_durations
-            )
+    @staticmethod
+    def _add_narration_durations(book, overlay_durations, lang: str) -> None:
+        if not overlay_durations:
+            return
+        total_seconds = sum(
+            estimate_narration_seconds(text, lang)
+            for _oid, _clock, text in overlay_durations
+        )
+        book.add_metadata(
+            None, "meta", smil_clock(total_seconds),
+            {"property": "media:duration"},
+        )
+        for overlay_id, duration, _text in overlay_durations:
             book.add_metadata(
-                None, "meta", smil_clock(total_seconds),
-                {"property": "media:duration"},
+                None, "meta", duration,
+                {"property": "media:duration", "refines": f"#{overlay_id}"},
             )
-            for overlay_id, duration, _text in overlay_durations:
-                book.add_metadata(
-                    None, "meta", duration,
-                    {"property": "media:duration", "refines": f"#{overlay_id}"},
-                )
-            print(f"  Read Aloud overlays: {len(overlay_durations)} chapters")
-        
-        # Write EPUB
-        if progress_callback:
-            progress_callback(total, total, "Writing EPUB file...")
-        
-        print(f"Writing EPUB to: {output_path}")
-        try:
-            write_epub_atomic(output_path, book)
-            file_size = os.path.getsize(output_path)
-            print(f"EPUB written successfully: {file_size} bytes ({file_size/1024:.1f} KB)")
-        except Exception as e:
-            print(f"Error writing EPUB: {e}")
-            raise
-        
-        return output_path
-    
+        print(f"  Read Aloud overlays: {len(overlay_durations)} chapters")
+
     def _build_toc(self, epub_chapters):
         """
         Build the TOC, grouping chapters under volume sections when most
