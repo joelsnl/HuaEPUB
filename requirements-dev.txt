@@ -7,3 +7,6 @@ ruff==0.12.11
 # Pin matches .github/workflows/release.yml and build.py fallback.
 # Keep pyinstaller-hooks-contrib in the same major generation (pip pulls it in).
 pyinstaller==6.22.2
+
+# Build only (not the app): PyInstaller converts the PNG icon to .icns with it on macOS.
+pillow>=9.0.0

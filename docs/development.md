@@ -129,6 +129,11 @@ Parsers must **raise** when content extraction fails; they never return placehol
 2. Commit, open a pull request, and merge when CI is green.
 3. Tag the merge commit `vX.Y.Z` and push the tag.
 
+Before tagging a change that touches the build (`build.py`, the requirements, the workflow), run the
+**Build Release** workflow by hand on your branch (Actions, Build Release, Run workflow). It builds
+all three platforms and publishes nothing, so a build failure shows up before a tag does. The pull
+request checks do not build executables.
+
 The tag starts `.github/workflows/release.yml`, which runs lint and the tests first and only then
 builds the Windows, macOS and Linux binaries with the pinned PyInstaller. The release gets
 `HuaEPUB-windows.zip`, `HuaEPUB-macos.zip`, `HuaEPUB-linux.zip`, `HuaEPUB-source.zip` and
