@@ -119,6 +119,11 @@
   }
 
   function draw() {
+    // Putting back the last shelved book leaves nothing to show on that list: go home.
+    if (filter === 'shelved' && !entries.some(function (e) { return e.shelved_at; })) {
+      filter = 'all';
+      document.querySelectorAll('input[name="lib-filter"]').forEach(function (r) { r.checked = r.value === 'all'; });
+    }
     drawShelf();
     drawControls();
   }
@@ -132,7 +137,10 @@
     show('shelf-empty', entries.length === 0);
     show('lib-find', entries.length > 0);
     show('shelf-none', entries.length > 0 && list.length === 0);
-    if (entries.length && !list.length) setText('shelf-none-text', noMatchText());
+    if (entries.length && !list.length) {
+      setText('shelf-none-text', noMatchText());
+      setText('lib-show-all', active().length ? 'Show every book' : 'Open Shelved');
+    }
     drawContinue();
     list.forEach(function (e) {
       var li = H.el('li', 'tile' + (selected[e.url] ? ' is-sel' : '') + (e.shelved_at ? ' is-shelved' : ''));
@@ -186,7 +194,7 @@
     if (filter === 'unopened') return 'You have started every book.';
     if (filter === 'updates') return 'No new chapters. Check for updates to look again.';
     if (filter === 'shelved') return 'Nothing is shelved.';
-    if (!active().length) return 'Every book is shelved.';
+    if (!active().length) return 'Every book is shelved. Open the Shelved list to see them.';
     return 'No books here.';
   }
 
@@ -243,10 +251,10 @@
     var allShelved = n > 0 && sel.every(function (e) { return e.shelved_at; });
     $('lib-shelve').disabled = n === 0;
     setText('lib-shelve', (allShelved ? 'Put back' : 'Shelve') + (n > 1 ? ' (' + n + ')' : ''));
-    show('lib-shelved', shelvedCount > 0 && filter !== 'shelved');
-    setText('lib-shelved', 'Shelved books (' + shelvedCount + ')');
+    // "Shelved" is a filter like the others, there whenever something is shelved.
+    show('lib-filter-shelved', shelvedCount > 0 || filter === 'shelved');
+    setText('lib-filter-shelved-text', 'Shelved (' + shelvedCount + ')');
     show('lib-shelved-head', filter === 'shelved');
-    document.querySelector('.lib-filter').classList.toggle('is-off', filter === 'shelved');
     setText('lib-lede', entries.length
       ? H.plural(books.length, 'book') + ' in the catalogue' +
         (shelvedCount ? ', ' + shelvedCount + ' shelved.' : '.') +
@@ -530,7 +538,8 @@
   $('lib-show-all').addEventListener('click', function () {
     query = '';
     $('lib-search').value = '';
-    setFilter('all');
+    // When every book is shelved there is nothing on the main list to show: go to the shelf.
+    setFilter(active().length ? 'all' : 'shelved');
   });
   $('lib-continue').addEventListener('click', function () {
     var url = $('lib-continue').dataset.url;
@@ -560,7 +569,6 @@
     var sel = selection();
     shelve(sel.map(function (e) { return e.url; }), !sel.every(function (e) { return e.shelved_at; }));
   });
-  $('lib-shelved').addEventListener('click', function () { setFilter('shelved'); window.scrollTo(0, 0); });
   $('lib-shelved-back').addEventListener('click', function () { setFilter('all'); });
   $('lib-detail-shelve').addEventListener('click', function () {
     var e = detailEntry();

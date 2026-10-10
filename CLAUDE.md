@@ -357,8 +357,9 @@ Keep script-referenced IDs when editing `index.html`.
   Chinese title / author / call number / URL, sort (Recent = the newer of `read_at` and `updated_at`,
   Title, Author, Most left to read, Longest) and a filter (All / Reading / Not started / New chapters).
   Sort and filter persist in `localStorage` (`huaepub-library`); the search does not. Shelve / Put back
-  are in the selection bar and the detail, and **Shelved books** opens from the Library foot (it is not
-  saved as the remembered filter). Action messages go to `#lib-note` (or `#lib-detail-note` while the
+  are in the selection bar and the detail. Shelved books leave the main list; **Shelved (n)** is a fifth
+  filter in the same bar, shown whenever something is shelved (it is not saved as the remembered
+  filter, and putting back the last shelved book returns to All). Action messages go to `#lib-note` (or `#lib-detail-note` while the
   dialog is open), never `#lib-lede`, which every state tick rewrites. The detail's chapter list scrolls
   to the reading chapter and shows a finder past 30 chapters.
 - **Rendering:** state ticks only call `drawControls()`; the shelf (`drawShelf()`) is rebuilt only when

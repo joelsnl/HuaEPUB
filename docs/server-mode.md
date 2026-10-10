@@ -38,8 +38,9 @@ after **Check for updates**.
 - Tap a card for its synopsis, chapter list (opened at your chapter, with a finder for long books)
   and actions: Read, Update, Download EPUB, Open link, Shelve, Remove. Tick cards to update, download
   or remove several at once.
-- **Shelve** is for a book you gave up on. It stays in the Library under **Shelved books** with its
-  files kept, and is never checked for updates. Looking it up again on **Add a book** or
+- **Shelve** is for a book you gave up on. It leaves the main list but stays in the Library with its
+  files kept, and is never checked for updates. Find it under the **Shelved** filter next to
+  *New chapters*, which appears as soon as something is shelved. Looking it up again on **Add a book** or
   **Add several** says you shelved it, either by its link or by the same Chinese title on another
   site; Add several leaves it out of the build. **Put back** returns it.
 
