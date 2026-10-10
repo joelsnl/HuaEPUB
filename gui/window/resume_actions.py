@@ -5,17 +5,11 @@ from __future__ import annotations
 
 import traceback
 
-
 from core.download_job import (
     clear_job, entries_from_job, load_job, novels_from_job, single_from_job,
 )
-from core.download_runner import (
-    downloads_folder, epub_path,
-)
-
-from gui.dialogs import (
-    ask_yes_no, show_error, show_warning,
-)
+from core.download_runner import downloads_folder, epub_path
+from gui.dialogs import ask_yes_no, show_error, show_warning
 
 
 class ResumeActionsMixin:

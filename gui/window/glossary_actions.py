@@ -6,18 +6,13 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtWidgets import (
-    QProgressDialog,
-)
+from PySide6.QtWidgets import QProgressDialog
 
-from core.download_job import (
-    load_job,
-)
+from core.download_job import load_job
 from core.settings import set_setting
-
 from gui.dialogs import (
-    ask_accept_glossary_proposals,
-    ask_yes_no, ask_yes_not_now_dont_ask, busy_message, show_error, show_info, show_warning,
+    ask_accept_glossary_proposals, ask_yes_no, ask_yes_not_now_dont_ask, busy_message,
+    show_error, show_info, show_warning,
 )
 from gui.workers.glossary_worker import GlossaryQwenWorker
 

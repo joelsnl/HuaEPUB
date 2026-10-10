@@ -8,20 +8,11 @@ import threading
 import time
 
 from PySide6.QtCore import Slot
-from PySide6.QtWidgets import (
-    QApplication,
-)
+from PySide6.QtWidgets import QApplication
 
-from core.branding import (
-    APP_TITLE,
-)
-from core.updater import (
-    check_for_updates_async, download_update_async, get_current_version,
-)
-
-from gui.dialogs import (
-    UpdateProgressDialog, ask_yes_no, show_info, show_warning,
-)
+from core.branding import APP_TITLE
+from core.updater import check_for_updates_async, download_update_async, get_current_version
+from gui.dialogs import UpdateProgressDialog, ask_yes_no, show_info, show_warning
 
 
 class UpdateActionsMixin:
