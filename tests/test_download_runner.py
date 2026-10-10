@@ -5,15 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.translation_progress import (
+    chapter_note_for_slot,
+    eta_from_network_samples,
+    eta_from_pack_samples,
+    planned_in_flight,
+    translation_status_line,
+    translator_progress_label,
+    zero_n_in_flight,
+)
 from core.download_runner import (
     DownloadControl,
     DownloadCancelled,
     EpubBuildResult,
-    _chapter_note_for_slot,
     _forward_progress,
-    _planned_in_flight,
-    _translation_status_line,
-    _zero_n_in_flight,
     backend_prefetches_during_fetch,
     build_epub,
     download_chapters_with_cache,
@@ -21,12 +26,9 @@ from core.download_runner import (
     epub_path,
     downloads_folder,
     epub_translate_kwargs,
-    eta_from_network_samples,
-    eta_from_pack_samples,
     format_completion_notes,
     completion_dialog_title,
     completion_has_warnings,
-    translator_progress_label,
 )
 from core.parser import Chapter, NovelInfo
 from core.tasks import download_one_novel
@@ -78,7 +80,7 @@ def test_pause_and_cancel():
     ctrl.cancel_requested = True
     try:
         ctrl.wait_while_paused()
-        assert False, "expected cancel"
+        raise AssertionError("expected cancel")
     except DownloadCancelled:
         pass
 
@@ -276,7 +278,7 @@ def test_fetch_status_includes_n_of_n_and_eta(monkeypatch):
 
 
 def test_translation_status_line_zero_of_n_before_http():
-    line = _translation_status_line(
+    line = translation_status_line(
         "Google",
         0,
         51399,
@@ -286,11 +288,11 @@ def test_translation_status_line_zero_of_n_before_http():
     assert line.startswith("Google · Translating: 0/51,399")
     assert "47,278 unique requests" in line
     assert "8 in flight" in line
-    retry = _translation_status_line(
+    retry = translation_status_line(
         "Google", 4, 20, retry_pass=2, in_flight=8
     )
     assert retry.startswith("Google · Retry pass 2: 4/20")
-    libre = _translation_status_line(
+    libre = translation_status_line(
         "LibreTranslate", 0, 100, pack_done=0, pack_total=12, in_flight=4
     )
     assert "LibreTranslate · Translating: 0/100" in libre
@@ -614,7 +616,7 @@ def test_prefetch_chinese_pairs_are_still_translated(tmp_path, monkeypatch):
 
 
 def test_translation_status_line_has_engine_inflight_chapter_eta():
-    line = _translation_status_line(
+    line = translation_status_line(
         "Google",
         4,
         20,
@@ -626,12 +628,12 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
     assert line == (
         "Google · Translating: 4/20 · 1 cached · 8 in flight · ch 1/3 Ch 0 · 9s left"
     )
-    retry = _translation_status_line(
+    retry = translation_status_line(
         "Microsoft", 2, 10, retry_pass=2, in_flight=4
     )
     assert retry.startswith("Microsoft · Retry pass 2: 2/10")
     assert "4 in flight" in retry
-    packed = _translation_status_line(
+    packed = translation_status_line(
         "LibreTranslate",
         10,
         100,
@@ -643,16 +645,16 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
     assert packed == (
         "LibreTranslate · Translating: 10/100 · 3/20 packs · 2 in flight · 1m left"
     )
-    nmt = _translation_status_line("Offline NMT", 5, 40, in_flight=32)
+    nmt = translation_status_line("Offline NMT", 5, 40, in_flight=32)
     assert nmt.startswith("Offline NMT · Translating: 5/40")
     assert "32 in flight" in nmt
-    start = _translation_status_line(
+    start = translation_status_line(
         "Google", 0, 51399, unique_requests=47278, in_flight=8
     )
     assert start.startswith("Google · Translating: 0/51,399")
     assert "47,278 unique requests" in start
     assert "8 in flight" in start
-    later = _translation_status_line(
+    later = translation_status_line(
         "Google",
         4,
         51399,
@@ -661,7 +663,7 @@ def test_translation_status_line_has_engine_inflight_chapter_eta():
         network_requests=4,
     )
     assert "unique requests" not in later
-    grouped = _translation_status_line(
+    grouped = translation_status_line(
         "Google",
         100,
         51399,
@@ -684,18 +686,18 @@ def test_planned_in_flight_caps_retry_to_leftovers_not_first_pass_ceiling():
         _unique_requests = 1
         total = 1
 
-    assert _planned_in_flight(T()) == 1
-    assert _zero_n_in_flight(T()) == 1
+    assert planned_in_flight(T()) == 1
+    assert zero_n_in_flight(T()) == 1
     T._in_flight = 200
-    assert _planned_in_flight(T()) == 1
+    assert planned_in_flight(T()) == 1
     T._gtx.current = 1
-    assert _planned_in_flight(T()) == 1
+    assert planned_in_flight(T()) == 1
     T._unique_requests = 171568
     T.total = 193823
     T._in_flight = 0
     T._gtx.current = 0
     T._gtx.limit = 200
-    assert _planned_in_flight(T()) == 200
+    assert planned_in_flight(T()) == 200
 
 
 def test_chapter_note_for_slot_names_current_chapter():
@@ -708,9 +710,9 @@ def test_chapter_note_for_slot_names_current_chapter():
         ("content", 0, "正文"),
         ("content", 1, "更多"),
     ]
-    assert _chapter_note_for_slot(texts, chapters, 1, 0) == " · novel title"
-    assert _chapter_note_for_slot(texts, chapters, 1, 1) == " · ch 1/2 第一章 开始"
-    note = _chapter_note_for_slot(texts, chapters, 2, 2)
+    assert chapter_note_for_slot(texts, chapters, 1, 0) == " · novel title"
+    assert chapter_note_for_slot(texts, chapters, 1, 1) == " · ch 1/2 第一章 开始"
+    note = chapter_note_for_slot(texts, chapters, 2, 2)
     assert note.startswith(" · ch 2/2 ")
     assert note.endswith("…")
 

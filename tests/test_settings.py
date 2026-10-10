@@ -180,3 +180,38 @@ class TestAtomicSettings:
         assert loaded["workers"] == 50
         assert loaded["translate"] is False
         assert loaded["cache_max_mb"] == 2048
+
+
+class TestUnreadableSettings:
+    def test_an_unreadable_file_is_kept_not_overwritten(self, temp_data_dir):
+        path = temp_data_dir / 'settings.json'
+        path.write_text('{"workers": 33, "oops": ', encoding='utf-8')   # truncated JSON
+        loaded = settings.load_settings()
+        assert loaded['workers'] == 200                                   # defaults while it is unreadable
+        assert (temp_data_dir / 'settings.json.unreadable').read_text(encoding='utf-8') == '{"workers": 33, "oops": '
+        assert not path.exists()
+
+    def test_saving_after_that_starts_a_fresh_file_and_keeps_the_old_one(self, temp_data_dir):
+        (temp_data_dir / 'settings.json').write_text('not json', encoding='utf-8')
+        settings.set_setting('workers', 12)
+        assert settings.get_setting('workers') == 12
+        assert (temp_data_dir / 'settings.json.unreadable').exists()
+
+    def test_the_log_says_so(self, temp_data_dir, capsys):
+        (temp_data_dir / 'settings.json').write_text('[', encoding='utf-8')
+        settings.load_settings()
+        assert 'settings.json could not be read' in capsys.readouterr().out
+
+    def test_a_failing_save_is_reported_once_and_never_raises(self, temp_data_dir, monkeypatch, capsys):
+        from core import utils
+
+        monkeypatch.setattr(utils, '_reported', set())
+
+        def boom(_settings):
+            raise OSError('disk full')
+
+        monkeypatch.setattr(settings, '_write_settings_unlocked', boom)
+        settings.save_settings({'workers': 1})
+        settings.set_setting('workers', 2)
+        out = capsys.readouterr().out
+        assert out.count('could not save settings') == 1 and 'disk full' in out

@@ -29,7 +29,6 @@ from lxml import html as lxml_html
 # CONSTANTS
 # ============================================================================
 XHTML_NS = 'http://www.w3.org/1999/xhtml'
-XML_NS = 'http://www.w3.org/XML/1998/namespace'
 XHTML = lambda name: f'{{{XHTML_NS}}}{name}'
 
 # Tags that should NOT be self-closing in EPUB output (from Calibre)
@@ -180,10 +179,6 @@ class ContentCleaner:
             added += 1
         return added
 
-    def reset_stats(self):
-        """Reset statistics."""
-        for key in self.stats:
-            self.stats[key] = 0
     
     def clean_text(self, text: str) -> str:
         """Clean text content - remove watermarks and invisible chars."""
@@ -215,192 +210,16 @@ class ContentCleaner:
     # XHTML PARSING - Multi-encoding with XML/HTML fallback (from fixTranslate)
     # ========================================================================
     
-    def parse_xhtml(self, data, filename: str = '<string>') -> Optional[etree._Element]:
-        """
-        Parse XHTML/HTML data into an lxml element tree.
-        Tries multiple encodings and falls back from XML to HTML parser.
-        """
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-        
-        # Try to decode with multiple encodings
-        text = None
-        for encoding in ['utf-8', 'gbk', 'gb2312', 'big5', 'latin-1']:
-            try:
-                text = data.decode(encoding)
-                break
-            except (UnicodeDecodeError, LookupError):
-                continue
-        
-        if text is None:
-            return None
-        
-        # Remove null bytes
-        text = text.replace('\0', '')
-        
-        # Strip encoding declarations that might conflict
-        text = re.sub(r'<\?xml[^>]*\?>', '', text)
-        text = re.sub(r'encoding\s*=\s*["\'][^"\']*["\']', '', text)
-        
-        try:
-            # Try parsing as XML first (preserves XHTML namespace)
-            parser = etree.XMLParser(
-                recover=True,
-                no_network=True,
-                resolve_entities=False,
-                load_dtd=False,
-            )
-            root = etree.fromstring(text.encode('utf-8'), parser)
-        except Exception:
-            try:
-                # Fall back to HTML parser
-                root = lxml_html.fromstring(text)
-                # Ensure we have an html root
-                if root.tag != 'html' and root.tag != XHTML('html'):
-                    new_root = etree.Element(XHTML('html'))
-                    body = etree.SubElement(new_root, XHTML('body'))
-                    body.append(root)
-                    root = new_root
-            except Exception:
-                return None
-        
-        return root
     
     # ========================================================================
     # XHTML STRUCTURE FIXING (from fixTranslate)
     # ========================================================================
     
-    def fix_structure(self, root: etree._Element) -> etree._Element:
-        """Fix XHTML structure for e-reader compatibility."""
-        
-        # Ensure we're in XHTML namespace
-        if root.tag == 'html':
-            root.tag = XHTML('html')
-        
-        # Ensure all children are in XHTML namespace
-        for elem in root.iter():
-            if isinstance(elem.tag, str) and not elem.tag.startswith('{'):
-                elem.tag = XHTML(elem.tag)
-        
-        # Ensure <head> exists
-        head = root.find(f'.//{{{XHTML_NS}}}head')
-        if head is None:
-            head = root.find('.//head')
-        if head is None:
-            head = etree.Element(XHTML('head'))
-            root.insert(0, head)
-        elif head.tag == 'head':
-            head.tag = XHTML('head')
-        
-        # Ensure <title> exists in head
-        title = head.find(f'{{{XHTML_NS}}}title')
-        if title is None:
-            title = head.find('title')
-        if title is None:
-            title = etree.SubElement(head, XHTML('title'))
-            title.text = 'Unknown'
-        elif title.tag == 'title':
-            title.tag = XHTML('title')
-        if not title.text or not title.text.strip():
-            title.text = 'Unknown'
-        
-        # Ensure proper meta charset - remove old content-type metas first
-        for meta in head.findall(f'.//{{{XHTML_NS}}}meta[@http-equiv]'):
-            if meta.get('http-equiv', '').lower() == 'content-type':
-                meta.getparent().remove(meta)
-        for meta in head.findall('.//meta[@http-equiv]'):
-            if meta.get('http-equiv', '').lower() == 'content-type':
-                meta.getparent().remove(meta)
-        
-        meta = etree.Element(XHTML('meta'))
-        meta.set('http-equiv', 'Content-Type')
-        meta.set('content', 'text/html; charset=utf-8')
-        head.insert(0, meta)
-        
-        # Ensure <body> exists
-        body = root.find(f'.//{{{XHTML_NS}}}body')
-        if body is None:
-            body = root.find('.//body')
-        if body is None:
-            body = etree.SubElement(root, XHTML('body'))
-        elif body.tag == 'body':
-            body.tag = XHTML('body')
-        
-        return root
     
     # ========================================================================
     # CONTENT CLEANING (enhanced from fixTranslate)
     # ========================================================================
     
-    def clean_content(self, root: etree._Element) -> etree._Element:
-        """Clean content - remove bad elements, convert tags, fix text, etc."""
-        
-        # Remove forbidden elements (both namespaced and non-namespaced)
-        for tag in REMOVE_ELEMENTS:
-            for ns in [f'{{{XHTML_NS}}}', '']:
-                for elem in root.findall(f'.//{ns}{tag}'):
-                    self._remove_element_keep_tail(elem)
-                    self.stats['elements_removed'] += 1
-        
-        # Remove ad containers even when they have text (empty-only missed real ads)
-        for ns in [f'{{{XHTML_NS}}}', '']:
-            for elem in list(root.findall(f'.//{ns}div')):
-                class_attr = (elem.get('class') or '').lower()
-                classes = set(class_attr.split())
-                if classes & REMOVE_DIV_CLASSES:
-                    self._remove_element_keep_tail(elem)
-                    self.stats['ad_divs_removed'] += 1
-        
-        # Convert deprecated tags
-        for old_tag, new_tag, attrs in DEPRECATED_TAG_CONVERSIONS:
-            for ns in [f'{{{XHTML_NS}}}', '']:
-                for elem in root.findall(f'.//{ns}{old_tag}'):
-                    elem.tag = XHTML(new_tag) if ns else new_tag
-                    for k, v in attrs.items():
-                        existing = elem.get(k, '')
-                        elem.set(k, f'{existing}; {v}' if existing else v)
-                    self.stats['deprecated_tags_converted'] += 1
-        
-        # Remove empty inline tags (no content, no id/name)
-        for tag in ['a', 'i', 'b', 'u', 'span', 'em', 'strong']:
-            for ns in [f'{{{XHTML_NS}}}', '']:
-                for elem in root.findall(f'.//{ns}{tag}'):
-                    if (elem.get('id') is None and elem.get('name') is None and
-                        len(elem) == 0 and not (elem.text and elem.text.strip())):
-                        self._remove_element_keep_tail(elem)
-                        self.stats['empty_tags_removed'] += 1
-        
-        # Convert <br> with content to <div>
-        for ns in [f'{{{XHTML_NS}}}', '']:
-            for br in root.findall(f'.//{ns}br'):
-                if len(br) > 0 or (br.text and br.text.strip()):
-                    br.tag = XHTML('div')
-                    self.stats['br_converted'] += 1
-        
-        # Clean text content (watermarks, invisible chars)
-        for elem in root.iter():
-            if elem.text:
-                elem.text = self.clean_text(elem.text)
-            if elem.tail:
-                elem.tail = self.clean_text(elem.tail)
-        
-        # Fix duplicate IDs
-        seen_ids = set()
-        for elem in root.iter():
-            id_val = elem.get('id')
-            if id_val:
-                if id_val in seen_ids:
-                    del elem.attrib['id']
-                    self.stats['duplicate_ids_removed'] += 1
-                else:
-                    seen_ids.add(id_val)
-        
-        # Optional: convert br sequences to paragraphs
-        if self.convert_br_to_p:
-            self._convert_br_runs_to_paragraphs(root, use_ns=True)
-
-        self._sanitize_allowed_markup(root)
-        return root
     
     @staticmethod
     def _local_tag(tag) -> Optional[str]:
@@ -531,22 +350,6 @@ class ContentCleaner:
     # SERIALIZATION (from fixTranslate)
     # ========================================================================
     
-    def serialize_xhtml(self, root: etree._Element) -> bytes:
-        """Serialize element tree to bytes with proper EPUB formatting."""
-        
-        # Fix comments with -- (trips up Adobe Digital Editions)
-        for comment in root.iter(etree.Comment):
-            if comment.text and '--' in comment.text:
-                comment.text = comment.text.replace('--', '__')
-                self.stats['comments_fixed'] += 1
-        
-        # Serialize to bytes
-        result = etree.tostring(root, encoding='utf-8', xml_declaration=True, pretty_print=True)
-        
-        # Fix self-closing tags that shouldn't be self-closing
-        result = self._fix_self_closing_tags(result)
-        
-        return result
     
     def _fix_self_closing_tags(self, data: bytes) -> bytes:
         """Convert self-closing tags to properly closed tags for e-reader compatibility."""
@@ -566,25 +369,6 @@ class ContentCleaner:
     # FULL XHTML PROCESSING PIPELINE (from fixTranslate)
     # ========================================================================
     
-    def process_xhtml(self, data, filename: str = '<string>') -> Optional[bytes]:
-        """
-        Full XHTML processing pipeline for an EPUB file.
-        Parse → fix structure → clean content → serialize.
-        
-        Args:
-            data: Raw XHTML/HTML bytes or string
-            filename: Filename for error reporting
-            
-        Returns:
-            Processed XHTML as bytes, or None on parse failure
-        """
-        root = self.parse_xhtml(data, filename)
-        if root is None:
-            return None
-        
-        root = self.fix_structure(root)
-        root = self.clean_content(root)
-        return self.serialize_xhtml(root)
     
     # ========================================================================
     # SIMPLE HTML CLEANING (for use in epub_builder pipeline)
@@ -687,9 +471,6 @@ class ContentCleaner:
                 parent.text = (parent.text or '') + elem.tail
         parent.remove(elem)
     
-    def get_stats(self) -> dict:
-        """Get cleaning statistics."""
-        return self.stats.copy()
 
 
 # ============================================================================

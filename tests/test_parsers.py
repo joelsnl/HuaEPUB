@@ -2,7 +2,7 @@
 
 from bs4 import BeautifulSoup
 
-import parsers  # noqa: F401 — register SiteConfigParser + GenericParser
+import parsers  # noqa: F401 - registers SiteConfigParser first, GenericParser last
 from core.parser import Chapter, get_parser_for_url, _parser_registry
 from parsers.config import SiteConfigParser
 from parsers.generic import GenericParser

@@ -137,14 +137,6 @@ def ollama_models_root() -> Path:
     return Path.home() / ".ollama" / "models"
 
 
-def parse_ollama_from(modelfile: str) -> Path | None:
-    match = re.search(r"^FROM\s+(\S+)", modelfile, re.I | re.M)
-    if not match:
-        return None
-    path = Path(match.group(1).strip().strip('"'))
-    return path if path.is_file() else None
-
-
 def ollama_blob_from_manifest(tag: str) -> Path | None:
     if ":" not in tag:
         tag = f"{tag}:latest"
@@ -431,11 +423,6 @@ def install_llama_server(profile: DeviceProfile, *, download: bool, log: Log = _
 DEFAULT_SERVER_HELP = "--alias --cache-prompt --flash-attn --cont-batching --spec-type"
 
 
-def probe_help(exe: Path) -> str:
-    del exe
-    return DEFAULT_SERVER_HELP
-
-
 def build_server_args(
     exe: Path,
     gguf: Path,
@@ -563,28 +550,6 @@ def server_running(host: str = DEFAULT_HOST) -> bool:
         return False
 
 
-def stop_server(log: Log = _noop_log) -> bool:
-    path = pid_path()
-    if not path.is_file():
-        return False
-    try:
-        pid = int(path.read_text(encoding="utf-8").strip())
-    except ValueError:
-        path.unlink(missing_ok=True)
-        return False
-    try:
-        if platform.system() == "Windows":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=False, capture_output=True)
-        else:
-            os.kill(pid, 15)
-        log(f"Stopped llama-server (pid {pid})")
-    except OSError as exc:
-        log(f"Could not stop pid {pid}: {exc}")
-        return False
-    path.unlink(missing_ok=True)
-    return True
-
-
 @dataclass
 class LlamaHandle:
     host: str
@@ -684,20 +649,3 @@ def start_llama_server(
     return LlamaHandle(host=host, alias=alias, gguf=gguf, exe=exe, proc=proc, args=args)
 
 
-def plan_serve(profile: DeviceProfile) -> dict[str, str]:
-    alias, filename, url = gguf_choice(profile)
-    blob = find_ollama_blob(alias)
-    local = find_local_gguf(filename)
-    exe = find_llama_server()
-    return {
-        "os": f"{platform.system()} {platform.machine()}",
-        "device": profile.name,
-        "backend": profile.backend,
-        "vendor": profile.vendor,
-        "binary": ", ".join(binary_preferences(profile)[:3]),
-        "llama-server": str(exe) if exe else "(will download from GitHub)",
-        "gguf": str(local or blob or f"(will download {filename})"),
-        "hf": url,
-        "alias": alias,
-        "cache": str(cache_dir()),
-    }

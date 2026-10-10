@@ -143,7 +143,6 @@ def window(qapp, tmp_path, monkeypatch):
             win._stop_serving(remember_off=False)
     except Exception:
         pass
-    win._force_close = True
     win.close()
     win.deleteLater()
     qapp.processEvents()

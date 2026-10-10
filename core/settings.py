@@ -27,6 +27,7 @@ from core.branding import (
     DATA_DIR_NAME,
     LEGACY_DATA_DIR_NAME,
 )
+from core.utils import report_once
 
 SETTINGS_FILE = "settings.json"
 LEGACY_UPDATER_SETTINGS_FILE = "updater_settings.json"
@@ -194,14 +195,33 @@ def get_settings_path() -> Path:
     return get_data_dir() / SETTINGS_FILE
 
 
+def _set_aside_unreadable(path: Path, exc: Exception) -> None:
+    """Keep a settings file that cannot be read as ``settings.json.unreadable``.
+
+    The app carries on with defaults, and the next save would otherwise overwrite the file
+    and lose whatever could still be recovered from it by hand.
+    """
+    aside = path.with_name(path.name + ".unreadable")
+    try:
+        path.replace(aside)
+        where = f"kept as {aside.name}"
+    except OSError:
+        where = "could not be kept"
+    print(f"  Settings: {path.name} could not be read ({exc}); using defaults, file {where}.")
+
+
 def _load_settings_unlocked() -> Dict[str, Any]:
     """Load settings merged over defaults. Caller must hold _lock."""
     settings = dict(DEFAULTS)
     path = get_settings_path()
     try:
         if path.exists():
-            with open(path, 'r', encoding='utf-8') as f:
-                stored = json.load(f)
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    stored = json.load(f)
+            except ValueError as exc:  # not valid JSON
+                _set_aside_unreadable(path, exc)
+                stored = {}
             if isinstance(stored, dict):
                 settings.update(stored)
         else:
@@ -242,13 +262,19 @@ def load_settings() -> Dict[str, Any]:
         return dict(DEFAULTS)
 
 
+def _save_failed(exc: Exception) -> None:
+    """Saving settings never raises (the app must keep running), but the log should say why
+    changes are not sticking."""
+    report_once("settings:save", f"  Settings: could not save settings ({type(exc).__name__}: {exc}).")
+
+
 def save_settings(settings: Dict[str, Any]):
     """Persist settings atomically. Never raises."""
     try:
         with _lock:
             _write_settings_unlocked(dict(settings))
-    except Exception:
-        pass
+    except Exception as exc:
+        _save_failed(exc)
 
 
 def get_setting(key: str) -> Any:
@@ -262,8 +288,8 @@ def set_setting(key: str, value: Any):
             settings = _load_settings_unlocked()
             settings[key] = value
             _write_settings_unlocked(settings)
-    except Exception:
-        pass
+    except Exception as exc:
+        _save_failed(exc)
 
 
 def update_settings(**kwargs):
@@ -273,5 +299,5 @@ def update_settings(**kwargs):
             settings = _load_settings_unlocked()
             settings.update(kwargs)
             _write_settings_unlocked(settings)
-    except Exception:
-        pass
+    except Exception as exc:
+        _save_failed(exc)

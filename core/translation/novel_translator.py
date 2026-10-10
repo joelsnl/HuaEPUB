@@ -207,20 +207,6 @@ class NovelTranslator(GoogleTranslator):
                 "Set Glossary to Cultivation pack to force it."
             )
 
-    def load_novel_glossary(self, title: str) -> None:
-        """Merge ``~/.huaepub/glossaries/<title>.json`` if present."""
-        if not title:
-            return
-        if not self._glossary_configured:
-            self.configure_glossary(detect_text=title, mode=self._glossary_mode)
-        if self.glossary is None:
-            return
-        from core.translation.glossary import _load_json_glossary, novel_glossary_path
-
-        extra = _load_json_glossary(novel_glossary_path(title))
-        if extra.terms:
-            self.glossary.merge(extra, overwrite=True)
-            print(f"  Novel glossary: {len(extra.terms)} extra term(s) for {title!r}")
 
     def harvest_names_from_texts(
         self,
@@ -233,31 +219,6 @@ class NovelTranslator(GoogleTranslator):
 
         return harvest_and_apply(self, texts, novel_title=novel_title)
 
-    def classify_glossary_with_qwen(
-        self,
-        texts: list,
-        *,
-        novel_title: str = "",
-        complete_fn=None,
-        cancelled=None,
-        log=None,
-    ) -> int:
-        """Classify mined terms with local Qwen when the polish GGUF is already on disk."""
-        from core.translation.qwen_glossary import classify_novel_with_qwen
-
-        if self.glossary is None:
-            return 0
-        result = classify_novel_with_qwen(
-            novel_title=novel_title,
-            texts=list(texts or []),
-            complete_fn=complete_fn,
-            cancelled=cancelled or (lambda: self._cancel_requested),
-            log=log,
-            apply=True,
-            engine=self.glossary,
-            allow_download=False,
-        )
-        return int(result.get("added") or 0) + int(result.get("updated") or 0)
 
     def _cache_backend(self) -> str:
         base = super()._cache_backend()

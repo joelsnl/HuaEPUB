@@ -22,16 +22,6 @@ SPAN_POLISH_INSTRUCTIONS = (
 
 TRANSLATE_SYSTEM = """Translate Chinese web-novel passages into fluent English. Keep meaning, names, and the source's genre and register. Do not recast the text into a different genre. Return the SAME numbered [n] blocks and nothing else."""
 
-GLOSSARY_SYSTEM = """You extract a terminology glossary from Chinese web-novel text or English MTL of a Chinese novel.
-Return ONLY JSON, no markdown:
-{"terms":[{"source":"...","target":"...","type":"character|place|organization|technique|item|title|other","notes":""}]}
-Rules:
-- source is the form that appears in the input (Chinese or MTL English).
-- target is the canonical English rendering to use everywhere.
-- Person names: pinyin, e.g. "Wang Lin" not "King Forest".
-- Keep the book's own genre and register. Do not rewrite terms into another genre's jargon.
-- Skip ordinary words. Keep 15-60 high-value recurring terms.
-"""
 
 SOURCE_STYLE = (
     "Keep this novel's own genre, titles, honorifics, and names. "
@@ -44,27 +34,6 @@ def job_style(extra_style: str = "") -> str:
     if extra:
         return f"{SOURCE_STYLE}\n{extra}"
     return SOURCE_STYLE
-
-
-def build_user_prompt(
-    numbered_text: str,
-    glossary_block: str,
-    previous: str,
-    extra_style: str,
-    mode: str,
-) -> str:
-    parts = []
-    if glossary_block:
-        parts.append(glossary_block)
-    if extra_style:
-        parts.append(f"Style notes:\n{extra_style}")
-    if previous:
-        parts.append(
-            "Previously rewritten text (context only, do not repeat):\n" + previous
-        )
-    task = "Polish" if mode == "polish" else "Translate"
-    parts.append(f"{task} these passages. Keep the same [n] labels:\n\n{numbered_text}")
-    return "\n\n".join(parts)
 
 
 def format_span_jobs(jobs: list[SpanJob]) -> str:

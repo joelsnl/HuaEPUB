@@ -69,7 +69,7 @@ def nmt_model_dir() -> Path:
 
 def nmt_runtime_available() -> bool:
     try:
-        import ctranslate2  # noqa: F401
+        import ctranslate2  # noqa: F401 - probing that the optional packages import
         import sentencepiece  # noqa: F401
     except ImportError:
         return False
@@ -516,8 +516,6 @@ class CTranslate2Engine:
         self._load_error: Optional[str] = None
         self._lock = threading.Lock()
 
-    def available(self) -> bool:
-        return nmt_runtime_available() and nmt_model_ready(self.model_dir)
 
     def _load_tokenizers(self) -> None:
         if self._src is not None and self._tgt is not None:

@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-import parsers  # noqa: F401  (registers SiteConfigParser first, GenericParser last)
+import parsers  # noqa: F401 - registers the site parsers
 from core.cleaner import is_chinese
 from core.parser import Chapter, NovelInfo, fetch_info_and_chapters, get_parser_for_url
 from core.security import UnsafeURLError, validate_fetch_url
@@ -103,14 +103,14 @@ def build_preview(url: str) -> Preview:
     try:
         validate_fetch_url(url)
     except UnsafeURLError as exc:
-        raise PreviewError("blocked_url", 400, _short(exc))
+        raise PreviewError("blocked_url", 400, _short(exc)) from exc
     parser = get_parser_for_url(url)
     if parser is None:
         raise PreviewError("no_parser", 400)
     try:
         info, chapters = fetch_info_and_chapters(parser, url)
     except Exception as exc:
-        raise PreviewError("fetch_failed", 502, _short(exc))
+        raise PreviewError("fetch_failed", 502, _short(exc)) from exc
     if not chapters:
         raise PreviewError("no_chapters", 400)
     if not info.source_url:

@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from core.polish.detect import CJK_RE, cjk_ratio
 from core.polish.glossary import Glossary
@@ -215,28 +215,12 @@ def examples_from_changelog(path: Path) -> list[LabeledSpan]:
     return out
 
 
-def load_changelog_paths(paths: Iterable[Path]) -> list[LabeledSpan]:
-    examples: list[LabeledSpan] = []
-    for path in paths:
-        if path.is_file() and path.suffix.lower() == ".json":
-            examples.extend(examples_from_changelog(path))
-    return examples
-
-
 def default_tagger_path() -> Path:
     return cache_dir() / "span_tagger.json"
 
 
 def bundled_tagger_path() -> Path:
     return package_data_dir() / "span_tagger.json"
-
-
-def save_tagger(tagger: SpanTagger, path: Path | None = None) -> Path:
-    dest = path or default_tagger_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps(tagger.to_json(), indent=2), encoding="utf-8")
-    reset_tagger_cache()
-    return dest
 
 
 def load_tagger_file(path: Path) -> SpanTagger:
@@ -277,106 +261,10 @@ def get_tagger() -> SpanTagger | None:
     return None
 
 
-def tagger_id() -> str:
-    tagger = get_tagger()
-    if tagger is None:
-        return "heur"
-    return tagger.fingerprint or "learned"
-
-
-def evaluate_against_changelog(path: Path, tagger: SpanTagger | None = None) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    gold_replace = []
-    gold_keep = []
-    leaky = 0
-    for edit in data.get("edits") or []:
-        before = str(edit.get("before") or "").strip()
-        after = str(edit.get("after") or "").strip()
-        if before:
-            gold_replace.append(before)
-        if after and leaky_model_text(after):
-            leaky += 1
-        elif after:
-            gold_keep.append(after)
-    for item in data.get("unchanged") or []:
-        before = str(item.get("before") or "").strip()
-        if before:
-            gold_keep.append(before)
-
-    def rate(texts: list[str], want_replace: bool, learned: bool) -> float:
-        if not texts:
-            return 1.0
-        hits = 0
-        for text in texts:
-            if learned:
-                pred = bool(tagger and tagger.is_replace(text))
-            else:
-                pred = mtl_score(text, "polish") >= 1
-            hits += int(pred == want_replace)
-        return hits / len(texts)
-
-    learned = tagger or get_tagger()
-    return {
-        "file": str(path),
-        "llm_spans_sent": data.get("llm_spans_sent"),
-        "llm_edits": data.get("llm_edits") or len(data.get("edits") or []),
-        "llm_unchanged": data.get("llm_unchanged"),
-        "leaky_after": leaky,
-        "gold_replace": len(gold_replace),
-        "gold_keep": len(gold_keep),
-        "heuristic_replace_recall": rate(gold_replace, True, False),
-        "learned_replace_recall": rate(gold_replace, True, True) if learned else None,
-        "heuristic_keep_rate": rate(gold_keep, False, False),
-        "learned_keep_rate": rate(gold_keep, False, True) if learned else None,
-        "tagger": learned.fingerprint if learned else None,
-    }
-
-
-def export_kd_pairs(path: Path) -> list[dict[str, str]]:
-    from core.polish.spans import replacement_ok
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    pairs = []
-    for edit in data.get("edits") or []:
-        before = str(edit.get("before") or "").strip()
-        after = str(edit.get("after") or "").strip()
-        if not before or not after or leaky_model_text(after):
-            continue
-        if not replacement_ok(before, after):
-            continue
-        pairs.append({"source": before, "target": after})
-    return pairs
-
-
 def _tagger_fingerprint(weights: list[float], anchors: list[str]) -> str:
     return hashlib.sha256(
         json.dumps({"w": weights, "a": anchors}, sort_keys=True).encode("utf-8")
     ).hexdigest()[:12]
-
-
-def merge_anchors(tagger: SpanTagger, extra: Iterable[str]) -> SpanTagger:
-    merged = sorted({_normalize(item) for item in [*tagger.anchors, *extra] if _normalize(item)})
-    tagger.anchors = merged
-    tagger._anchors_cached = None  # type: ignore[attr-defined]
-    tagger.fingerprint = _tagger_fingerprint(tagger.weights, merged)
-    return tagger
-
-
-def train_from_files(
-    paths: list[Path],
-    *,
-    dest: Path | None = None,
-    min_recall: float = 0.99,
-    include_synthetic: bool = True,
-    merge_existing: bool = True,
-) -> tuple[SpanTagger, Path]:
-    previous = get_tagger() if merge_existing else None
-    examples = load_changelog_paths(paths)
-    from core.polish.tagger_train import train_tagger as _train_tagger
-    tagger = _train_tagger(examples, min_recall=min_recall, include_synthetic=include_synthetic)
-    if previous and previous.anchors:
-        merge_anchors(tagger, previous.anchors)
-    return tagger, save_tagger(tagger, dest)
 
 
 def __getattr__(name: str):

@@ -80,7 +80,7 @@ def paint_cover(path: Path, zh: str, en: str, colours: tuple) -> None:
 def build(root: Path) -> Path:
     from PySide6.QtGui import QGuiApplication
 
-    _app = QGuiApplication.instance() or QGuiApplication(sys.argv)  # noqa: F841 - fonts need it
+    _app = QGuiApplication.instance() or QGuiApplication(sys.argv)
     data = root / ".huaepub"
     data.mkdir(parents=True, exist_ok=True)
     (data / "settings.json").write_text(json.dumps({

@@ -11,8 +11,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import List, Optional, Tuple
 
-CACHE_BACKEND = "span-polish:v2"
-
 
 def wants_polish(text: str) -> bool:
     raw = (text or "").strip()

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from core.settings import get_data_dir
+from core.utils import report_once
 
 READING_FILE = "reading.json"
 
@@ -124,8 +125,8 @@ def set_position(
                 entry["bookmarks"] = old["bookmarks"]
             data[url] = entry
             _write_unlocked(path, data)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_once("reading:save", f"  Reading position could not be saved ({type(exc).__name__}: {exc}).")
 
 
 def _mark_row(item: Any) -> Optional[dict]:

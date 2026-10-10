@@ -191,7 +191,6 @@ class TestGooglePackAndLegacyCache:
 
         def fake(blob):
             seen.append(blob)
-            parts = blob.split("[[#")
             # Echo English so unpack succeeds
             out = []
             for i, text in enumerate(texts, 1):

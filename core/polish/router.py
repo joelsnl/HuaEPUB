@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import re
 
-from typing import Protocol
 
 from core.polish.detect import CJK_RE, foreign_script_ratio
 from core.polish.glossary import Glossary
 
-
-class _HasText(Protocol):
-    text: str
-    tag: str
 
 BOILERPLATE_RE = re.compile(
     r"^(?:page\s*)?\d+(?:\s*/\s*\d+)?$|^(?:copyright|contents|cover|title page)$",
@@ -75,17 +70,3 @@ def skip_threshold(skip_mode: str) -> int:
     return 1
 
 
-def needs_llm(
-    segment: _HasText,
-    mode: str,
-    skip_mode: str,
-    glossary: Glossary | None = None,
-) -> bool:
-    if is_boilerplate(segment.text):
-        return False
-    threshold = skip_threshold(skip_mode)
-    if threshold <= 0:
-        return True
-    if mode == "translate":
-        return foreign_script_ratio(segment.text) >= 0.08 or mtl_score(segment.text, mode, glossary, segment.tag) >= 1
-    return mtl_score(segment.text, mode, glossary, segment.tag) >= threshold
