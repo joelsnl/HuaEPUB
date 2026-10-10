@@ -1128,8 +1128,9 @@ def test_remote_server_speaks_https_only(session):
 
 def test_web_never_loads_qt_and_core_never_loads_web_or_gui():
     code = (
-        "import sys, web.server, web.host, web.books, web.tasks, web.library_api, "
-        "web.reader_api, web.tls, web.auth\n"
+        "import importlib, pkgutil, sys, web\n"
+        "for mod in pkgutil.iter_modules(web.__path__):\n"
+        "    importlib.import_module('web.' + mod.name)\n"
         "bad = [m for m in sys.modules if m.split('.')[0] in ('PySide6', 'gui')]\n"
         "assert not bad, bad\n"
     )
