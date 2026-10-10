@@ -66,7 +66,6 @@ def build():
         '--hidden-import=bs4',
         '--hidden-import=ebooklib',
         '--hidden-import=ebooklib.epub',
-        '--hidden-import=PIL',
         '--hidden-import=PySide6',
         '--hidden-import=gui',
         '--hidden-import=gui.main_window',
