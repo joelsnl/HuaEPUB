@@ -28,9 +28,15 @@ from core.parser import Chapter, NovelInfo
 from core.settings import get_default_books_dir
 from core.translation.glossary import normalize_glossary_mode
 from core.translation.novel_translator import NovelTranslator
-from core.gtx_throttle import GtxThrottle
-from core.translator import THROTTLED_BACKENDS
-from core.utils import format_count, format_eta, format_ratio, plural, safe_filename
+from core.translation_progress import (
+    TranslationProgress,
+    engine_eta,
+    eta_from_network_samples,
+    translation_status_line,
+    translator_progress_label,
+    zero_n_in_flight,
+)
+from core.utils import format_count, format_ratio, plural, safe_filename
 from core.security import safe_epub_basename
 
 
@@ -162,182 +168,6 @@ def completion_dialog_title(body: str, ok_title: str) -> str:
     if completion_has_warnings(body):
         return "Saved with warnings"
     return ok_title
-
-
-def eta_from_network_samples(
-    network_elapsed: float,
-    network_done: int,
-    network_remaining: int,
-) -> str:
-    """ETA text from uncached/network samples only. Empty until we have a sample."""
-    if network_done < 1 or network_remaining <= 0 or network_elapsed <= 0:
-        return ""
-    avg = network_elapsed / network_done
-    return f" · {format_eta(avg * network_remaining)} left"
-
-
-def eta_from_pack_samples(
-    elapsed: float,
-    packs_done: int,
-    packs_remaining: int,
-    *,
-    min_samples: int = 2,
-) -> str:
-    """ETA from completed packed gtx requests, not raw paragraphs."""
-    if packs_done < min_samples or packs_remaining <= 0 or elapsed <= 0:
-        return ""
-    return f" · {format_eta(packs_remaining * (elapsed / packs_done))} left"
-
-
-def translator_progress_label(backend: str) -> str:
-    """Short name for the status bar (every translation engine)."""
-    key = (backend or "").strip().lower()
-    return {
-        "google": "Google",
-        "google_html": "Google HTML",
-        "google_gtx": "Google Old",
-        "microsoft": "Microsoft",
-        "libretranslate": "LibreTranslate",
-        "ollama": "Ollama",
-        "ctranslate2": "Offline NMT",
-    }.get(key, "Translate")
-
-
-def _engine_eta(
-    elapsed: float,
-    completed: int,
-    remaining: int,
-    *,
-    min_samples: int,
-) -> str:
-    if completed < min_samples or remaining <= 0 or elapsed <= 0:
-        return ""
-    return f" · {format_eta(remaining * (elapsed / completed))} left"
-
-
-def _chapter_note_for_slot(
-    all_texts: List[Tuple[str, int, str]],
-    chapters: List[Chapter],
-    completed: int,
-    progress_source_index: int = -1,
-) -> str:
-    if not all_texts:
-        return ""
-    slot = int(progress_source_index)
-    if slot < 0:
-        if completed <= 0:
-            return ""
-        slot = completed - 1
-    slot = min(max(slot, 0), len(all_texts) - 1)
-    kind, idx, _src = all_texts[slot]
-    if kind == "title":
-        return " · novel title"
-    if kind == "author":
-        return " · author"
-    if kind == "description":
-        return " · description"
-    if kind in ("content", "chapter_title") and 0 <= idx < len(chapters):
-        title = (chapters[idx].title or "").strip()
-        if len(title) > 28:
-            title = title[:28] + "…"
-        return f" · ch {format_ratio(idx + 1, len(chapters))} {title}"
-    return ""
-
-
-def _pass_request_bound(translator) -> int:
-    """How many unique GETs this pass can still send (0 if unknown)."""
-    try:
-        unique = int(getattr(translator, "_unique_requests", 0) or 0)
-        if unique > 0:
-            return unique
-        return int(getattr(translator, "total", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _planned_in_flight(translator) -> int:
-    """In-flight for the footer: live gate, else this pass's planned GETs.
-
-    Never report the first-pass ceiling (200) as "in flight" on a 1–2
-    leftover retry. Cap by unique requests / pass size.
-    """
-    try:
-        bound = _pass_request_bound(translator)
-        gate = getattr(translator, "_gtx", None)
-        if gate is not None:
-            cur = int(getattr(gate, "current", 0) or 0)
-            if cur > 0:
-                return min(cur, bound) if bound > 0 else cur
-            planned = int(getattr(translator, "_in_flight", 0) or 0)
-            if planned > 0:
-                return min(planned, bound) if bound > 0 else planned
-            if bound > 0:
-                return min(int(getattr(gate, "limit", 0) or 0), bound)
-            return 0
-        planned = int(getattr(translator, "_in_flight", 0) or 0)
-        if bound > 0 and planned > 0:
-            return min(planned, bound)
-        return planned
-    except Exception:
-        return 0
-
-
-def _zero_n_in_flight(translator) -> int:
-    """Planned in-flight before the first GET of a pass returns."""
-    planned = _planned_in_flight(translator)
-    if planned > 0:
-        return planned
-    bound = _pass_request_bound(translator)
-    backend = (getattr(translator, "backend", "") or "").strip().lower()
-    if bound > 0:
-        if backend in THROTTLED_BACKENDS:
-            gate = getattr(translator, "_gtx", None)
-            cap = (
-                int(getattr(gate, "limit", 0) or GtxThrottle.START_LIMIT)
-                if gate is not None
-                else bound
-            )
-            return max(1, min(cap, bound))
-        return bound
-    if backend in THROTTLED_BACKENDS:
-        return GtxThrottle.START_LIMIT
-    return 0
-
-
-def _translation_status_line(
-    engine: str,
-    completed: int,
-    total: int,
-    *,
-    retry_pass: int = 0,
-    cache_hits: int = 0,
-    pack_done: int = 0,
-    pack_total: int = 0,
-    in_flight: int = 0,
-    unique_requests: int = 0,
-    chapter_note: str = "",
-    eta: str = "",
-    network_requests: int = 0,
-) -> str:
-    ratio = format_ratio(completed, total)
-    cache_note = ""
-    if cache_hits and completed:
-        cache_note = f" · {format_count(min(cache_hits, completed))} cached"
-    pack_note = (
-        f" · {format_ratio(pack_done, pack_total)} packs" if pack_total else ""
-    )
-    unique_note = ""
-    if unique_requests > 0 and network_requests <= 0:
-        unique_note = f" · {format_count(unique_requests)} unique requests"
-    flight_note = f" · {format_count(in_flight)} in flight" if in_flight else ""
-    if retry_pass > 0:
-        prefix = f"{engine} · Retry pass {retry_pass}: {ratio}"
-    else:
-        prefix = f"{engine} · Translating: {ratio}"
-    return (
-        f"{prefix}{cache_note}{pack_note}{unique_note}{flight_note}"
-        f"{chapter_note}{eta}"
-    )
 
 
 StatusFn = Callable[[str], None]
@@ -716,23 +546,8 @@ def epub_translate_kwargs(
     return kwargs
 
 
-def translate_then_build(
-    builder: TranslatedEPUBBuilder,
-    novel_info: NovelInfo,
-    chapters: List[Chapter],
-    output_path: str,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> str:
-    """
-    Clean, translate (and optionally polish), apply at text nodes, write EPUB.
-
-    Lives here so cancel/ETA/warnings stay on the runner. The builder only
-    extracts/applies nodes and writes the file.
-    """
-    translator = builder.translator
-    if not translator:
-        return builder.build(novel_info, chapters, output_path, progress_callback)
-
+def _configure_translator(translator, novel_info: NovelInfo, chapters: List[Chapter]) -> None:
+    """Load this book's glossary and let any chapter prefetch finish."""
     load_gloss = getattr(translator, "configure_glossary", None)
     if callable(load_gloss):
         try:
@@ -743,26 +558,20 @@ def translate_then_build(
     if callable(wait_prefetch):
         wait_prefetch()
 
-    builder.chapters_with_chinese = []
-    builder.polish_cancelled = False
-    total_steps = max(len(chapters) * 2, 1)
-    current_step = 0
-    last_clean_ui = 0.0
 
-    if progress_callback:
-        progress_callback(0, total_steps, "Preparing for translation...")
+def _collect_translation_texts(
+    builder: TranslatedEPUBBuilder,
+    novel_info: NovelInfo,
+    chapters: List[Chapter],
+    progress_callback: Optional[Callable[[int, int, str], None]],
+    total_steps: int,
+) -> List[Tuple[str, int, str]]:
+    """Clean every chapter and list each Chinese piece that needs translating.
 
-    _learn_site_junk(
-        builder.cleaner,
-        chapters,
-        set_status=(
-            (lambda s: progress_callback(0, total_steps, s)) if progress_callback else None
-        ),
-        finalize=True,
-    )
-
+    Entries are ``(kind, chapter index, text)``; kind is title, author, description,
+    chapter_title or content.
+    """
     all_texts: List[Tuple[str, int, str]] = []
-
     if is_chinese(novel_info.title):
         all_texts.append(("title", 0, novel_info.title))
         print(f"Will translate title: {novel_info.title}")
@@ -780,8 +589,8 @@ def translate_then_build(
         "chapter titles"
     )
 
+    last_clean_ui = 0.0
     for idx, chapter in enumerate(chapters):
-        current_step += 1
         now = time.monotonic()
         if progress_callback and (
             idx == 0
@@ -789,9 +598,7 @@ def translate_then_build(
             or now - last_clean_ui >= 0.07
         ):
             last_clean_ui = now
-            progress_callback(
-                current_step, total_steps, f"Cleaning: {chapter.title[:30]}..."
-            )
+            progress_callback(idx + 1, total_steps, f"Cleaning: {chapter.title[:30]}...")
             time.sleep(0)
         cleaned = getattr(chapter, "cleaned_html", "") or ""
         if builder.cleaner:
@@ -803,217 +610,138 @@ def translate_then_build(
         for text in builder._extract_text_segments(chapter.content):
             if is_chinese(text) and len(text.strip()) > 0:
                 all_texts.append(("content", idx, text))
+    return all_texts
+
+
+def _report_translation_start(translator, progress_callback, n_chapters: int,
+                              total_steps: int, engine: str, n_segments: int) -> None:
+    """Leave "Preparing…" as soon as the segment count is known."""
+    if not progress_callback:
+        return
+    progress_callback(
+        max(n_chapters, 1) + 0.25,
+        total_steps,
+        translation_status_line(engine, 0, n_segments, in_flight=zero_n_in_flight(translator)),
+    )
+    time.sleep(0)
+
+
+def _harvest_names(translator, all_texts, novel_info: NovelInfo, progress_callback,
+                   current_step: int, total_steps: int) -> None:
+    """Let the translator mine character names from the book before the HTTP calls start."""
+    harvest = getattr(translator, "harvest_names_from_texts", None)
+    if not callable(harvest):
+        return
+    if progress_callback:
+        progress_callback(current_step, total_steps, "Learning character names…")
+    try:
+        harvest([item[2] for item in all_texts], novel_title=getattr(novel_info, "title", "") or "")
+    except Exception as exc:
+        print(f"  Name harvest skipped: {exc}")
+
+
+def _polish_segments(builder, translator, translated, n_chapters: int, progress_callback,
+                     total_steps: int):
+    """Local copy-edit of the machine English; a cancel keeps what was already polished."""
+    polish_start = time.monotonic()
+
+    def polish_progress(completed, total):
+        if not progress_callback or total <= 0:
+            return
+        eta = ""
+        if 0 < completed < total:
+            eta = engine_eta(time.monotonic() - polish_start, completed, total - completed,
+                              min_samples=1)
+        progress_callback(
+            int(n_chapters * 1.5),
+            total_steps,
+            f"Polishing English: {format_ratio(completed, total)}{eta}",
+        )
+
+    print(f"Polishing {len(translated)} segments (KEEP/REPLACE, local LLM)...")
+    translated = translator.polish_texts(translated, polish_progress)
+    if getattr(translator, "_cancel_requested", False):
+        builder.polish_cancelled = True
+        print(
+            "Polish cancelled — packaging EPUB with machine translation "
+            "(already-polished spans kept)."
+        )
+    return translated
+
+
+def translate_then_build(
+    builder: TranslatedEPUBBuilder,
+    novel_info: NovelInfo,
+    chapters: List[Chapter],
+    output_path: str,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> str:
+    """
+    Clean, translate (and optionally polish), apply at text nodes, write EPUB.
+
+    Lives here so cancel/ETA/warnings stay on the runner. The builder only
+    extracts/applies nodes and writes the file.
+    """
+    translator = builder.translator
+    if not translator:
+        return builder.build(novel_info, chapters, output_path, progress_callback)
+
+    _configure_translator(translator, novel_info, chapters)
+    builder.chapters_with_chinese = []
+    builder.polish_cancelled = False
+    total_steps = max(len(chapters) * 2, 1)
+
+    if progress_callback:
+        progress_callback(0, total_steps, "Preparing for translation...")
+
+    _learn_site_junk(
+        builder.cleaner,
+        chapters,
+        set_status=(
+            (lambda s: progress_callback(0, total_steps, s)) if progress_callback else None
+        ),
+        finalize=True,
+    )
+
+    all_texts = _collect_translation_texts(
+        builder, novel_info, chapters, progress_callback, total_steps
+    )
+    current_step = len(chapters)
 
     engine = translator_progress_label(getattr(translator, "backend", "") or "")
     print(f"Total segments to translate: {len(all_texts)}")
     n_seg = max(len(all_texts), 1)
-    if progress_callback:
-        # Leave "Starting download…" as soon as N is known — before harvest
-        # (pypinyin on 686 chapters can take several seconds) and before HTTP.
-        n_ch = max(len(chapters), 1)
-        progress_callback(
-            n_ch + 0.25,
-            total_steps,
-            _translation_status_line(
-                engine,
-                0,
-                n_seg,
-                in_flight=_zero_n_in_flight(translator),
-            ),
-        )
-        time.sleep(0)
-
-    harvest = getattr(translator, "harvest_names_from_texts", None)
-    if callable(harvest):
-        if progress_callback:
-            progress_callback(
-                current_step, total_steps, "Learning character names…"
-            )
-        try:
-            harvest(
-                [item[2] for item in all_texts],
-                novel_title=getattr(novel_info, "title", "") or "",
-            )
-        except Exception as exc:
-            print(f"  Name harvest skipped: {exc}")
-
+    # Leave "Preparing…" before harvest (pypinyin on 686 chapters can take several seconds)
+    # and before any HTTP call.
+    _report_translation_start(translator, progress_callback, len(chapters), total_steps,
+                              engine, n_seg)
+    _harvest_names(translator, all_texts, novel_info, progress_callback, current_step,
+                   total_steps)
     # Qwen classify is Help → Polish glossaries / startup modal, not this pass.
-
-    if progress_callback:
-        n_ch = max(len(chapters), 1)
-        progress_callback(
-            n_ch + 0.25,
-            total_steps,
-            _translation_status_line(
-                engine,
-                0,
-                n_seg,
-                in_flight=_zero_n_in_flight(translator),
-            ),
-        )
-        time.sleep(0)
+    _report_translation_start(translator, progress_callback, len(chapters), total_steps,
+                              engine, n_seg)
 
     if all_texts:
+        progress = TranslationProgress(translator, chapters, all_texts, progress_callback,
+                                        total_steps, current_step)
         texts_to_translate = [t[2] for t in all_texts]
-        net_clock: Optional[float] = None
-        requests_at_clock = 0
-        retry_pass_num = 0
-
-        def _network_requests() -> int:
-            stats = getattr(translator, "stats", None) or {}
-            try:
-                return int(stats.get("requests", 0) or 0)
-            except Exception:
-                return 0
-
-        def _pack_progress() -> Tuple[int, int]:
-            done = int(getattr(translator, "pack_done", 0) or 0)
-            total = int(getattr(translator, "pack_total", 0) or 0)
-            return done, total
-
-        def _chapter_note(completed: int) -> str:
-            slot = int(getattr(translator, "_progress_source_index", -1) or -1)
-            return _chapter_note_for_slot(all_texts, chapters, completed, slot)
-
-        def translate_progress(completed, total):
-            nonlocal current_step, net_clock, requests_at_clock
-            if not progress_callback or total <= 0:
-                return
-            eta = ""
-            requests = _network_requests()
-            pack_done, pack_total = _pack_progress()
-            backend = (getattr(translator, "backend", "") or "").strip().lower()
-            engine = translator_progress_label(backend)
-            if requests > 0 and net_clock is None:
-                net_clock = time.monotonic()
-                requests_at_clock = max(0, requests - 1)
-            if net_clock is not None:
-                elapsed = time.monotonic() - net_clock
-                if pack_total > 0:
-                    remaining_packs = max(0, pack_total - pack_done)
-                    eta = eta_from_pack_samples(elapsed, pack_done, remaining_packs)
-                else:
-                    net_done = max(0, requests - requests_at_clock)
-                    remaining = total - completed
-                    if backend in ("ctranslate2", "ollama"):
-                        min_samples = 1
-                    elif backend in (
-                        "google", "google_html", "google_gtx", "microsoft",
-                    ):
-                        min_samples = min(8, max(2, total // 50))
-                    else:
-                        min_samples = 2
-                    eta = _engine_eta(
-                        elapsed, net_done, remaining, min_samples=min_samples
-                    )
-            hits = 0
-            stats = getattr(translator, "stats", None) or {}
-            try:
-                hits = int(stats.get("cache_hits", 0) or 0)
-            except Exception:
-                pass
-            in_flight = _planned_in_flight(translator)
-            unique_requests = 0
-            try:
-                unique_requests = int(
-                    getattr(translator, "_unique_requests", 0) or 0
-                )
-            except Exception:
-                unique_requests = 0
-            if completed <= 0 and in_flight <= 0:
-                in_flight = _zero_n_in_flight(translator)
-            status = _translation_status_line(
-                engine,
-                completed,
-                total,
-                retry_pass=retry_pass_num,
-                cache_hits=hits,
-                pack_done=pack_done,
-                pack_total=pack_total,
-                in_flight=in_flight,
-                unique_requests=unique_requests,
-                chapter_note=_chapter_note(completed),
-                eta=eta,
-                network_requests=requests,
-            )
-            n_ch = max(len(chapters), 1)
-            frac_done = completed / total if total else 0.0
-            current = n_ch + frac_done * n_ch
-            if total > 0 and current <= n_ch:
-                current = n_ch + 0.25
-            current_step = current
-            progress_callback(current, total_steps, status)
-
-        def on_retry_pass(pass_number, remaining, total_segments, cooldown):
-            nonlocal net_clock, retry_pass_num, requests_at_clock
-            retry_pass_num = pass_number
-            net_clock = None
-            requests_at_clock = _network_requests()
-            if not progress_callback:
-                return
-            engine = translator_progress_label(
-                getattr(translator, "backend", "") or ""
-            )
-            if cooldown > 0:
-                progress_callback(
-                    current_step,
-                    total_steps,
-                    f"{engine} · Retry pass {pass_number}: cooling down "
-                    f"{int(cooldown)}s ({remaining} left)...",
-                )
-            else:
-                progress_callback(
-                    current_step,
-                    total_steps,
-                    f"{engine} · Retry pass {pass_number}: retrying "
-                    f"{remaining} segments...",
-                )
-
         if hasattr(translator, "translate_texts_with_retry"):
             translated = translator.translate_texts_with_retry(
                 texts_to_translate,
-                translate_progress,
-                is_chinese_fn=lambda t: is_chinese(t),
-                count_chinese_fn=lambda t: count_chinese_chars(t),
-                pass_callback=on_retry_pass,
+                progress.update,
+                is_chinese_fn=is_chinese,
+                count_chinese_fn=count_chinese_chars,
+                pass_callback=progress.retry_pass,
             )
         else:
-            translated = translator.translate_texts(
-                texts_to_translate, translate_progress
-            )
+            translated = translator.translate_texts(texts_to_translate, progress.update)
 
         if getattr(translator, "_cancel_requested", False):
             raise DownloadCancelled()
 
         if builder.polish and hasattr(translator, "polish_texts"):
-            polish_start = time.monotonic()
-
-            def polish_progress(completed, total):
-                if not progress_callback or total <= 0:
-                    return
-                eta = ""
-                if completed > 0 and completed < total:
-                    elapsed = time.monotonic() - polish_start
-                    eta = _engine_eta(
-                        elapsed,
-                        completed,
-                        total - completed,
-                        min_samples=1,
-                    )
-                progress_callback(
-                    int(len(chapters) * 1.5),
-                    total_steps,
-                    f"Polishing English: {format_ratio(completed, total)}{eta}",
-                )
-
-            print(f"Polishing {len(translated)} segments (KEEP/REPLACE, local LLM)...")
-            translated = translator.polish_texts(translated, polish_progress)
-            if getattr(translator, "_cancel_requested", False):
-                builder.polish_cancelled = True
-                print(
-                    "Polish cancelled — packaging EPUB with machine translation "
-                    "(already-polished spans kept)."
-                )
+            translated = _polish_segments(builder, translator, translated, len(chapters),
+                                          progress_callback, total_steps)
 
         builder.apply_translations(novel_info, chapters, all_texts, translated)
 
