@@ -117,11 +117,11 @@ def test_accepting_update_hides_the_app_until_it_fails(window, qapp, monkeypatch
         captured["progress"] = progress_callback
         captured["done"] = completion_callback
 
-    monkeypatch.setattr("gui.main_window.download_update_async", fake_download)
-    monkeypatch.setattr("gui.main_window.ask_yes_no", lambda *_a, **_k: True)
+    monkeypatch.setattr("gui.window.update_actions.download_update_async", fake_download)
+    monkeypatch.setattr("gui.window.update_actions.ask_yes_no", lambda *_a, **_k: True)
     warnings = []
     monkeypatch.setattr(
-        "gui.main_window.show_warning", lambda *a, **k: warnings.append(a)
+        "gui.window.update_actions.show_warning", lambda *a, **k: warnings.append(a)
     )
     try:
         window._on_update_check_ready(True, "9.9.9", "A new version is available.")
@@ -151,7 +151,7 @@ def test_accepting_update_hides_the_app_until_it_fails(window, qapp, monkeypatch
 
 def _fake_exit_path(monkeypatch, window):
     """Stub quit/os-exit so the restart path can run inside the test process."""
-    import gui.main_window as mw
+    import gui.window.update_actions as ua
 
     class FakeApp:
         quit_calls = 0
@@ -169,14 +169,14 @@ def _fake_exit_path(monkeypatch, window):
             FakeThread.started.append(self.target)
 
     closes = []
-    monkeypatch.setattr(mw.QApplication, "instance", lambda: FakeApp())
-    monkeypatch.setattr(mw.threading, "Thread", FakeThread)
+    monkeypatch.setattr(ua.QApplication, "instance", lambda: FakeApp())
+    monkeypatch.setattr(ua.threading, "Thread", FakeThread)
     monkeypatch.setattr(window, "close", lambda: closes.append(True))
     return FakeApp, FakeThread, closes
 
 
 def test_successful_update_shows_ready_state_in_the_same_window(window, qapp, monkeypatch):
-    import gui.main_window as mw
+    import gui.window.update_actions as mw
 
     captured = {}
 

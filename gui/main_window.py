@@ -3,45 +3,38 @@
 
 from __future__ import annotations
 
-import os
-import threading
-import time
-import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QThread, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QProgressDialog,
-    QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QMainWindow, QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from core.branding import (
-    APP_AUTHOR, APP_AUTHOR_HANDLE, APP_DESCRIPTION, APP_LICENSE,
-    APP_REPO_URL, APP_TITLE, LOG_FILE_NAME,
+    APP_TITLE, LOG_FILE_NAME,
 )
 from core.download_job import (
-    book_job, clear_job, entries_from_job, load_job, multi_job, novels_from_job, save_job,
-    single_from_job,
+    book_job, multi_job, save_job,
 )
 from core.download_runner import (
-    completion_dialog_title, downloads_folder, epub_path, format_completion_notes,
+    completion_dialog_title, downloads_folder, format_completion_notes,
     library_epub_path, translator_backend_kwargs,
 )
 from core.logger import setup_logging
-from core.settings import save_settings, set_setting
+from core.settings import save_settings
 from core.parser import cleanup_browser, create_http_session
 from core.updater import (
-    check_for_updates_async, download_update_async, get_auto_check_updates,
+    get_auto_check_updates,
     get_current_version, set_auto_check_updates,
 )
 from core.utils import extract_urls, format_ratio, looks_like_url, sanitize_runtime_env
 
 from gui import theme
+from gui.help_content import TRANSLATION_HELP_HTML, about_html
 from gui.icon import apply_app_icon, load_app_pixmap
 from gui.dialogs import (
-    UpdateProgressDialog, ask_accept_glossary_proposals,
-    ask_yes_no, ask_yes_not_now_dont_ask, busy_message, pick_recent_download, show_cache_dialog,
+    busy_message, pick_recent_download, show_cache_dialog,
     show_error, show_info, show_info_with_preview, show_rich_info, show_warning,
 )
 from gui.pages.library_page import LibraryPage
@@ -54,11 +47,13 @@ from gui.widgets.progress_panel import ProgressPanel
 from gui.widgets.resume_banner import ResumeBanner
 from gui.workers.download_worker import MultiDownloadWorker, SingleDownloadWorker
 from gui.workers.fetch_worker import FetchWorker
-from gui.workers.glossary_worker import GlossaryQwenWorker
+from gui.window.glossary_actions import GlossaryActionsMixin
 from gui.window.library_actions import LibraryActionsMixin
 from gui.window.look_actions import LookActionsMixin
 from gui.window.reader_actions import ReaderActionsMixin
+from gui.window.resume_actions import ResumeActionsMixin
 from gui.window.server_actions import ServerActionsMixin
+from gui.window.update_actions import UpdateActionsMixin
 from gui.window.worker_host import WorkerHostMixin
 
 import parsers  # noqa: F401 - registers the site parsers
@@ -66,6 +61,9 @@ import parsers  # noqa: F401 - registers the site parsers
 
 class MainWindow(
     WorkerHostMixin,
+    GlossaryActionsMixin,
+    ResumeActionsMixin,
+    UpdateActionsMixin,
     ReaderActionsMixin,
     LibraryActionsMixin,
     ServerActionsMixin,
@@ -253,168 +251,17 @@ class MainWindow(
             library_filter=self.library._filter,
         )
 
-    _GLOSSARY_QWEN_PROMPT = (
-        "Use the local Qwen model (same llama.cpp GGUF as Polish English) to "
-        "classify names and domain terms found in your books.\n\n"
-        "This dialog stays in front until the pass finishes — you will not be "
-        "able to download while it runs. The polish GGUF must already be on "
-        "disk (this will not start a 2–9 GB download).\n\n"
-        "You will get a list to Accept all or Discard. "
-        "Everyday Chinese is not added (this is not a general dictionary)."
-    )
-
-    def _library_glossary_books(self) -> list[dict]:
-        books = []
-        for entry in self.session.library_store.get_library():
-            name = (entry.title or entry.translated_title or "").strip()
-            if not name:
-                continue
-            books.append({
-                "title": name,
-                "source_url": entry.source_url or "",
-                "description": getattr(entry, "description", "") or "",
-            })
-        return books
-
-    def _maybe_offer_glossary_qwen(self):
-        if self._worker_busy or self.session.control.is_downloading or self._serving():
-            return
-        if load_job(self.session.data_dir):
-            return
-        from core.translation.qwen_glossary import (
-            has_harvested_terms,
-            polish_gguf_on_disk,
-            qwen_glossary_capable,
-            should_offer_glossary_qwen,
-        )
-
-        if not should_offer_glossary_qwen(
-            self.session.settings,
-            has_library=bool(self.session.library_store.get_library()),
-            has_harvested=has_harvested_terms(),
-            model_ready=polish_gguf_on_disk(),
-            qwen_capable=qwen_glossary_capable(),
-        ):
-            return
-        choice = ask_yes_not_now_dont_ask(
-            self,
-            "Polish glossaries with Qwen?",
-            self._GLOSSARY_QWEN_PROMPT,
-        )
-        if choice == "later":
-            return
-        if choice == "never":
-            self.session.settings["glossary_qwen_ask"] = False
-            set_setting("glossary_qwen_ask", False)
-            return
-        self._run_glossary_qwen_modal()
-
-    def _menu_glossary_qwen(self):
-        if self._worker_busy or self.session.control.is_downloading:
-            show_warning(self, "Busy", busy_message("polish glossaries with Qwen"))
-            return
-        from core.translation.qwen_glossary import (
-            polish_gguf_on_disk,
-            qwen_glossary_capable,
-        )
-
-        if not polish_gguf_on_disk():
-            show_warning(
-                self,
-                "Glossary · Qwen",
-                "The polish GGUF is not on disk yet. Tick Polish English once "
-                "so llama.cpp can download it, then run this again. "
-                "Glossary Qwen will not start a 2–9 GB download by itself.",
-            )
-            return
-        if not qwen_glossary_capable():
-            show_warning(
-                self,
-                "Glossary · Qwen",
-                "This PC is on a 3B polish profile. Glossary classification "
-                "needs the 7B or 14B Qwen GGUF. Names are still romanized "
-                "with pinyin during translate.",
-            )
-            return
-        if not ask_yes_no(self, "Polish glossaries with Qwen?", self._GLOSSARY_QWEN_PROMPT):
-            return
-        self._run_glossary_qwen_modal()
-
-    def _run_glossary_qwen_modal(self):
-        dlg = QProgressDialog(
-            "Starting local Qwen…", "Cancel", 0, 0, self
-        )
-        dlg.setWindowTitle("Glossary · Qwen")
-        dlg.setWindowModality(Qt.WindowModality.WindowModal)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        self._glossary_qwen_dlg = dlg
-        worker = GlossaryQwenWorker(
-            self._library_glossary_books(),
-            cache=self.session.cache,
-        )
-        dlg.canceled.connect(worker.request_cancel)
-        if not self._bind_and_run(
-            worker,
-            (worker.progress, self._on_glossary_qwen_progress),
-            (worker.finished_ok, self._on_glossary_qwen_ok),
-            (worker.finished_error, self._on_glossary_qwen_error),
-        ):
-            dlg.close()
-            self._glossary_qwen_dlg = None
-            show_warning(self, "Busy", busy_message("polish glossaries with Qwen"))
-            return
-        dlg.show()
-
     @Slot(str)
     def _on_glossary_qwen_progress(self, status: str):
-        dlg = self._glossary_qwen_dlg
-        if dlg is not None and status:
-            dlg.setLabelText(status)
-
-    def _close_glossary_qwen_dlg(self):
-        dlg = self._glossary_qwen_dlg
-        self._glossary_qwen_dlg = None
-        if dlg is not None:
-            dlg.close()
+        GlossaryActionsMixin._on_glossary_qwen_progress(self, status)
 
     @Slot(object)
     def _on_glossary_qwen_ok(self, payload):
-        self._close_glossary_qwen_dlg()
-        self._finish_worker_later()
-        now = time.time()
-        self.session.settings["glossary_qwen_last_at"] = now
-        set_setting("glossary_qwen_last_at", now)
-        if isinstance(payload, dict):
-            message = str(payload.get("message") or "Done.")
-            proposals = list(payload.get("proposals") or [])
-        else:
-            message = str(payload or "Done.")
-            proposals = []
-        if proposals:
-            from core.translation.qwen_glossary import apply_glossary_proposals
-
-            if ask_accept_glossary_proposals(self, proposals):
-                added, updated = apply_glossary_proposals(proposals)
-                show_info(
-                    self,
-                    "Glossaries updated",
-                    f"Accepted {added + updated} term(s). {message}",
-                )
-                return
-            show_info(self, "Glossary polish", "Discarded. Nothing was written.")
-            return
-        show_info(self, "Glossaries updated", message)
+        GlossaryActionsMixin._on_glossary_qwen_ok(self, payload)
 
     @Slot(str)
     def _on_glossary_qwen_error(self, message: str):
-        self._close_glossary_qwen_dlg()
-        self._finish_worker_later()
-        if "cancel" in (message or "").casefold():
-            show_info(self, "Glossary polish", message)
-            return
-        show_error(self, "Glossary polish failed", message)
+        GlossaryActionsMixin._on_glossary_qwen_error(self, message)
 
     def _restore_window_geometry(self):
         s = self.session.settings
@@ -486,97 +333,6 @@ class MainWindow(
         self._stop_check_thread(wait_ms=min(wait_ms, 5000))
         event.accept()
 
-    def _check_resume_job(self):
-        if self.session.control.is_downloading or self._serving():
-            return
-        job = load_job(self.session.data_dir)
-        if not job:
-            return
-        self.session.control.active_job = job
-        self.resume_banner.show_job(job, self.session.cache)
-        self.progress.set_status("Incomplete download ready: resume available")
-
-    def _on_discard_job(self):
-        if not ask_yes_no(
-            self, "Discard",
-            "Remove the saved resume point?\nCached chapter text stays on this PC.",
-        ):
-            return
-        clear_job(self.session.data_dir)
-        self.session.control.active_job = None
-        self.resume_banner.hide_banner()
-
-    def _on_resume_job(self):
-        job = self.session.control.active_job or load_job(self.session.data_dir)
-        if not job:
-            self.resume_banner.hide_banner()
-            return
-        kind = job.get("kind")
-        try:
-            if kind == "single":
-                self._resume_single(job)
-            elif kind == "multi":
-                self._resume_multi(job)
-            elif kind == "library_update":
-                self._resume_library_update(job)
-            elif kind == "library_update_all":
-                self._resume_library_update_all(job)
-            else:
-                show_warning(self, "Resume", f"Unknown job type: {kind}")
-                clear_job(self.session.data_dir)
-        except Exception as e:
-            traceback.print_exc()
-            show_error(self, "Resume failed", str(e))
-
-    def _resume_single(self, job: dict):
-        self.tabs.setCurrentWidget(self.single)
-        self.options.apply_snapshot(job.get("options") or {})
-        resumed = single_from_job(job)
-        if resumed is None:
-            raise Exception("Saved download incomplete")
-        url, parser, info, chapters = resumed
-        self.single.translated_title = job.get("translated_title") or None
-        self.single.set_url(url)
-        self.single.show_novel(info, chapters, parser)
-        out = job.get("output_path") or epub_path(
-            downloads_folder(self.options.snapshot().get("output_dir", "")),
-            self.single.translated_title or info.title,
-        )
-        self._begin_single_download(parser, info, chapters, out, self.single.translated_title, job)
-
-    def _resume_multi(self, job: dict):
-        self.tabs.setCurrentWidget(self.multi)
-        self.options.apply_snapshot(job.get("options") or {})
-        novels = novels_from_job(job)
-        if not novels:
-            clear_job(self.session.data_dir)
-            raise Exception("No unfinished novels left")
-        self.multi.begin_fetch([n["url"] for n in novels])
-        for i, n in enumerate(novels):
-            self.multi.set_row(
-                i, n.get("translated_title") or n["info"].title,
-                len(n["chapters"]), "Queued", n,
-            )
-        self.session.control.active_job = job
-        self._start_multi_download_with(novels)
-
-    def _resume_library_update(self, job: dict):
-        self.tabs.setCurrentWidget(self.library)
-        self.options.apply_snapshot(job.get("options") or {})
-        entry = self.session.library_store.get_library_entry(job.get("source_url") or "")
-        if not entry:
-            raise Exception("Library entry missing — try Update from Library")
-        self._start_library_update(entry)
-
-    def _resume_library_update_all(self, job: dict):
-        self.tabs.setCurrentWidget(self.library)
-        self.options.apply_snapshot(job.get("options") or {})
-        entries = entries_from_job(job, self.session.library_store)
-        if not entries:
-            clear_job(self.session.data_dir)
-            raise Exception("No unfinished library novels")
-        self.session.control.active_job = job
-        self._run_library_update_all(entries)
 
     # ------------------------------------------------------------------
     # Single
@@ -938,104 +694,15 @@ class MainWindow(
         )
 
     def _translation_help(self):
-        show_rich_info(
-            self,
-            "How translation works",
-            "<p><b>Google (New)</b> (default) — the same <code>translate-pa</code> "
-            "engine as Calibre Ebook Translator 2.4+ <i>Google (Free) - New</i>. "
-            "Use this first. <b>Google (HTML)</b> is the widget HTML API. "
-            "<b>Google (Old)</b> is <code>client=gtx</code>, which Google walled "
-            "for many IPs in 2026.</p>"
-            "<p><b>Microsoft Edge</b> — another free unofficial engine "
-            "(same as the Calibre plugin). No API key.</p>"
-            "<p><b>LibreTranslate</b> — your own server. More private, usually slower.</p>"
-            "<p><b>Ollama</b> — full local translation. Slow (hours for a long novel). "
-            "Needs <a href='https://ollama.com'>Ollama</a> installed and running.</p>"
-            "<p><b>Offline NMT</b> — local CTranslate2 (opus-mt-zh-en). Free and offline. "
-            "Needs <code>pip install -r requirements-nmt.txt</code> (not in the exe). "
-            "First run downloads ~320&nbsp;MB into ~/.huaepub/nmt. "
-            "Glossary is <b>Auto</b> by default: the built-in xianxia/wuxia list "
-            "is used only when the title or chapter list looks like cultivation "
-            "(not for urban/romance). That list is a curated web-novel pack, "
-            "not a general Chinese dictionary. "
-            "While translating, HuaEPUB also learns character names from this book "
-            "into <code>~/.huaepub/glossaries/&lt;title&gt;.json</code> (pinyin, not Google). "
-            "If the polish Qwen GGUF is already on disk (7B+), a classify pass can "
-            "fix those names and lock sects/techniques that appear in the text. "
-            "Help → Polish glossaries with Qwen… runs it anytime and shows Accept all / Discard. "
-            "It will not download a GGUF by itself. "
-            "Your names in <code>~/.huaepub/glossary.json</code> always apply unless "
-            "Glossary is Off. Force the pack with <b>Cultivation pack</b>.</p>"
-            "<p><b>Offline NMT GPU</b> — your NVIDIA GPU is used only when "
-            "<b>CUDA 12</b> libraries are visible (<code>cublas64_12.dll</code>). "
-            "The Game Ready driver is not enough. "
-            "<code>nvidia-cublas-cu12</code> and <code>nvidia-cuda-runtime-cu12</code> "
-            "are in requirements-nmt.txt. "
-            "Do <b>not</b> install CUDA 13 for this. cuDNN is not required. "
-            "Then fully quit and reopen the app. "
-            "If CUDA 12 still cannot load, Offline NMT stays on CPU (not Google) "
-            "and the log prints the same install steps.</p>"
-            "<p><b>Polish English</b> — keep Google (or LibreTranslate) as the translator, "
-            "then copy-edit awkward English on this PC. <b>Ollama is not required.</b> "
-            "The first run downloads llama.cpp and a Qwen2.5 GGUF that fits this GPU "
-            "(3B / 7B / 14B) into ~/.huaepub/polish. Fluent sentences are copied; "
-            "only dirty spans hit the GPU. The same EPUB is written. "
-            "Progress is in File → Open log file. If llama.cpp cannot start because Ollama "
-            "is using the GPU, quit Ollama from the tray and retry.</p>"
-            "<p>Workers are the Google in-flight <b>ceiling</b> (default 200). "
-            "Unofficial Translate rate-limits by IP: the app starts at 8 GETs "
-            "and only climbs when requests succeed. A 429 pauses new requests "
-            "instead of letting the other 199 keep hammering. "
-            "Offline NMT batches locally. Polish runs separately. "
-            "The Read tab prefetches the next cached chapter and can live-translate "
-            "Chinese cache HTML when Translate is on.</p>"
-        )
+        show_rich_info(self, "How translation works", TRANSLATION_HELP_HTML)
 
     def _about(self):
-        version = get_current_version()
         logo = load_app_pixmap(64)
         show_rich_info(
             self,
             f"About {APP_TITLE}",
-            f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
-            f"<p>{APP_DESCRIPTION}</p>"
-            "<p>Optional: Google (New/HTML/Old) / Microsoft Edge / LibreTranslate / Ollama / Offline NMT translation, then local "
-            "llama.cpp polish (auto-installed Qwen GGUF). Ollama is not required for polish. "
-            "Help → How translation works. Cache size is Help → Cache…</p>"
-            "<p>"
-            f"<b>Developer:</b> {APP_AUTHOR} "
-            f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"
-            f"<b>Repository:</b> "
-            f"<a href='{APP_REPO_URL}'>{APP_REPO_URL.replace('https://', '')}</a><br>"
-            f"<b>License:</b> {APP_LICENSE}<br>"
-            "<b>UI:</b> PySide6 (Qt)<br>"
-            "<b>Data folder:</b> ~/.huaepub/"
-            "</p>"
-            f"<p style='color:{theme.current().muted};font-size:11px;'>"
-            "Inspired by "
-            "<a href='https://github.com/dteviot/WebToEpub'>WebToEpub</a> "
-            "(dteviot), which this project started from, and by fixTranslate.py.<br>"
-            "Not affiliated with novel sites or Google."
-            "</p>",
+            about_html(get_current_version(), theme.current().muted),
             icon_pixmap=None if logo.isNull() else logo,
-        )
-
-    def _auto_check_updates(self):
-        self._app_update_checking = True
-        check_for_updates_async(callback=self._update_check_cb, force=False)
-
-    def _manual_check_updates(self):
-        self._update_check_notify = True
-        self._app_update_checking = True
-        self.progress.set_status("Checking for app updates…")
-        check_for_updates_async(callback=self._update_check_cb, force=True)
-
-    def _update_check_cb(self, has_update, latest, message):
-        # Runs on a plain threading.Thread — never touch Qt widgets here.
-        self._sig_update_check.emit(
-            bool(has_update),
-            str(latest or ""),
-            str(message or ""),
         )
 
     @Slot(str)
@@ -1047,114 +714,16 @@ class MainWindow(
 
     @Slot(bool, str, str)
     def _on_update_check_ready(self, has_update: bool, latest: str, message: str):
-        now = time.monotonic()
-        key = (bool(has_update), str(latest), str(message))
-        prev = getattr(self, "_last_app_update_check", None)
-        if prev is not None and prev[0] == key and (now - prev[1]) < 2.0:
-            self._app_update_checking = False
-            return
-        self._last_app_update_check = (key, now)
-        notify = bool(getattr(self, "_update_check_notify", False))
-        self._update_check_notify = False
-
-        failed = (message or "").startswith("Failed to check")
-        if has_update:
-            self._app_update_pending = True
-            self._app_update_checking = False
-            self.progress.set_status(f"Update available: {latest}")
-            accepted = ask_yes_no(
-                self, "Update available",
-                f"{message}\n\nDownload and install?",
-            )
-            self._app_update_pending = False
-            if accepted:
-                self._begin_app_update(latest)
-            return
-        self._app_update_checking = False
-        self.progress.set_status(message or "App is up to date")
-        if notify:
-            if failed:
-                show_warning(self, "Updates", message or "Failed to check for updates.")
-            else:
-                show_info(
-                    self, "Updates",
-                    message or f"You're running the latest version ({get_current_version()}).",
-                )
-
-    def _begin_app_update(self, version: str = ""):
-        """Hide the main window and download the update."""
-        self._app_update_installing = True
-        self._open_update_progress("Connecting to GitHub…", version)
-        download_update_async(
-            progress_callback=lambda c, t, s: self._sig_update_progress.emit(
-                int(c or 0), int(t or 0), s or "Downloading update…"
-            ),
-            completion_callback=lambda ok, msg: self._sig_update_done.emit(
-                bool(ok), str(msg or "")
-            ),
-        )
-
-    def _open_update_progress(self, text: str, version: str = "") -> None:
-        dlg = UpdateProgressDialog(version)
-        dlg.restart_requested.connect(self._restart_for_update)
-        dlg.set_progress(0, 100, text)
-        center = self.frameGeometry().center()
-        self.hide()
-        dlg.adjustSize()
-        dlg.move(center.x() - dlg.width() // 2, center.y() - dlg.height() // 2)
-        self._update_progress_dlg = dlg
-        dlg.show()
-        dlg.raise_()
-        dlg.activateWindow()
-
-    def _close_update_progress(self) -> None:
-        dlg = self._update_progress_dlg
-        self._update_progress_dlg = None
-        if dlg is None:
-            return
-        dlg.allow_close()
-        dlg.close()
-        dlg.deleteLater()
+        UpdateActionsMixin._on_update_check_ready(self, has_update, latest, message)
 
     @Slot(int, int, str)
     def _on_update_progress(self, current: int, total: int, text: str):
-        dlg = self._update_progress_dlg
-        if dlg is not None:
-            dlg.set_progress(current, total, text)
+        UpdateActionsMixin._on_update_progress(self, current, total, text)
 
     @Slot(bool, str)
     def _on_update_download_done(self, ok: bool, message: str):
-        if not ok:
-            self._app_update_installing = False
-            self._close_update_progress()
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            self.progress.set_status(message or "Update failed")
-            show_warning(self, "Update failed", message or "Update failed.")
-            return
-        # Same window, ready state: no second box stacked on the progress dialog.
-        self._update_progress_dlg.show_ready(
-            f"{APP_TITLE} will close and reopen to finish installing. "
-            "Your library and downloads are kept."
-        )
+        UpdateActionsMixin._on_update_download_done(self, ok, message)
 
     @Slot()
     def _restart_for_update(self):
-        """Quit so the staged helper can swap the binary and relaunch."""
-        self._close_update_progress()
-        self._exiting_for_update = True
-        self.close()
-        app = QApplication.instance()
-        if app is None:
-            os._exit(0)
-        app.quit()
-
-        # Helpers wait for this PID. Qt may tear down timers with the
-        # window; a daemon thread still force-exits if something hangs.
-        def _exit_soon():
-            import time
-            time.sleep(2.5)
-            os._exit(0)
-
-        threading.Thread(target=_exit_soon, daemon=True).start()
+        UpdateActionsMixin._restart_for_update(self)

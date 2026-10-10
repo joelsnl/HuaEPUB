@@ -1,0 +1,86 @@
+# Author: joelsnl and Anthropic Claude
+"""Text of the Help dialogs. Kept out of the window code so it can be edited as prose."""
+
+from __future__ import annotations
+
+from core.branding import (
+    APP_AUTHOR, APP_AUTHOR_HANDLE, APP_DESCRIPTION, APP_LICENSE, APP_REPO_URL, APP_TITLE,
+)
+
+# Help -> How translation works
+TRANSLATION_HELP_HTML = (
+    "<p><b>Google (New)</b> (default) — the same <code>translate-pa</code> "
+    "engine as Calibre Ebook Translator 2.4+ <i>Google (Free) - New</i>. "
+    "Use this first. <b>Google (HTML)</b> is the widget HTML API. "
+    "<b>Google (Old)</b> is <code>client=gtx</code>, which Google walled "
+    "for many IPs in 2026.</p>"
+    "<p><b>Microsoft Edge</b> — another free unofficial engine "
+    "(same as the Calibre plugin). No API key.</p>"
+    "<p><b>LibreTranslate</b> — your own server. More private, usually slower.</p>"
+    "<p><b>Ollama</b> — full local translation. Slow (hours for a long novel). "
+    "Needs <a href='https://ollama.com'>Ollama</a> installed and running.</p>"
+    "<p><b>Offline NMT</b> — local CTranslate2 (opus-mt-zh-en). Free and offline. "
+    "Needs <code>pip install -r requirements-nmt.txt</code> (not in the exe). "
+    "First run downloads ~320&nbsp;MB into ~/.huaepub/nmt. "
+    "Glossary is <b>Auto</b> by default: the built-in xianxia/wuxia list "
+    "is used only when the title or chapter list looks like cultivation "
+    "(not for urban/romance). That list is a curated web-novel pack, "
+    "not a general Chinese dictionary. "
+    "While translating, HuaEPUB also learns character names from this book "
+    "into <code>~/.huaepub/glossaries/&lt;title&gt;.json</code> (pinyin, not Google). "
+    "If the polish Qwen GGUF is already on disk (7B+), a classify pass can "
+    "fix those names and lock sects/techniques that appear in the text. "
+    "Help → Polish glossaries with Qwen… runs it anytime and shows Accept all / Discard. "
+    "It will not download a GGUF by itself. "
+    "Your names in <code>~/.huaepub/glossary.json</code> always apply unless "
+    "Glossary is Off. Force the pack with <b>Cultivation pack</b>.</p>"
+    "<p><b>Offline NMT GPU</b> — your NVIDIA GPU is used only when "
+    "<b>CUDA 12</b> libraries are visible (<code>cublas64_12.dll</code>). "
+    "The Game Ready driver is not enough. "
+    "<code>nvidia-cublas-cu12</code> and <code>nvidia-cuda-runtime-cu12</code> "
+    "are in requirements-nmt.txt. "
+    "Do <b>not</b> install CUDA 13 for this. cuDNN is not required. "
+    "Then fully quit and reopen the app. "
+    "If CUDA 12 still cannot load, Offline NMT stays on CPU (not Google) "
+    "and the log prints the same install steps.</p>"
+    "<p><b>Polish English</b> — keep Google (or LibreTranslate) as the translator, "
+    "then copy-edit awkward English on this PC. <b>Ollama is not required.</b> "
+    "The first run downloads llama.cpp and a Qwen2.5 GGUF that fits this GPU "
+    "(3B / 7B / 14B) into ~/.huaepub/polish. Fluent sentences are copied; "
+    "only dirty spans hit the GPU. The same EPUB is written. "
+    "Progress is in File → Open log file. If llama.cpp cannot start because Ollama "
+    "is using the GPU, quit Ollama from the tray and retry.</p>"
+    "<p>Workers are the Google in-flight <b>ceiling</b> (default 200). "
+    "Unofficial Translate rate-limits by IP: the app starts at 8 GETs "
+    "and only climbs when requests succeed. A 429 pauses new requests "
+    "instead of letting the other 199 keep hammering. "
+    "Offline NMT batches locally. Polish runs separately. "
+    "The Read tab prefetches the next cached chapter and can live-translate "
+    "Chinese cache HTML when Translate is on.</p>"
+)
+
+
+def about_html(version: str, muted: str) -> str:
+    """Help -> About. ``muted`` is the palette's muted text colour for the small print."""
+    return (
+        f"<h3 style='margin-bottom:4px;'>{APP_TITLE} v{version}</h3>"
+        f"<p>{APP_DESCRIPTION}</p>"
+        "<p>Optional: Google (New/HTML/Old) / Microsoft Edge / LibreTranslate / Ollama / Offline NMT translation, then local "
+        "llama.cpp polish (auto-installed Qwen GGUF). Ollama is not required for polish. "
+        "Help → How translation works. Cache size is Help → Cache…</p>"
+        "<p>"
+        f"<b>Developer:</b> {APP_AUTHOR} "
+        f"(<a href='https://github.com/{APP_AUTHOR_HANDLE}'>@{APP_AUTHOR_HANDLE}</a>)<br>"
+        f"<b>Repository:</b> "
+        f"<a href='{APP_REPO_URL}'>{APP_REPO_URL.replace('https://', '')}</a><br>"
+        f"<b>License:</b> {APP_LICENSE}<br>"
+        "<b>UI:</b> PySide6 (Qt)<br>"
+        "<b>Data folder:</b> ~/.huaepub/"
+        "</p>"
+        f"<p style='color:{muted};font-size:11px;'>"
+        "Inspired by "
+        "<a href='https://github.com/dteviot/WebToEpub'>WebToEpub</a> "
+        "(dteviot), which this project started from, and by fixTranslate.py.<br>"
+        "Not affiliated with novel sites or Google."
+        "</p>"
+    )
