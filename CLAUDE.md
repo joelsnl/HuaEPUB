@@ -412,7 +412,11 @@ Keep script-referenced IDs when editing `index.html`.
   and **regenerates** `HuaEPUB.spec` each build. Do not commit a leftover spec (`*.spec` is gitignored).
   The pin `pyinstaller==6.22.2` must match `requirements-dev.txt` and `release.yml`.
 - CI: `ci.yml` runs ruff, then the offline pytest suite on Ubuntu/Windows/macOS x Python 3.11/3.12.
-  `release.yml` runs pytest + ruff, then builds the Windows/macOS/Linux zips on a `v*` tag push.
+  `release.yml` runs pytest + ruff, then builds the Windows/macOS/Linux zips on a `v*` tag push. It can
+  also be run by hand on a branch (`workflow_dispatch`): that builds all three and publishes nothing,
+  and the PR checks do not build executables, so use it for any change to the build. Pillow is a
+  **build-only** dependency (PyInstaller needs it to make the macOS `.icns` icon); the app does not
+  import it, so it lives in `requirements-dev.txt` and the release build step, not `requirements.txt`.
 - `tests/` is offline pytest with HTML fixtures (no network), including `sites.json` schema checks and a
   cache-to-EPUB pipeline test. `tests/test_dialogs.py` imports PySide6 and skips collection if the OS
   GL/EGL libraries are missing; Linux CI installs `libegl1` so those tests run.
