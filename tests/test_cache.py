@@ -216,6 +216,59 @@ class TestCacheEviction:
         assert cache.get_translation("你好", "google") == "Hello"
 
 
+class TestEvictionCost:
+    """The size check runs after every chapter write, so it must be cheap when nothing is over.
+
+    A Raspberry Pi had a 256 MB cap and a 312 MB cache.db whose live data was well under it
+    (the file only shrinks on VACUUM). The check compared the file size, found "over", scanned
+    every row to measure the data, found it fine, removed nothing, and so repeated those scans
+    after every chapter: ~20 s of cache work per chapter.
+    """
+
+    @staticmethod
+    def _bloated(tmp_path, cap):
+        """A cache whose file is far bigger than its cap, but whose rows are not."""
+        cache = NovelCache(tmp_path / "cache.db", max_bytes=0)
+        blob = "x" * 100_000
+        for i in range(60):
+            cache.put_chapter("old-book", f"https://old/{i}", "t", blob)
+        cache.clear_chapter_data()                      # rows gone, file keeps its size
+        cache._max_bytes_override = cap
+        assert cache.file_size_bytes() > cap
+        return cache
+
+    def test_a_write_under_the_cap_does_not_scan_the_tables(self, tmp_path):
+        cache = self._bloated(tmp_path, cap=1_000_000)
+        statements = []
+        cache._conn.set_trace_callback(statements.append)
+        for i in range(5):
+            cache.put_chapter("b", f"https://x/{i}", "t", "<p>small</p>")
+        scans = [s for s in statements if "SUM(" in s.upper()]
+        assert scans == []
+        cache.close()
+
+    def test_a_write_under_the_cap_removes_nothing(self, tmp_path):
+        cache = self._bloated(tmp_path, cap=1_000_000)
+        cache.put_chapter("b", "https://x/1", "t", "<p>small</p>")
+        assert cache.get_chapter("https://x/1") == "<p>small</p>"
+        assert cache.maybe_evict() == 0
+        cache.close()
+
+    def test_the_cap_counts_bytes_not_characters(self, tmp_path):
+        """Chinese text is three bytes a character; removing by characters over-deletes."""
+        cache = NovelCache(tmp_path / "cache.db", max_bytes=0)
+        text = "你" * 20_000                              # 60,000 bytes, 20,000 characters
+        for i in range(10):
+            cache.put_chapter("b", f"https://x/{i}", "t", text)
+        cache._max_bytes_override = 330_000               # room for about five of them
+        removed = cache.maybe_evict()
+        kept = sum(1 for i in range(10) if cache.get_chapter(f"https://x/{i}"))
+        assert removed >= 1                               # the cap is enforced in bytes
+        assert kept >= 3                                  # without wiping the cache
+        assert cache._used_bytes_unlocked() <= 330_000
+        cache.close()
+
+
 class TestBrokenCache:
     """A failing cache must never stop a download, but it should not fail silently either."""
 
