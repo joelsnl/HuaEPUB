@@ -630,9 +630,13 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 .running { top: calc(env(safe-area-inset-top, 0px) + max(14px, 2.4vh)); text-align: center; }
 .folio {
   bottom: calc(env(safe-area-inset-bottom, 0px) + max(14px, 2.6vh)); text-align: center;
-  font-family: var(--sans); font-variant-numeric: tabular-nums;
+  font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: 13px;
+  /* Darker than the other margin text: it is the page number, and it should be readable. */
+  color: color-mix(in srgb, var(--paper-ink) 62%, var(--paper));
 }
 #read-book.is-scroll .folio { display: none; }
+/* The toolbar says the page number too, and would show the margin line through it. */
+#read-book.is-chrome .folio { visibility: hidden; }
 #read-book.is-chrome .running { visibility: hidden; }
 .reader-text {
   font-family: Georgia, var(--serif); font-size: var(--read-size); line-height: var(--read-lead);
@@ -696,6 +700,11 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
   padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
 }
 .chrome-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* The bottom bar stays on one row: when it is tight the page label is trimmed, not the buttons. */
+.chrome-bot .chrome-row { flex-wrap: nowrap; }
+.chrome-bot .chrome-row > button { flex-shrink: 0; }
+#read-place { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 430px) { .chrome-bot .chrome-row { gap: 6px; } .chrome-bot .book-btn { padding: 0 9px; } }
 .reader-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .reader-book { font-family: var(--serif); font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .running-label { font-size: 13px; color: var(--paper-faint); }
@@ -739,7 +748,12 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 @media (hover: hover) {
   .sheet-list button:hover .toc-name { text-decoration: underline; text-underline-offset: 3px; }
 }
-.sheet-list button.is-here { font-weight: 600; }
+/* The chapter you are on: tinted row, a bar down the side and heavy type, so it is easy to find in
+   a long list. The row reaches a little past the text so the text still lines up with the others. */
+.sheet-list button.is-here {
+  font-weight: 700; margin: 0 -10px; width: calc(100% + 20px); padding-left: 10px; padding-right: 10px;
+  background: color-mix(in srgb, var(--paper-ink) 11%, transparent); box-shadow: inset 4px 0 0 var(--paper-ink);
+}
 .sheet-list .mark { color: var(--paper-faint); width: 1rem; flex-shrink: 0; }
 .toc-name { flex: 1; min-width: 0; }
 .toc-at { color: var(--paper-faint); font-size: 13px; font-variant-numeric: tabular-nums; }

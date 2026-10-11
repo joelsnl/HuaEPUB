@@ -7,12 +7,17 @@ import asyncio
 import json
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from web import books
 from web.context import ServerContext, book_roots
 from web.storage import memory_payload, storage_payload
 from web.tasks import Busy
+
+
+class DismissIn(BaseModel):
+    id: str
 
 
 def build_router(ctx: ServerContext) -> APIRouter:
@@ -78,6 +83,11 @@ def build_router(ctx: ServerContext) -> APIRouter:
         if not ctx.tasks.cancel():
             return JSONResponse({"error": "no_task"}, status_code=409)
         return JSONResponse({"state": "cancelling"}, status_code=202)
+
+    @r.post("/api/task/dismiss")
+    def dismiss(body: DismissIn):
+        """Hide a finished job on every device (the page's Dismiss / Hide on a finished card)."""
+        return {"dismissed": ctx.tasks.dismiss(body.id)}
 
     @r.get("/api/files/{token}")
     def file(token: str):

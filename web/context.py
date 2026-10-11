@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List
 from core.download_runner import downloads_folder
 from core.settings import get_default_books_dir
 from web.auth import LoginLimiter, OpenLinks, ServerSecrets
-from web.preview import PreviewStore, build_preview, translate_preview
+from web.preview import PreviewStore, build_preview, translate_chapter_title, translate_preview
 from web.tasks import TaskManager
 
 MODES = ("lan", "remote")
@@ -40,6 +40,7 @@ class ServerContext:
     open_links: OpenLinks = field(default_factory=OpenLinks)
     preview_builder: Callable = build_preview
     preview_translator: Callable = translate_preview
+    chapter_title_translator: Callable = translate_chapter_title
     check_status: Dict[str, dict] = field(default_factory=dict)
     check_lock: threading.Lock = field(default_factory=threading.Lock)
     readers: Any = None

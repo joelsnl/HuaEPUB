@@ -142,7 +142,12 @@ def translate_preview(preview: Preview, *, cache: Any, workers: int = PREVIEW_TR
             texts.append(preview.info.title)
         if author_zh:
             texts.append(preview.info.author)
-        chapter_indices = [i for i, ch in enumerate(preview.chapters) if is_chinese(ch.title)]
+        # The page shows a chapter's English title only under the From / To boxes, so only
+        # the first and last (their defaults) are translated here; any other is translated
+        # when asked for (translate_chapter_title). Translating every title made looking up a
+        # 3,000-chapter book take minutes on a small machine.
+        ends = {0, len(preview.chapters) - 1} if preview.chapters else set()
+        chapter_indices = sorted(i for i in ends if is_chinese(preview.chapters[i].title))
         texts.extend(preview.chapters[i].title for i in chapter_indices)
         if not texts:
             return
@@ -167,3 +172,28 @@ def translate_preview(preview: Preview, *, cache: Any, workers: int = PREVIEW_TR
         # Display-only: a translate failure leaves the preview showing the
         # original text rather than failing the LOOK.
         pass
+
+
+def translate_chapter_title(preview: Preview, pos: int, *, cache: Any) -> str:
+    """English title of one chapter (1-based), translated on demand and kept on the preview.
+
+    Display-only like ``translate_preview``: "" when it is already English, out of range, or the
+    translation failed.
+    """
+    if not 1 <= pos <= len(preview.chapters):
+        return ""
+    if len(preview.chapter_titles_en) < len(preview.chapters):
+        preview.chapter_titles_en += [""] * (len(preview.chapters) - len(preview.chapter_titles_en))
+    if preview.chapter_titles_en[pos - 1]:
+        return preview.chapter_titles_en[pos - 1]
+    title = preview.chapters[pos - 1].title
+    if not is_chinese(title):
+        return ""
+    try:
+        from core.translator import GoogleTranslator
+
+        out = (GoogleTranslator(max_workers=1, persistent_cache=cache).translate_texts([title]) or [""])[0]
+    except Exception:
+        return ""
+    preview.chapter_titles_en[pos - 1] = out if out and out != title else ""
+    return preview.chapter_titles_en[pos - 1]

@@ -187,9 +187,33 @@
     return ch ? (ch.title_en || ch.title) : '';
   }
 
-  function rangeChanged() {
+  // The lookup translates only the first and last chapter titles; the title under From / To for
+  // any other chapter is asked for here once you stop typing, then kept on the page.
+  var titleTimer = null;
+  var asked = {};
+  function wantTitles() {
+    if (titleTimer) clearTimeout(titleTimer);
+    titleTimer = setTimeout(function () {
+      var r = range();
+      var mine = preview;
+      [r.from, r.to].forEach(function (pos) {
+        var ch = mine && pos >= 1 && pos <= mine.chapter_count ? mine.chapters[pos - 1] : null;
+        var key = mine ? mine.preview_id + ':' + pos : '';
+        if (!ch || ch.title_en || asked[key] || !/[㐀-鿿]/.test(ch.title || '')) return;
+        asked[key] = true;
+        H.api('GET', '/api/preview/' + mine.preview_id + '/chapter/' + pos + '/title').then(function (res) {
+          if (!res.ok || !res.data || !res.data.title_en) return;
+          ch.title_en = res.data.title_en;
+          if (preview === mine) rangeChanged(true);
+        }).catch(function () { /* the original title stays */ });
+      });
+    }, 400);
+  }
+
+  function rangeChanged(fromTitle) {
     if (!preview) return;
     var r = range();
+    if (fromTitle !== true) wantTitles();
     setText('from-title', chapterTitle(r.from));
     setText('to-title', chapterTitle(r.to));
     show('range-error', !r.ok);

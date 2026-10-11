@@ -140,6 +140,56 @@ def test_translate_preview_fills_title_author_and_chinese_chapter_titles(monkeyp
     assert payload["chapters"][2]["title_en"] == "第三章 (EN)"
 
 
+def test_translate_preview_translates_only_the_first_and_last_chapter_titles(monkeypatch):
+    """The page shows a chapter's English title only under From / To, so a lookup must not
+    translate all of them: on a 3,000-chapter book that was thousands of requests."""
+    import core.translator as translator_mod
+
+    seen = []
+
+    class _Counting(_FakeGoogleTranslator):
+        def translate_texts(self, texts):
+            seen.append(list(texts))
+            return super().translate_texts(texts)
+
+    monkeypatch.setattr(translator_mod, "GoogleTranslator", _Counting)
+    chapters = [Chapter(title=f"第{i}章", url=f"https://example.com/c/{i}") for i in range(1, 1001)]
+    info = NovelInfo(title="青云剑录", author="示例作者")
+    item = preview_mod.Preview(id="p", url="https://example.com/b", parser=None, info=info, chapters=chapters)
+    translate_preview(item, cache=None)
+    assert seen == [["青云剑录", "示例作者", "第1章", "第1000章"]]
+    payload = item.to_payload()["chapters"]
+    assert payload[0]["title_en"] == "第1章 (EN)" and payload[999]["title_en"] == "第1000章 (EN)"
+    assert payload[499]["title_en"] == ""
+
+
+def test_a_chapter_title_is_translated_on_demand_and_kept(monkeypatch):
+    _fake_translator_module(monkeypatch)
+    chapters = [Chapter(title=f"第{i}章", url=f"https://example.com/c/{i}") for i in range(1, 6)]
+    chapters[3].title = "Epilogue"
+    item = preview_mod.Preview(id="p", url="https://example.com/b", parser=None,
+                               info=NovelInfo(title="书", author="作"), chapters=chapters)
+    assert preview_mod.translate_chapter_title(item, 3, cache=None) == "第3章 (EN)"
+    assert item.chapter_titles_en[2] == "第3章 (EN)"                 # kept on the preview
+    assert preview_mod.translate_chapter_title(item, 4, cache=None) == ""      # already English
+    assert preview_mod.translate_chapter_title(item, 0, cache=None) == ""      # out of range
+    assert preview_mod.translate_chapter_title(item, 6, cache=None) == ""
+
+
+def test_a_failing_chapter_title_translation_is_just_blank(monkeypatch):
+    import core.translator as translator_mod
+
+    class _Boom:
+        def __init__(self, **kw):
+            raise RuntimeError("no network")
+
+    monkeypatch.setattr(translator_mod, "GoogleTranslator", _Boom)
+    item = preview_mod.Preview(id="p", url="https://example.com/b", parser=None,
+                               info=NovelInfo(title="书", author="作"),
+                               chapters=[Chapter(title="第一章", url="https://example.com/c/1")])
+    assert preview_mod.translate_chapter_title(item, 1, cache=None) == ""
+
+
 def test_translate_preview_is_a_noop_for_english_books(monkeypatch):
     _fake_translator_module(monkeypatch)
     info = NovelInfo(title="Already English", author="Someone")

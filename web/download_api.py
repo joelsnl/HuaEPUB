@@ -79,6 +79,16 @@ def build_router(ctx: ServerContext) -> APIRouter:
         return Response(content=data, media_type=sniff_image(data),
                         headers={"Cache-Control": "private, max-age=1800"})
 
+    @r.get("/api/preview/{preview_id}/chapter/{pos}/title")
+    def chapter_title(preview_id: str, pos: int):
+        """One chapter's English title, for the From / To boxes (the lookup only translates the ends)."""
+        item = ctx.previews.get(preview_id)
+        if item is None:
+            return JSONResponse({"error": "preview_expired"}, status_code=404)
+        if not session.settings.get("translate", True):
+            return {"title_en": ""}
+        return {"title_en": ctx.chapter_title_translator(item, pos, cache=session.cache)}
+
     @r.post("/api/single")
     def single(body: SingleIn):
         item = ctx.previews.get(body.preview_id)
