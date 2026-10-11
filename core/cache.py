@@ -724,26 +724,33 @@ class NovelCache:
             return 0
         return mb * 1024 * 1024
 
-    def _payload_bytes_unlocked(self, table: str) -> str:
+    def _row_bytes_sql(self, table: str) -> str:
+        """SQL for how many bytes one row of ``table`` takes. CAST makes LENGTH count bytes:
+        on TEXT it counts characters, and a Chinese character is three bytes."""
         if table == "chapters":
-            return "COALESCE(LENGTH(content), 0)"
+            return "COALESCE(LENGTH(CAST(content AS BLOB)), 0)"
         if table == "covers":
             return "COALESCE(LENGTH(data), 0)"
         if table == "chapter_lists":
-            return "COALESCE(LENGTH(payload), 0)"
+            return "COALESCE(LENGTH(CAST(payload AS BLOB)), 0)"
         if table == "translations":
-            return "COALESCE(LENGTH(source), 0) + COALESCE(LENGTH(translated), 0)"
+            return ("COALESCE(LENGTH(CAST(source AS BLOB)), 0) + "
+                    "COALESCE(LENGTH(CAST(translated AS BLOB)), 0)")
         return "0"
 
-    def _payload_total_unlocked(self) -> int:
-        total = 0
-        for table in ("chapters", "covers", "chapter_lists", "translations"):
-            expr = self._payload_bytes_unlocked(table)
-            row = self._conn.execute(
-                f"SELECT COALESCE(SUM({expr}), 0) FROM {table}"
-            ).fetchone()
-            total += int(row[0] or 0)
-        return total
+    def _used_bytes_unlocked(self) -> int:
+        """Bytes of cache.db that hold data: pages in use, free pages not counted.
+
+        This is what the cap is checked against. It costs three PRAGMAs, not a scan of every
+        row, because it runs after every cached chapter. (The file itself only shrinks on
+        VACUUM, so comparing the file size with the cap made a database that holds little but
+        was never vacuumed look "over" forever, and measuring it row by row cost ~20 s per
+        chapter on a Raspberry Pi's SD card.)
+        """
+        pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+        free = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+        page_size = self._conn.execute("PRAGMA page_size").fetchone()[0]
+        return max(0, (int(pages) - int(free)) * int(page_size))
 
     def maybe_evict(self) -> int:
         """
@@ -752,13 +759,14 @@ class NovelCache:
         Order: chapter HTML, then covers, then TOC snapshots, then translations
         as a last resort. Returns how many rows were removed.
 
-        The delete loop uses payload sizes because WAL files do not shrink
-        until VACUUM.
+        "Over" means the bytes in use (``_used_bytes_unlocked``), not the file size: freed
+        pages and the WAL only leave the file on VACUUM / checkpoint, and measuring the data
+        row by row after every write is too slow on a Raspberry Pi.
         """
         if not self._conn:
             return 0
         cap = self._cap_bytes()
-        if cap <= 0 or self.file_size_bytes() <= cap:
+        if cap <= 0:
             return 0
         target_payload = max(int(cap * 0.85), cap - 8 * 1024 * 1024)
         removed = 0
@@ -770,12 +778,14 @@ class NovelCache:
         )
         try:
             with self._lock:
+                payload = self._used_bytes_unlocked()
+                if payload <= cap:
+                    return 0  # the usual case: no commit, no scan
                 if self._pending:
                     self._conn.commit()
                     self._pending = 0
-                payload = self._payload_total_unlocked()
                 for table, pk, col in stages:
-                    size_sql = self._payload_bytes_unlocked(table)
+                    size_sql = self._row_bytes_sql(table)
                     while payload > target_payload:
                         row = self._conn.execute(
                             f"SELECT {pk}, {size_sql} FROM {table} "
@@ -792,8 +802,11 @@ class NovelCache:
                         break
                 if removed:
                     self._conn.commit()
+                    # Freed pages only leave the file on VACUUM; the WAL does not shrink until
+                    # it is checkpointed.
                     self._conn.execute("VACUUM")
                     self._conn.commit()
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             if removed:
                 now_mb = self.file_size_bytes() / (1024 * 1024)
                 cap_mb = cap / (1024 * 1024)

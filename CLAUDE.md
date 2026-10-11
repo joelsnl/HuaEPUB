@@ -201,8 +201,12 @@ this PC.
 - `core/cache.py`: SQLite caches: chapters, translations (including polished spans), covers and
   chapter-list snapshots. Local only. Bulk `get_translations_bulk` / `delete_translations`; cache keys
   collapse whitespace; chapter fingerprints store a translated node list. Default 2 GB cap, evicting
-  oldest stored chapter HTML first, then covers, TOCs, and translations last, with VACUUM after a purge.
-  Nothing is cleared on a timer. Help → Cache… is the UI.
+  oldest stored chapter HTML first, then covers, TOCs, and translations last, with VACUUM and a WAL
+  checkpoint after a purge. "Over the cap" means **bytes in use** (`_used_bytes_unlocked`: page count
+  minus free pages, three PRAGMAs), never the file size (it only shrinks on VACUUM) and never `LENGTH()`
+  of TEXT (that counts characters, a Chinese one is three bytes). `maybe_evict` runs after every cached
+  chapter, so it must stay O(1) when nothing is over: a full-table `SUM(LENGTH())` there cost ~20 s per
+  chapter on a Raspberry Pi's SD card. Nothing is cleared on a timer. Help → Cache… is the UI.
 - `core/library.py`: history and the tracked library (`library.json`), chapter-diff helpers for updates,
   `remove_and_purge`. `LibraryEntry.shelved_at` (0 = not shelved): shelving keeps the entry and its
   files, but `run_library_check` and `/api/library/check` skip it, `upsert_library` keeps the flag, and
