@@ -139,22 +139,29 @@
     var ch = chapter == null
       ? Math.min(n - 1, Math.floor(Math.min(0.999999, value) * n))
       : chapter;
-    return (ch + 1) + ' of ' + n + '  ·  ' + Math.round(value * 100) + '%';
+    return 'Ch ' + (ch + 1) + '/' + n + '  ·  ' + Math.round(value * 100) + '%';
   }
 
-  // Bottom margin, like Play Books: how much of this chapter is left.
+  // Bottom margin, like Play Books: the page you are on and how much of this chapter is left.
   function folioText() {
     if (!book || !paged()) return '';
-    var left = pageCount() - 1 - pageIndex();
-    if (left <= 0) return index >= book.chapters.length - 1 ? 'End of book' : 'Last page in chapter';
-    return left + (left === 1 ? ' page' : ' pages') + ' left in chapter';
+    var pages = pageCount();
+    var here = pageIndex() + 1;
+    var left = pages - here;
+    var line = 'Page ' + here + ' of ' + pages;
+    if (left <= 0) return line + ' · ' + (index >= book.chapters.length - 1 ? 'end of book' : 'end of chapter');
+    return line + ' · ' + left + (left === 1 ? ' page' : ' pages') + ' left';
   }
 
   function showPlace() {
     var value = fraction();
     here = chapterRatio();
     $('read-progress').value = String(Math.round(value * 1000));
-    setText('read-place', placeText(value, index));
+    // Pages mode leads with the page you are on; "Ch 2/3" is the chapter, then how far through the book.
+    var where = placeText(value, index);
+    // A phone's toolbar is full: there the percentage goes (the slider already shows it).
+    if ((window.innerWidth || 1000) < 430) where = where.split('  ·  ')[0];
+    setText('read-place', (paged() ? 'Page ' + (pageIndex() + 1) + '/' + pageCount() + '  ·  ' : '') + where);
     var ch = book && book.chapters[index];
     setText('read-running', ch ? ((index + 1) + '  ·  ' + (ch.title || '')) : '');
     setText('read-folio', folioText());
@@ -537,7 +544,7 @@
       var li = document.createElement('li');
       var b = document.createElement('button');
       b.type = 'button';
-      if (c.index === index) { b.className = 'is-here'; hereLi = li; }
+      if (c.index === index) { b.className = 'is-here'; b.setAttribute('aria-current', 'true'); hereLi = li; }
       var star = document.createElement('span');
       star.className = 'mark';
       star.textContent = chapterMarked(c.index) ? '●' : '';

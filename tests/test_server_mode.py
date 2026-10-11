@@ -560,6 +560,68 @@ def test_check_for_updates_leaves_shelved_books_alone(session):
     assert c.post("/api/library/check", headers=H).json()["error"] == "empty_library"
 
 
+def test_a_chapter_title_is_translated_on_demand_through_the_api(session):
+    def builder(url):
+        item = _preview(count=3, url=url)
+        for chapter in item.chapters:
+            chapter.title = "第" + chapter.title[-1] + "章"
+        return item
+
+    ctx = _ctx(session, builder=builder)
+    ctx.chapter_title_translator = lambda item, pos, cache: f"Chapter {pos} (EN)"
+    c = _signed_in(ctx)
+    pid = c.post("/api/preview", json={"url": "https://example.com/book/1"}, headers=H).json()["preview_id"]
+    got = c.get(f"/api/preview/{pid}/chapter/2/title")
+    assert got.status_code == 200 and got.json() == {"title_en": "Chapter 2 (EN)"}
+    assert c.get("/api/preview/nope/chapter/1/title").status_code == 404
+
+
+def test_the_chapter_title_endpoint_does_nothing_when_translate_is_off(session):
+    session.settings["translate"] = False
+    ctx = _ctx(session)
+    ctx.chapter_title_translator = lambda item, pos, cache: "should not be called"
+    c = _signed_in(ctx)
+    pid = c.post("/api/preview", json={"url": "https://example.com/book/1"}, headers=H).json()["preview_id"]
+    assert c.get(f"/api/preview/{pid}/chapter/1/title").json() == {"title_en": ""}
+
+
+def test_dismissing_a_finished_job_hides_it_for_every_device(session):
+    ctx = _ctx(session)
+    phone, laptop = _signed_in(ctx), _signed_in(ctx)
+    ctx.tasks.start("single", "Add a book", lambda _c: {"notes": "Saved with warnings"})
+    task = _wait_done(ctx)
+    assert phone.get("/api/state").json()["task"]["id"] == task["id"]
+    assert laptop.get("/api/state").json()["task"]["id"] == task["id"]
+    assert phone.post("/api/task/dismiss", json={"id": task["id"]}, headers=H).json() == {"dismissed": True}
+    assert laptop.get("/api/state").json()["task"] is None           # gone on the other device
+    assert phone.get("/api/state").json()["task"] is None            # and after a reload
+    assert phone.post("/api/task/dismiss", json={"id": task["id"]}, headers=H).json() == {"dismissed": False}
+
+
+def test_a_running_job_cannot_be_dismissed(session):
+    ctx = _ctx(session)
+    c = _signed_in(ctx)
+    gate = threading.Event()
+    task = ctx.tasks.start("single", "Busy", lambda _c: gate.wait(5) and {})
+    try:
+        assert c.post("/api/task/dismiss", json={"id": task.id}, headers=H).json() == {"dismissed": False}
+        assert c.get("/api/state").json()["task"]["id"] == task.id
+    finally:
+        gate.set()
+        _wait_done(ctx)
+
+
+def test_dismissing_an_older_job_leaves_the_newer_one(session):
+    ctx = _ctx(session)
+    c = _signed_in(ctx)
+    ctx.tasks.start("single", "First", lambda _c: {})
+    first = _wait_done(ctx)
+    ctx.tasks.start("single", "Second", lambda _c: {})
+    second = _wait_done(ctx)
+    assert c.post("/api/task/dismiss", json={"id": first["id"]}, headers=H).json() == {"dismissed": False}
+    assert c.get("/api/state").json()["task"]["id"] == second["id"]
+
+
 def test_code_link_and_login_set_a_cookie(session):
     ctx = _ctx(session)
     c = _client(ctx)

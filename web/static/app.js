@@ -178,8 +178,7 @@
   }
 
   // ---------- job dock ----------
-  var dismissed = null;
-  try { dismissed = sessionStorage.getItem('huaepub-dock-dismissed'); } catch (e) { dismissed = null; }
+  var dismissed = null;   // hides a finished job at once, until the server drops it for everyone
   var KIND_ON_STAGE = { single: true };
 
   function renderDock(s) {
@@ -264,11 +263,14 @@
 
   function firstLine(text) { return (text || '').split('\n').filter(Boolean)[0] || ''; }
 
+  // Dismissing a finished job is the server's business, so it stays dismissed on every device
+  // and after a reload (it used to be remembered only by this tab).
   function dismissTask() {
     var t = latest.task;
-    dismissed = t ? t.id : null;
-    try { sessionStorage.setItem('huaepub-dock-dismissed', dismissed || ''); } catch (e) { /* ignore */ }
+    if (!t) return;
+    dismissed = t.id;
     renderDock(latest);
+    api('POST', '/api/task/dismiss', { id: t.id }).then(refresh);
   }
 
   function hideReaderCard() {

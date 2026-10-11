@@ -398,8 +398,18 @@ Keep script-referenced IDs when editing `index.html`.
   (`body.dock-open`). Because it only appears on request it shows the whole job (percent, title, status,
   slips, Fetch/Translate/Write/Save steps, chapter and book counts, full completion notes, file links) in
   the app's own palette, with one button set: Pause, Cancel (greyed out once finished) and Hide. Hide
-  and the progress button both close the card; closing a finished job clears it (no Dismiss in the
-  reader). Those detail parts are hidden on other pages, and leaving the reader closes it.
+  and the progress button both close the card; closing a finished job dismisses it (no Dismiss button in
+  the reader). Those detail parts are hidden on other pages, and leaving the reader closes it.
+- **Dismissing a finished job is server-side**: `POST /api/task/dismiss` (`TaskManager.dismiss`) drops the
+  finished task so no device or reload shows it again, and it ignores a running task or a newer id. The
+  page used to remember it in `sessionStorage`, which is per tab, so every other device and every reload
+  got the finished job again. Do not go back to remembering dismissals in the browser.
+- **Lookup cost:** `translate_preview` translates only the title, the author and the first and last chapter
+  titles (the From/To defaults); any other title comes from `GET /api/preview/<id>/chapter/<pos>/title`
+  when you type its number. Translating every chapter title up front took minutes on a Raspberry Pi.
+- **Reader chrome:** the bottom bar is Contents (left), the page label (`Page 3/12 · Ch 2/3 · 33%`, the
+  percentage dropped under 430 px), Aa, Bookmark, all on one row. The margin line (`Page 3 of 12 · 9 pages
+  left`) is hidden while the bar shows. The Contents row for the current chapter is tinted with a bar.
 
 ## Conventions
 

@@ -46,7 +46,9 @@ after **Check for updates**.
 
 ### Add a book and Add several
 
-The Single and Multi downloads. Paste a link, look it up, pick the chapter range, build.
+The Single and Multi downloads. Paste a link, look it up, pick the chapter range, build. A lookup
+translates only the book's title, author and the first and last chapter titles, so it stays quick
+on a 3,000-chapter book; type any other chapter number and its English title appears a moment later.
 
 ### Read
 
@@ -59,12 +61,14 @@ The same position (`reading.json`) as the desktop reader.
   screen** (Auto, One page, Two pages) and margins. They're saved per device, so a phone and a
   monitor can differ. **Pages on screen** only applies in Pages mode, so it's greyed out in Scroll;
   **Two pages** on a screen too narrow for two shows one page and says why.
-- **Contents** opens at the current chapter and lists your bookmarks; a jump shows **Back to N**
-  until you use it. **Bookmark**, **Full screen**, and the screen stays awake while you read (on
-  HTTPS or this PC).
+- The bottom bar has **Contents** on the left, then the page you are on ("Page 3/12") and your
+  chapter, then **Aa** and **Bookmark**; with the bar hidden, the bottom margin reads "Page 3 of 12 ·
+  9 pages left". **Contents** opens at the current chapter, which is highlighted, and lists your
+  bookmarks; a jump shows **Back to N** until you use it. **Full screen** is there too, and the
+  screen stays awake while you read (on HTTPS or this PC).
 - While a download runs, a progress button in the top bar ("Translating 38%") opens a card with the
   whole job (steps, counts, notes, files) and **Pause / Cancel / Hide**. It never covers the text on
-  its own.
+  its own. A finished job stays until you dismiss it, and dismissing it hides it on every device.
 
 ### Settings
 

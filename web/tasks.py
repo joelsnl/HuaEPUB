@@ -216,6 +216,21 @@ class TaskManager:
         task = self.current()
         return task.snapshot() if task else None
 
+    def dismiss(self, task_id: str) -> bool:
+        """Forget a finished task so no device shows it again.
+
+        The page used to remember a dismissal in its own tab, so another device, a new tab or a
+        reload showed the finished job again. The server owns the finished task, so it is
+        dropped here and every browser sees "nothing" on its next update. A running task, or a
+        newer one than the id given, is left alone.
+        """
+        with self._lock:
+            task = self._task
+            if task is None or task.id != task_id or task.state not in TERMINAL:
+                return False
+            self._task = None
+            return True
+
     # -- files -------------------------------------------------------------
     def register_file(self, path: str) -> Optional[Dict[str, str]]:
         p = Path(path or "")
