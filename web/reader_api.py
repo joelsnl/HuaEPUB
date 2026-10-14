@@ -32,6 +32,7 @@ from core.reader import (
     resume_index,
     sanitize_reader_html,
 )
+from core.notes import add_note, delete_note, list_notes, set_label
 from core.reading import get_bookmarks, get_position, set_position, toggle_bookmark
 from web.tasks import Busy
 
@@ -84,6 +85,17 @@ class OpenIn(BaseModel):
 class PositionIn(BaseModel):
     index: int
     scroll: float = 0.0
+
+
+class NoteIn(BaseModel):
+    text: str
+    label: str = ""
+    index: int
+    scroll: float = 0.0
+
+
+class NoteLabelIn(BaseModel):
+    label: str
 
 
 def _site_delay(url: str, source_url: str) -> float:
@@ -203,6 +215,7 @@ def build_router(ctx) -> APIRouter:
             "chapters": [{"index": c.index, "title": c.title, "ready": bool((c.html or "").strip())}
                          for c in book.chapters],
             "bookmarks": get_bookmarks(book.source_url, data_dir=session.data_dir),
+            "notes": list_notes(book.source_url, data_dir=session.data_dir),
         }
 
     @r.get("/{book_id}/chapter/{index}")
@@ -278,5 +291,47 @@ def build_router(ctx) -> APIRouter:
             scroll=min(1.0, max(0.0, float(body.scroll or 0.0))), data_dir=session.data_dir,
         )
         return {"marked": marked, "bookmarks": get_bookmarks(book.source_url, data_dir=session.data_dir)}
+
+    def reader_book(book_id: str):
+        item = ctx.readers.get(book_id)
+        return item.book if item is not None and item.book.source_url else None
+
+    def notes_payload(book):
+        return {"notes": list_notes(book.source_url, data_dir=session.data_dir)}
+
+    @r.post("/{book_id}/notes")
+    def note_add(book_id: str, body: NoteIn):
+        book = reader_book(book_id)
+        if book is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        if not 0 <= body.index < len(book.chapters):
+            return JSONResponse({"error": "bad_index"}, status_code=400)
+        ch = book.chapters[body.index]
+        note = add_note(
+            book.source_url, body.text, label=body.label, chapter_index=body.index,
+            chapter_url=(ch.url or ch.key), scroll=min(1.0, max(0.0, float(body.scroll or 0.0))),
+            data_dir=session.data_dir,
+        )
+        if note is None:
+            return JSONResponse({"error": "note_not_saved",
+                                 "detail": "Nothing to save, or this book has 500 notes already."},
+                                status_code=400)
+        return notes_payload(book)
+
+    @r.post("/{book_id}/notes/{note_id}/label")
+    def note_label(book_id: str, note_id: str, body: NoteLabelIn):
+        book = reader_book(book_id)
+        if book is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        set_label(book.source_url, note_id, body.label, data_dir=session.data_dir)
+        return notes_payload(book)
+
+    @r.delete("/{book_id}/notes/{note_id}")
+    def note_delete(book_id: str, note_id: str):
+        book = reader_book(book_id)
+        if book is None:
+            return JSONResponse({"error": "book_closed"}, status_code=404)
+        delete_note(book.source_url, note_id, data_dir=session.data_dir)
+        return notes_payload(book)
 
     return r

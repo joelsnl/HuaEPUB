@@ -221,6 +221,7 @@
   function hideSheets() {
     show('read-contents', false);
     show('read-display', false);
+    show('read-notes', false);
     root().classList.remove('has-sheet');
   }
 
@@ -232,7 +233,7 @@
   }
 
   function sheetOpen() {
-    return !$('read-contents').hidden || !$('read-display').hidden;
+    return !$('read-contents').hidden || !$('read-display').hidden || !$('read-notes').hidden;
   }
 
   function showChrome() {
@@ -335,6 +336,8 @@
       }
       book = res.data;
       book.bookmarks = res.data.bookmarks || [];
+      book.notes = res.data.notes || [];
+      syncNotesBtn();
       setText('read-title', book.title);
       setText('read-kind', book.kind === 'epub' ? 'EPUB' : 'Cached chapters');
       keepAwake();
@@ -655,6 +658,147 @@
       next[PREF_FIELDS[key]] = btn.getAttribute('data-value');
       apply(next, key);
     });
+  });
+
+  // ---------- Notes: save a passage, find it again ----------
+  var noteTimer = null;
+  var selTimer = null;
+
+  function syncNotesBtn() {
+    var n = book && book.notes ? book.notes.length : 0;
+    $('read-notes-btn').textContent = n ? 'Notes (' + n + ')' : 'Notes';
+  }
+
+  function noteChapter(n) {
+    var ch = book.chapters[n.chapter_index];
+    return 'Ch ' + (n.chapter_index + 1) + (ch && ch.title ? ' · ' + ch.title : '');
+  }
+
+  function noteSend(method, path, body) {
+    return H.api(method, '/api/read/' + book.book_id + '/notes' + path, body).then(function (res) {
+      if (res.ok) { book.notes = res.data.notes || []; syncNotesBtn(); }
+      return res;
+    });
+  }
+
+  function fillNotes() {
+    var list = $('read-notes-list');
+    list.textContent = '';
+    var notes = book.notes || [];
+    show('read-notes-find', notes.length > 4);
+    show('read-notes-help', notes.length === 0);
+    notes.forEach(function (n) {
+      var li = document.createElement('li');
+      li.dataset.find = ((n.label || '') + ' ' + n.text).toLowerCase();
+      var label = document.createElement('input');
+      label.type = 'text';
+      label.className = 'note-label';
+      label.maxLength = 80;
+      label.value = n.label || '';
+      label.placeholder = 'Add a label';
+      label.setAttribute('aria-label', 'Label for this note');
+      label.addEventListener('change', function () {
+        noteSend('POST', '/' + n.id + '/label', { label: label.value });
+        li.dataset.find = (label.value + ' ' + n.text).toLowerCase();
+      });
+      var foot = H.el('div', 'note-foot');
+      var go = H.el('button', 'book-link', 'Go to');
+      go.type = 'button';
+      go.addEventListener('click', function () { hideSheets(); jumpTo(n.chapter_index, n.scroll); });
+      var del = H.el('button', 'book-link', 'Delete');
+      del.type = 'button';
+      del.addEventListener('click', function () {
+        if (del.dataset.sure !== '1') {
+          del.dataset.sure = '1';
+          del.textContent = 'Delete?';
+          setTimeout(function () { del.dataset.sure = ''; del.textContent = 'Delete'; }, 3000);
+          return;
+        }
+        noteSend('DELETE', '/' + n.id).then(function () { fillNotes(); });
+      });
+      foot.appendChild(H.el('span', 'grow', noteChapter(n)));
+      foot.appendChild(go);
+      foot.appendChild(del);
+      li.appendChild(label);
+      li.appendChild(H.el('p', 'note-text', n.text));
+      li.appendChild(foot);
+      list.appendChild(li);
+    });
+    $('read-notes-find').value = '';
+  }
+
+  function findNotes() {
+    var q = $('read-notes-find').value.trim().toLowerCase();
+    Array.prototype.forEach.call($('read-notes-list').children, function (li) {
+      li.hidden = !!q && li.dataset.find.indexOf(q) < 0;
+    });
+  }
+
+  function flash(text) {
+    setText('read-status', text);
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(function () { setText('read-status', ''); }, 2200);
+  }
+
+  function saveNote(text) {
+    return noteSend('POST', '', { text: text, index: index, scroll: chapterRatio() }).then(function (res) {
+      flash(res.ok ? 'Saved to Notes' : H.errorText(res.data, '', 'save this note'));
+      return res.ok;
+    });
+  }
+
+  // The Save note button follows a selection inside the chapter text.
+  function selectedText() {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var text = String(sel).replace(/\s+/g, ' ').trim();
+    var box = $('read-text');
+    var from = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentNode);
+    var to = sel.focusNode && (sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentNode);
+    if (!text || !from || !to || !box.contains(from) || !box.contains(to)) return null;
+    return { text: text, rect: sel.getRangeAt(0).getBoundingClientRect() };
+  }
+
+  function placeSaveButton() {
+    var btn = $('read-savenote');
+    var got = book && !sheetOpen() ? selectedText() : null;
+    if (!got || !got.rect.width) { btn.hidden = true; return; }
+    btn.hidden = false;
+    var w = btn.offsetWidth || 96;
+    var left = Math.max(8, Math.min(window.innerWidth - w - 8, got.rect.left + got.rect.width / 2 - w / 2));
+    // A touch screen puts its own copy menu above the selection, so the button goes below there.
+    var below = !finePointer || !finePointer.matches || got.rect.top < 60;
+    var top = below ? got.rect.bottom + 14 : got.rect.top - 48;
+    btn.style.left = left + 'px';
+    btn.style.top = Math.max(8, Math.min(window.innerHeight - 56, top)) + 'px';
+  }
+
+  document.addEventListener('selectionchange', function () {
+    clearTimeout(selTimer);
+    selTimer = setTimeout(placeSaveButton, 120);
+  });
+  // Pressing the button must not drop the selection before the click lands.
+  $('read-savenote').addEventListener('mousedown', function (ev) { ev.preventDefault(); });
+  $('read-savenote').addEventListener('click', function () {
+    var got = selectedText();
+    $('read-savenote').hidden = true;
+    if (!got) return;
+    var sel = window.getSelection();
+    saveNote(got.text).then(function () { if (sel) sel.removeAllRanges(); });
+  });
+
+  $('read-notes-btn').addEventListener('click', function () {
+    if (!$('read-notes').hidden) { hideSheets(); return; }
+    if (book) { fillNotes(); openSheet('read-notes'); }
+  });
+  $('read-notes-close').addEventListener('click', function () { hideSheets(); showChrome(); });
+  $('read-notes-find').addEventListener('input', findNotes);
+  $('read-notes-form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var box = $('read-notes-new');
+    var text = box.value.trim();
+    if (!book || !text) return;
+    saveNote(text).then(function (ok) { if (ok) { box.value = ''; fillNotes(); } });
   });
 
   function zone(ev) {

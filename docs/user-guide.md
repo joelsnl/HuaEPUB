@@ -115,6 +115,7 @@ it. Removing a book also clears its position.
 | `~/.huaepub/settings.json` | App options |
 | `~/.huaepub/active_download.json` | The resume point of an unfinished download (if any) |
 | `~/.huaepub/reading.json` | Reader positions and bookmarks |
+| `~/.huaepub/notes.json` | Reader notes saved from the browser reader, per book |
 | `~/.huaepub/glossary.json` | Your own glossary terms |
 | `~/.huaepub/glossaries/` | Per-book terms, including names harvested from that book |
 | `~/.huaepub/glossary-qwen.json` | Older extra terms (read only for cultivation books) |
