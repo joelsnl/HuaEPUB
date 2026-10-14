@@ -450,7 +450,9 @@ def serve_headless() -> int:
     from core.logger import setup_logging
     from core.session import AppSession
     from core.updater import get_current_version
+    from core.utils import limit_malloc_arenas
 
+    limit_malloc_arenas()
     session = AppSession()
     setup_logging(session.data_dir)
     settings = session.settings

@@ -101,3 +101,10 @@ class TestSanitizeRuntimeEnv:
         cleared = sanitize_runtime_env()
         assert "SSL_CERT_FILE" not in cleared
         assert os.environ.get("SSL_CERT_FILE") == str(cert)
+
+
+def test_release_memory_and_arena_cap_are_safe_anywhere():
+    from core.utils import limit_malloc_arenas, release_memory
+
+    assert isinstance(release_memory(), bool)
+    assert isinstance(limit_malloc_arenas(2), bool)

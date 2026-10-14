@@ -345,6 +345,7 @@ Qt or `gui`.
   source installs exit 1 so `Restart=on-failure` starts the unit again; otherwise the existing helper
   relaunches and keeps `--headless`); the desktop still asks first. `--install-service` writes
   `~/.config/systemd/user/huaepub.service` only when no HuaEPUB unit is already there.
+- Memory: `serve_headless` calls `core.utils.limit_malloc_arenas()` (glibc `M_ARENA_MAX` 2) before any worker thread exists, and `TaskManager._run` calls `release_memory()` (gc + `malloc_trim`) when a job ends. Every translation worker thread otherwise gets its own arena that is never returned: an idle Pi Zero 2 W held ~340 MB (mostly in zram swap, which still costs RAM). Both are no-ops off glibc.
 - Pages and `/static/` are served `Cache-Control: no-cache` so an app update never leaves a phone on
   stale files.
 
