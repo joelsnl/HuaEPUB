@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import os
 import re
 import sys
@@ -59,6 +61,43 @@ def sanitize_runtime_env() -> list:
             os.environ.pop(key, None)
             cleared.append(key)
     return cleared
+
+
+_M_ARENA_MAX = -8  # mallopt() option number in glibc's <malloc.h>
+
+
+def _glibc():
+    """The C library when it is glibc, else None (Windows, macOS, musl)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim  # noqa: B018 - raises AttributeError off glibc
+        return libc
+    except (OSError, AttributeError):
+        return None
+
+
+def limit_malloc_arenas(count: int = 2) -> bool:
+    """Cap glibc's per-thread malloc arenas. Call before the worker threads start.
+
+    By default every thread that allocates gets its own arena, and an arena is never given back
+    when its thread ends. A job that runs a pool of translation workers therefore leaves
+    hundreds of MB of freed-but-held memory behind: on a Raspberry Pi Zero 2 W the idle server sat
+    on ~340 MB, nearly all of it in compressed swap that still takes real RAM.
+    """
+    libc = _glibc()
+    return bool(libc and libc.mallopt(_M_ARENA_MAX, count) == 1)
+
+
+def release_memory() -> bool:
+    """Hand freed memory back to the OS after a big job (collect garbage, then malloc_trim)."""
+    gc.collect()
+    libc = _glibc()
+    if libc is None:
+        return False
+    libc.malloc_trim(0)
+    return True
 
 
 _reported: Set[str] = set()

@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from core.download_runner import DownloadCancelled
 from core.security import is_allowed_epub_path
-from core.utils import pipeline_phase
+from core.utils import pipeline_phase, release_memory
 
 TERMINAL = ("done", "error", "cancelled")
 
@@ -298,6 +298,7 @@ class TaskManager:
             ctrl.is_downloading = False
             ctrl.is_paused = False
             ctrl.translator = None
+            release_memory()  # the job's workers are gone; give their freed memory back
 
     @contextlib.contextmanager
     def exclusive(self, label: str = "Reading") -> Iterator[None]:
