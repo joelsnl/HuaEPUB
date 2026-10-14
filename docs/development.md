@@ -59,6 +59,7 @@ core/                     The engine. Qt-free. Never imports gui or web.
   cache.py                SQLite: chapters, translations, covers, chapter lists
   library.py, library_check.py   Tracked library, update checks, shelving
   reader.py, reading.py   Opening a book for the reader; reading positions and bookmarks
+  notes.py                Reader notes (notes.json)
   download_job.py         The resume point (active_download.json)
   settings.py, atomic_io.py, logger.py, notify.py, branding.py, utils.py
   security.py             SSRF guards, safe archive extraction, secret files

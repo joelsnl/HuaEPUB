@@ -334,8 +334,10 @@
           <span class="running-label" id="read-kind"></span>
         </div>
         <button type="button" class="book-btn read-job" id="read-job" aria-pressed="false" aria-controls="dock" hidden></button>
+        <button type="button" class="book-btn" id="read-notes-btn" aria-controls="read-notes">Notes</button>
         <button type="button" class="book-btn" id="read-full" aria-pressed="false" hidden>Full screen</button>
       </header>
+      <button type="button" class="book-btn save-note" id="read-savenote" hidden>Save note</button>
       <footer class="chrome chrome-bot">
         <input type="range" id="read-progress" min="0" max="1000" value="0" aria-label="Place in the book">
         <div class="chrome-row">
@@ -360,6 +362,21 @@
           <span class="display-line">Chapters</span>
         </div>
         <ul class="sheet-list" id="read-toc-list"></ul>
+      </div>
+      <div class="sheet" id="read-notes" hidden>
+        <div class="sheet-head">
+          <span class="sheet-title">Notes</span>
+          <button type="button" class="book-link" id="read-notes-close">Close</button>
+        </div>
+        <p class="display-line" id="read-notes-help">Select words in the text, then tap Save note. They are kept here for this book.</p>
+        <input type="search" class="toc-find" id="read-notes-find" aria-label="Search notes"
+          placeholder="Search your notes" hidden>
+        <form class="note-add" id="read-notes-form">
+          <input type="text" class="toc-find" id="read-notes-new" maxlength="2000" autocomplete="off"
+            aria-label="Write a note" placeholder="Or write a note">
+          <button type="submit" class="book-btn">Add</button>
+        </form>
+        <ul class="note-list" id="read-notes-list"></ul>
       </div>
       <div class="sheet sheet-display" id="read-display" hidden>
         <div class="sheet-head">

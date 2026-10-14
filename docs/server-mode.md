@@ -66,6 +66,12 @@ The same position (`reading.json`) as the desktop reader.
   9 pages left". **Contents** opens at the current chapter, which is highlighted, and lists your
   bookmarks; a jump shows **Back to N** until you use it. **Full screen** is there too, and the
   screen stays awake while you read (on HTTPS or this PC).
+- **Notes** (top bar) keeps passages you want to find again, such as a list of cultivation realms or
+  who a character is, so you don't need a screenshot. Select words in the text and tap **Save
+  note**; they appear under **Notes** with their chapter. Give a note a label, search the list
+  (it appears once you have a few notes), **Go to** the page it came from, or type a note of your
+  own. Notes are stored per book on the PC, so every device sees them, and they stay if the book
+  leaves the Library. The desktop Read tab doesn't have Notes yet.
 - While a download runs, a progress button in the top bar ("Translating 38%") opens a card with the
   whole job (steps, counts, notes, files) and **Pause / Cancel / Hide**. It never covers the text on
   its own. A finished job stays until you dismiss it, and dismissing it hides it on every device.

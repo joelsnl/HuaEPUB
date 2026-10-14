@@ -52,7 +52,7 @@ do not recreate it.
   (job bodies), `parser.py`, `cleaner.py`, `ad_detect.py`, `translator*.py`, `translation_progress.py`,
   `translation/`, `polish/`, `local_polish.py`, `ollama_setup.py`, `epub_builder.py`,
   `download_runner.py`, `download_job.py`, `cache.py`, `library.py`, `library_check.py`, `reader.py`,
-  `reading.py`, `settings.py`, `atomic_io.py`, `security.py`, `updater.py`, `update_scripts.py`,
+  `reading.py`, `notes.py`, `settings.py`, `atomic_io.py`, `security.py`, `updater.py`, `update_scripts.py`,
   `logger.py`, `notify.py`, `branding.py`, `utils.py`.
 - `parsers/`: `sites.json` (host + CSS selectors) and the one parser that reads it.
 - `gui/`: the PySide6 window (`main_window.py`, mixins in `window/`, `pages/`, `widgets/`,
@@ -226,7 +226,7 @@ this PC.
 - The **Read** tab prefers a local EPUB, else cached chapter HTML (an on-demand site fetch for a missing
   chapter, with the site `request_delay` and no translation or polish, then an N+1 prefetch). With
   Translate on, cache HTML can be live-translated. Reading position is local only.
-- Local-only files: `cache.db`, resume files, `reading.json`, `polish/`, `nmt/`, `server/`,
+- Local-only files: `cache.db`, resume files, `reading.json`, `notes.json`, `polish/`, `nmt/`, `server/`,
   `glossary.json`, `glossary-qwen.json`, `glossaries/`.
 - Google Drive sync was removed. Do not add it back.
 - `core/utils.py`: shared helpers (`safe_filename`, URL extraction, ETA formatting, `in_pytest()`,
@@ -408,6 +408,14 @@ Keep script-referenced IDs when editing `index.html`.
 - **Lookup cost:** `translate_preview` translates only the title, the author and the first and last chapter
   titles (the From/To defaults); any other title comes from `GET /api/preview/<id>/chapter/<pos>/title`
   when you type its number. Translating every chapter title up front took minutes on a Raspberry Pi.
+- **Notes:** `core/notes.py` (local-only `notes.json`, keyed by the book's source URL, fsync'd; text
+  <= 2000 chars, label <= 80, 500 per book; kept when a book leaves the Library, unlike the reading
+  position) behind `POST /api/read/<id>/notes`, `.../notes/<note>/label` and `DELETE .../notes/<note>`; `open`
+  returns `notes`. The reader's top bar has **Notes**; selecting text inside `#read-text` shows a
+  floating **Save note** button (`selectionchange`, debounced; below the selection on touch screens so
+  it doesn't fight the native copy menu; `mousedown` is cancelled so the click doesn't drop the
+  selection). The sheet has a typed-note box, a search box past 4 notes, a label field per note,
+  **Go to** and a two-tap **Delete**. Browser only; the desktop Read tab has no notes.
 - **Reader chrome:** the bottom bar is Contents (left), the page label (`Page 3/12 · Ch 2/3 · 33%`, the
   percentage dropped under 430 px), Aa, Bookmark, all on one row. The margin line (`Page 3 of 12 · 9 pages
   left`) is hidden while the bar shows. The Contents row for the current chapter is tinted with a bar.
