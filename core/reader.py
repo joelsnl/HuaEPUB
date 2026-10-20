@@ -104,6 +104,88 @@ def find_local_epub(
     return None
 
 
+_BLOCK_CHILDREN = frozenset({
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dl", "table", "blockquote",
+    "pre", "section", "article", "hr", "figure", "form", "header", "footer", "nav", "aside",
+})
+
+
+def _blank(parts: list) -> bool:
+    for part in parts:
+        if isinstance(part, str):
+            if part.strip():
+                return False
+        elif part.tag in ("img", "hr") or "".join(part.itertext()).strip():
+            return False
+    return True
+
+
+def split_break_runs(root) -> int:
+    """Turn ``text<br><br>text`` blocks into real paragraphs; returns how many blocks changed.
+
+    Some chapters are one ``<p>`` or ``<div>`` of text and ``<br>`` tags. In the browser reader that
+    is a single block laid out across every page of the chapter, and a phone's text selection
+    cannot be extended inside it (a chapter with real paragraphs can). Only a block whose children
+    are inline markup and at least two ``<br>`` is touched; real paragraphs, headings and lists are
+    left alone, and a lone ``<br>`` (a line break inside a paragraph) is kept.
+    """
+    changed = 0
+    for el in [e for e in root.iter() if e.tag in ("p", "div")]:
+        kids = list(el)
+        if sum(1 for k in kids if k.tag == "br") < 2:
+            continue
+        if any(k.tag in _BLOCK_CHILDREN for k in kids):
+            continue
+        parts: list = [[]]
+        if el.text:
+            parts[-1].append(el.text)
+        for kid in kids:
+            if kid.tag == "br":
+                parts.append([])
+                if kid.tail:
+                    parts[-1].append(kid.tail)
+            else:
+                parts[-1].append(kid)  # an element carries its own tail with it
+        parts = [seg for seg in parts if not _blank(seg)]
+        if len(parts) < 2:
+            continue
+        el.text = None
+        for kid in kids:
+            el.remove(kid)
+        paragraphs = []
+        for seg in parts:
+            para = lxml_html.Element("p")
+            for item in seg:
+                if isinstance(item, str):
+                    if len(para):
+                        para[-1].tail = (para[-1].tail or "") + item
+                    else:
+                        para.text = (para.text or "") + item
+                else:
+                    para.append(item)
+            if para.text:
+                para.text = para.text.lstrip()
+            paragraphs.append(para)
+        if el.tag == "div":
+            for para in paragraphs:
+                el.append(para)
+        else:
+            parent = el.getparent()
+            if parent is None:
+                continue  # a bare <p> as the whole fragment: nothing to put the pieces in
+            tail, at = el.tail, parent.index(el)
+            for key, value in el.attrib.items():
+                for n, para in enumerate(paragraphs):
+                    if key != "id" or n == 0:  # an id must stay unique
+                        para.set(key, value)
+            parent.remove(el)
+            for offset, para in enumerate(paragraphs):
+                parent.insert(at + offset, para)
+            paragraphs[-1].tail = tail
+        changed += 1
+    return changed
+
+
 def sanitize_reader_html(html: str) -> str:
     """Drop executable markup and in-chapter links so the viewer cannot navigate."""
     raw = html or ""
@@ -130,6 +212,10 @@ def sanitize_reader_html(html: str) -> str:
         elif el.tag in {"img", "source", "video", "audio", "iframe"}:
             el.attrib.pop("src", None)
             el.attrib.pop("srcset", None)
+    try:
+        split_break_runs(root)
+    except Exception as exc:  # never lose a chapter over a tidy-up
+        print(f"Reader: could not split line breaks into paragraphs: {exc}")
     try:
         return lxml_html.tostring(root, encoding="unicode", method="html")
     except Exception:

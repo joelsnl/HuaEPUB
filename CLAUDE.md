@@ -222,7 +222,11 @@ this PC.
   TOC/HTML) and sanitises HTML for QTextBrowser. `next_cache_prefetch_index` and
   `html_needs_live_translate` drive N+1 prefetch and live translation; `fetch_reader_chapter` and
   `live_translate_chapter` do the one-chapter fetch and translate for both the desktop Read tab and the
-  browser reader.
+  browser reader. `sanitize_reader_html` also runs `split_break_runs`: a `<p>`/`<div>` that holds only
+  text, inline markup and two or more `<br>` becomes real paragraphs (real paragraphs, headings, lists
+  and a lone `<br>` are left alone). Some chapters are one block of `text<br><br>text`; in the browser's
+  column layout that block runs across every page, and on an iPhone the text selection there could
+  not be extended past one word, while chapters with real paragraphs were fine.
 - The **Read** tab prefers a local EPUB, else cached chapter HTML (an on-demand site fetch for a missing
   chapter, with the site `request_delay` and no translation or polish, then an N+1 prefetch). With
   Translate on, cache HTML can be live-translated. Reading position is local only.
