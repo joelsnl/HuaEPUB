@@ -33,6 +33,7 @@
     spread: 'auto', margin: 'normal'
   };
   var touchX = 0;
+  var pendingNote = '';  // the selected text the Save note button was last placed for
   var drag = null;       // a horizontal page drag in progress (pages mode)
   var slideFrame = 0;
   var wheel = { sum: 0, last: 0, turned: 0, spent: false };
@@ -204,6 +205,7 @@
   }
 
   function goToPage(page, animate) {
+    clearSelection();  // a selection does not follow the text onto the next page
     logicalPage = page;
     var left = page * screenWidth();
     if (animate) { slideTo(left); return; }
@@ -390,6 +392,7 @@
     if (!book || !book.chapters.length) return;
     index = Math.max(0, Math.min(i, book.chapters.length - 1));
     var seq = ++loadSeq;
+    clearSelection();
     var ready = book.chapters[index] && book.chapters[index].ready;
     if (paged()) { logicalPage = 0; setOffset(0); }
     var ch = book.chapters[index];
@@ -759,16 +762,41 @@
     return { text: text, rect: sel.getRangeAt(0).getBoundingClientRect() };
   }
 
+  // Is any text selected (a long press, or a mouse drag)?
+  function hasSelection() {
+    var sel = window.getSelection && window.getSelection();
+    return !!sel && !sel.isCollapsed && String(sel).length > 0;
+  }
+
+  function clearSelection() {
+    var sel = window.getSelection && window.getSelection();
+    if (sel && sel.rangeCount) sel.removeAllRanges();
+    $('read-savenote').hidden = true;
+    pendingNote = '';
+  }
+
   function placeSaveButton() {
     var btn = $('read-savenote');
     var got = book && !sheetOpen() ? selectedText() : null;
-    if (!got || !got.rect.width) { btn.hidden = true; return; }
+    if (!got || !got.rect.width) { btn.hidden = true; pendingNote = ''; return; }
+    pendingNote = got.text;
     btn.hidden = false;
+    if (!finePointer || !finePointer.matches) {
+      // A finger's selection handles hang just below and above the selected words, and its
+      // own copy menu sits above them. A button that follows the selection would cover a
+      // handle and make the selection impossible to extend, so on a touch screen it stays at
+      // the middle of the top or bottom edge, whichever is farther from the selection.
+      var lower = (got.rect.top + got.rect.bottom) / 2 > (window.innerHeight || 800) / 2;
+      btn.classList.toggle('at-top', lower);
+      btn.classList.toggle('at-bottom', !lower);
+      btn.style.left = '';
+      btn.style.top = '';
+      return;
+    }
+    btn.classList.remove('at-top', 'at-bottom');
     var w = btn.offsetWidth || 96;
     var left = Math.max(8, Math.min(window.innerWidth - w - 8, got.rect.left + got.rect.width / 2 - w / 2));
-    // A touch screen puts its own copy menu above the selection, so the button goes below there.
-    var below = !finePointer || !finePointer.matches || got.rect.top < 60;
-    var top = below ? got.rect.bottom + 14 : got.rect.top - 48;
+    var top = got.rect.top < 60 ? got.rect.bottom + 14 : got.rect.top - 48;
     btn.style.left = left + 'px';
     btn.style.top = Math.max(8, Math.min(window.innerHeight - 56, top)) + 'px';
   }
@@ -780,11 +808,14 @@
   // Pressing the button must not drop the selection before the click lands.
   $('read-savenote').addEventListener('mousedown', function (ev) { ev.preventDefault(); });
   $('read-savenote').addEventListener('click', function () {
+    // Some touch browsers drop the selection when a button is tapped; the text seen when the
+    // button was placed is still good then.
     var got = selectedText();
+    var text = got ? got.text : pendingNote;
     $('read-savenote').hidden = true;
-    if (!got) return;
-    var sel = window.getSelection();
-    saveNote(got.text).then(function () { if (sel) sel.removeAllRanges(); });
+    pendingNote = '';
+    if (!text) return;
+    saveNote(text).then(function () { clearSelection(); });
   });
 
   $('read-notes-btn').addEventListener('click', function () {
@@ -857,13 +888,23 @@
   leaf().addEventListener('touchstart', function (ev) {
     touchX = ev.changedTouches[0].clientX;
     drag = null;
-    if (!book || !paged() || ev.touches.length > 1) return;
+    // With text selected, finger movement belongs to the selection (its handles), not the page.
+    if (!book || !paged() || ev.touches.length > 1 || hasSelection()) return;
     cancelAnimationFrame(slideFrame);
     var t = ev.touches[0];
     drag = { x: t.clientX, y: t.clientY, at: ev.timeStamp, axis: '', left: logicalPage * screenWidth() };
   }, { passive: true });
+  // A long press selects a word and a drag after it extends the selection. When that starts
+  // mid-gesture the page must let go: no page slide, and no preventDefault (which would stop
+  // the selection growing past the first word).
+  function dropDrag() {
+    if (drag && drag.axis === 'x') slideTo(drag.left);
+    drag = null;
+  }
+
   leaf().addEventListener('touchmove', function (ev) {
     if (!drag) return;
+    if (hasSelection() || (!drag.axis && ev.timeStamp - drag.at > 450)) { dropDrag(); return; }
     var t = ev.touches[0];
     var dx = t.clientX - drag.x;
     var dy = t.clientY - drag.y;
@@ -889,6 +930,7 @@
     var d = drag;
     drag = null;
     if (d.axis !== 'x') return;
+    if (hasSelection()) { slideTo(d.left); return; }
     ev.preventDefault();
     var width = screenWidth();
     var speed = Math.abs(dx) / Math.max(1, ev.timeStamp - d.at);
@@ -908,10 +950,7 @@
     }
     slideTo(d.left);
   });
-  leaf().addEventListener('touchcancel', function () {
-    if (drag && drag.axis === 'x') slideTo(drag.left);
-    drag = null;
-  });
+  leaf().addEventListener('touchcancel', dropDrag);
 
   document.addEventListener('keydown', function (ev) {
     if (!book || H.view() !== 'read' || $('read-book').hidden) return;

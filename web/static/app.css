@@ -639,6 +639,7 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
 #read-book.is-chrome .folio { visibility: hidden; }
 #read-book.is-chrome .running { visibility: hidden; }
 .reader-text {
+  -webkit-user-select: text; user-select: text;
   font-family: Georgia, var(--serif); font-size: var(--read-size); line-height: var(--read-lead);
   overflow-wrap: anywhere; color: var(--paper-ink); orphans: 2; widows: 2;
 }
@@ -774,6 +775,10 @@ body.is-reading .dock-hide { display: inline-block; margin-left: auto; }
   border-color: var(--paper-ink); box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
 }
 .save-note[hidden] { display: none; }
+/* On a touch screen the button keeps clear of the selection handles: top or bottom centre. */
+.save-note.at-top, .save-note.at-bottom { left: 50%; top: auto; transform: translateX(-50%); min-height: 44px; padding: 0 20px; font-size: 15px; }
+.save-note.at-top { top: calc(env(safe-area-inset-top, 0px) + 16px); }
+.save-note.at-bottom { bottom: calc(env(safe-area-inset-bottom, 0px) + 28px); }
 .note-add { display: flex; gap: 8px; align-items: center; }
 .note-add .toc-find { flex: 1; min-width: 0; }
 .note-list { list-style: none; margin: 0; padding: 0; }

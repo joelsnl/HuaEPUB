@@ -412,9 +412,15 @@ Keep script-referenced IDs when editing `index.html`.
   <= 2000 chars, label <= 80, 500 per book; kept when a book leaves the Library, unlike the reading
   position) behind `POST /api/read/<id>/notes`, `.../notes/<note>/label` and `DELETE .../notes/<note>`; `open`
   returns `notes`. The reader's top bar has **Notes**; selecting text inside `#read-text` shows a
-  floating **Save note** button (`selectionchange`, debounced; below the selection on touch screens so
-  it doesn't fight the native copy menu; `mousedown` is cancelled so the click doesn't drop the
-  selection). The sheet has a typed-note box, a search box past 4 notes, a label field per note,
+  floating **Save note** button (`selectionchange`, debounced). With a mouse it floats above the
+  selection (`mousedown` is cancelled so the click doesn't drop it). On a touch screen it must **never
+  sit next to the selection** (a finger's selection handles hang just below and above the selected words
+  and the button would cover one, so the selection could not be extended past one word): it stays at the
+  top or bottom centre, whichever is farther from the selection (`.at-top` / `.at-bottom`), and the text
+  seen at placement (`pendingNote`) is saved if the browser drops the selection on the tap. The
+  page-turn touch code must also leave a selection alone: no drag starts while text is selected, a drag
+  gives up when a selection (a long press) appears mid-gesture or the finger rested ~450 ms before
+  moving, and never `preventDefault`s then. A page turn or chapter change clears the selection. The sheet has a typed-note box, a search box past 4 notes, a label field per note,
   **Go to** and a two-tap **Delete**. Browser only; the desktop Read tab has no notes.
 - **Reader chrome:** the bottom bar is Contents (left), the page label (`Page 3/12 · Ch 2/3 · 33%`, the
   percentage dropped under 430 px), Aa, Bookmark, all on one row. The margin line (`Page 3 of 12 · 9 pages
