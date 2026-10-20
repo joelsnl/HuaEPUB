@@ -52,6 +52,40 @@ class TestSanitize:
         assert "click" in out
 
 
+class TestBreakRuns:
+    @staticmethod
+    def _paras(html):
+        from lxml import html as lxml_html
+
+        root = lxml_html.fromstring(sanitize_reader_html(html))
+        return [" ".join("".join(p.itertext()).split()) for p in root.iter("p")]
+
+    def test_div_of_text_and_breaks_becomes_paragraphs(self):
+        assert self._paras("<div>One.<br><br>Two.<br>Three.</div>") == ["One.", "Two.", "Three."]
+
+    def test_a_p_full_of_breaks_is_split_in_place(self):
+        out = sanitize_reader_html("<div><h1>T</h1><p id='a' class='x'>One<br><br>Two<br><br>Three</p><p>After</p></div>")
+        assert self._paras(out) == ["One", "Two", "Three", "After"]
+        assert out.count("<h1>T</h1>") == 1 and out.count('id="a"') == 1 and out.count('class="x"') == 3
+
+    def test_inline_markup_and_tails_survive(self):
+        got = self._paras("<div>Start<br><b>Bold</b> tail <i>it</i><br>End</div>")
+        assert got == ["Start", "Bold tail it", "End"]
+
+    def test_real_paragraphs_a_lone_break_and_blocks_with_children_stay(self):
+        keep = "<p>a<br>b</p>"  # one break is a line break, not a paragraph break
+        assert self._paras(keep) == ["ab"]
+        assert sanitize_reader_html(keep).count("<br>") == 1
+        mixed = "<div><p>x</p>y<br><br>z</div>"
+        assert sanitize_reader_html(mixed).count("<br>") == 2
+        normal = "<p>One</p><p>Two</p>"
+        assert self._paras(normal) == ["One", "Two"]
+
+    def test_blank_runs_and_text_order_are_kept(self):
+        got = self._paras("<div><br><br>First<br><br><br>Second<br><br></div>")
+        assert got == ["First", "Second"]
+
+
 class TestResolveEpub:
     def test_loads_epub_under_books(self, tmp_path):
         epub = _book(tmp_path)
