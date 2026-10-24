@@ -237,6 +237,26 @@ def load_user_glossary(novel_title: str = "") -> GlossaryEngine:
     return engine
 
 
+def count_learned_terms(*, data_dir: Optional[Path] = None) -> int:
+    """Distinct names/terms taught to the translator (harvested or user-added), for the
+    stats page. Counts ``glossary.json`` plus every per-novel file under ``glossaries/``,
+    deduplicated by source text so the same name across books counts once.
+    """
+    from core.settings import get_data_dir
+
+    base = Path(data_dir) if data_dir is not None else get_data_dir()
+    paths = [base / "glossary.json"]
+    gdir = base / "glossaries"
+    if gdir.is_dir():
+        paths.extend(sorted(gdir.glob("*.json")))
+    seen: set = set()
+    for path in paths:
+        for term in _load_json_glossary(path).terms:
+            if term.source:
+                seen.add(term.source.casefold())
+    return len(seen)
+
+
 def build_novel_glossary(
     *,
     novel_title: str = "",

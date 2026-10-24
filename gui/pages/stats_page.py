@@ -166,6 +166,19 @@ class StatsPage(QWidget):
             tiles.append(self._tile(at, "most recently downloaded", recent["title"]))
         if stats["notes"] > 0:
             tiles.append(self._tile(f"{stats['notes']:,}", f"{_word(stats['notes'], 'note')} saved"))
+        if stats["bookmarks"] > 0:
+            tiles.append(self._tile(
+                f"{stats['bookmarks']:,}", f"{_word(stats['bookmarks'], 'bookmark')} saved",
+            ))
+        if stats["glossary_terms"] > 0:
+            name_word = "name" if stats["glossary_terms"] == 1 else "names"
+            tiles.append(self._tile(
+                f"{stats['glossary_terms']:,}", f"{name_word} & terms your translator has learned",
+            ))
+        if books["untouched"] > 0:
+            tiles.append(self._tile(
+                f"{books['untouched']:,}", f"{_word(books['untouched'], 'book')} waiting for you to start",
+            ))
         if books["shelved"] > 0:
             tiles.append(self._tile(f"{books['shelved']:,}", f"{_word(books['shelved'], 'book')} shelved"))
 

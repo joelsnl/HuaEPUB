@@ -5,8 +5,9 @@ import pytest
 from core.cache import NovelCache
 from core.library import LibraryStore
 from core.notes import add_note
-from core.reading import set_position
+from core.reading import set_position, toggle_bookmark
 from core.reading_stats import compute_reading_stats
+from core.translation.glossary import Glossary, Term, save_glossary_file
 
 
 class FakeSession:
@@ -91,6 +92,35 @@ class TestComputeReadingStats:
 
         stats = compute_reading_stats(session)
         assert stats["notes"] == 2
+
+    def test_bookmarks_counted_across_books(self, session):
+        _add_book(session, "https://a.example/book1", "Book", "A", 10)
+        toggle_bookmark("https://a.example/book1", chapter_index=1, scroll=0.1,
+                         data_dir=session.data_dir)
+        toggle_bookmark("https://a.example/book1", chapter_index=2, scroll=0.2,
+                         data_dir=session.data_dir)
+
+        stats = compute_reading_stats(session)
+        assert stats["bookmarks"] == 2
+
+    def test_glossary_terms_deduplicated_across_files(self, session):
+        glossary_path = session.data_dir / "glossary.json"
+        glossary_path.parent.mkdir(parents=True, exist_ok=True)
+        save_glossary_file(
+            glossary_path, Glossary(terms=[Term(source="张三", target="Zhang San")]),
+        )
+        novel_path = session.data_dir / "glossaries" / "book.json"
+        novel_path.parent.mkdir(parents=True, exist_ok=True)
+        save_glossary_file(
+            novel_path,
+            Glossary(terms=[
+                Term(source="张三", target="Zhang San"),
+                Term(source="金丹", target="Golden Core"),
+            ]),
+        )
+
+        stats = compute_reading_stats(session)
+        assert stats["glossary_terms"] == 2
 
     def test_cached_chapter_and_translation_totals(self, session):
         session.cache.put_chapter("https://a.example/book1", "https://a.example/1", "t",

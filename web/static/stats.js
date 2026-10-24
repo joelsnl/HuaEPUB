@@ -64,6 +64,15 @@
     if (data.notes > 0) {
       grid.appendChild(tile(fmt(data.notes), word(data.notes, 'note') + ' saved'));
     }
+    if (data.bookmarks > 0) {
+      grid.appendChild(tile(fmt(data.bookmarks), word(data.bookmarks, 'bookmark') + ' saved'));
+    }
+    if (data.glossary_terms > 0) {
+      grid.appendChild(tile(fmt(data.glossary_terms), word(data.glossary_terms, 'name', 'names') + ' & terms your translator has learned'));
+    }
+    if (books.untouched > 0) {
+      grid.appendChild(tile(fmt(books.untouched), word(books.untouched, 'book') + " waiting for you to start"));
+    }
     if (books.shelved > 0) {
       grid.appendChild(tile(fmt(books.shelved), word(books.shelved, 'book') + ' shelved'));
     }
