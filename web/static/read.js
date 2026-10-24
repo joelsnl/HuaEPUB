@@ -283,35 +283,18 @@
     try { window.localStorage.setItem(LOCAL_KEY, JSON.stringify(row)); } catch (e) { /* private mode */ }
   }
 
-  function pickList() {
+  // There is no picker of its own: a book is always opened from Library (Read button,
+  // Continue reading, or double-click), same as the desktop Read tab.
+  function toLibrary() {
     document.body.classList.remove('is-reading', 'dock-open');
-    H.refresh();  // redraw the job panel for the page view (it had the reader's buttons)
-    show('read-pick', true);
     show('read-book', false);
     hideSheets();
     letSleep();
-    H.api('GET', '/api/library').then(function (res) {
-      var list = $('read-list');
-      list.textContent = '';
-      var items = (res.ok && res.data && res.data.entries) || [];
-      show('read-empty', !items.length);
-      items.forEach(function (e) {
-        var li = document.createElement('li');
-        var b = H.el('button', 'pick');
-        b.type = 'button';
-        b.appendChild(H.el('span', 'pick-title', e.title));
-        b.appendChild(H.el('span', 'muted small', H.plural(e.chapters, 'chapter') +
-          (e.has_epub ? ' · EPUB' : ' · cached chapters')));
-        b.addEventListener('click', function () { open({ url: e.url }); });
-        li.appendChild(b);
-        list.appendChild(li);
-      });
-    });
+    H.go('library');
   }
 
   function open(arg) {
     document.body.classList.add('is-reading');
-    show('read-pick', false);
     show('read-book', true);
     hideSheets();
     showChrome();
@@ -611,7 +594,7 @@
     savePosition();
     book = null;
     if (fullscreenOn()) toggleFullscreen();
-    pickList();
+    toLibrary();
   });
   $('read-contents-btn').addEventListener('click', function () {
     if (!$('read-contents').hidden) { hideSheets(); return; }
@@ -1018,7 +1001,7 @@
 
   H.onView('read', function (arg) {
     if (arg && (arg.url || arg.preview_id)) { open(arg); return; }
-    if (!book) pickList();
+    if (!book) toLibrary();
     else { document.body.classList.add('is-reading'); keepAwake(); }
   });
   if (loadLocal()) apply(loadLocal(), '');

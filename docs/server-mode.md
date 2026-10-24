@@ -52,6 +52,7 @@ on a 3,000-chapter book; type any other chapter number and its English title app
 
 ### Read
 
+Opened from a book's **Read** action in the Library (there's no separate Read page in the nav).
 The same position (`reading.json`) as the desktop reader.
 
 - **Pages** mode turns pages like Play Books: the page follows your finger and slides on, and taps
