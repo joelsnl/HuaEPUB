@@ -51,7 +51,7 @@ class StatsPage(QWidget):
         hero_layout = QVBoxLayout(self.hero)
         self.hero_num = QLabel("0")
         self.hero_num.setObjectName("statHeroNum")
-        self.hero_label = QLabel("chapters read")
+        self.hero_label = QLabel("chapters read, all time")
         self.hero_label.setObjectName("statLabel")
         self.hero_sub = QLabel("")
         self.hero_sub.setObjectName("statSub")
@@ -116,10 +116,12 @@ class StatsPage(QWidget):
 
         hero_num = chapters["read"] if chapters["read"] > 0 else chapters["in_library"]
         self.hero_num.setText(f"{hero_num:,}")
-        self.hero_label.setText("chapters read" if chapters["read"] > 0 else "chapters in your library")
+        self.hero_label.setText(
+            "chapters read, all time" if chapters["read"] > 0 else "chapters in your library"
+        )
         streak = stats["reading_streak_days"]
         if streak >= 2:
-            self.hero_sub.setText(f"{streak}-day reading streak")
+            self.hero_sub.setText(f"Reading streak: {streak} days running")
         elif streak == 1:
             self.hero_sub.setText("You read today - keep it going.")
         else:

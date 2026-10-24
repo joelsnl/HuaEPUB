@@ -75,7 +75,9 @@ def compute_reading_stats(session) -> Dict[str, Any]:
             untouched_count += 1
             continue
         index, updated_at = mark
-        chapters_read += min(index + 1, count) if count else (index + 1)
+        # Capped at the book's known chapter count, never a raw stored index: a book whose
+        # count briefly reads 0 (e.g. mid Library check) must not contribute an unbounded number.
+        chapters_read += min(index + 1, count) if count else 0
         if updated_at:
             reading_days.add(datetime.date.fromtimestamp(updated_at))
         if count and index + 1 >= count:
