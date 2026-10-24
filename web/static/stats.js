@@ -38,6 +38,27 @@
     grid.textContent = '';
     grid.appendChild(tile(fmt(books.tracked), word(books.tracked, 'book') + ' in your library',
       fmt(books.finished) + ' finished · ' + fmt(books.reading) + ' in progress'));
+    if (data.currently_reading) {
+      grid.appendChild(tile(data.currently_reading.percent + '%', 'through your current read',
+        data.currently_reading.title));
+    }
+    if (data.most_read_book) {
+      grid.appendChild(tile(fmt(data.most_read_book.chapters), 'chapters in your most-read book',
+        data.most_read_book.title));
+    }
+    if (data.favorite_author) {
+      grid.appendChild(tile(fmt(data.favorite_author.chapters), 'chapters from your favorite author',
+        data.favorite_author.name));
+    }
+    if (data.average_completion_percent > 0) {
+      grid.appendChild(tile(data.average_completion_percent + '%',
+        'average, how far into the books you\'ve started',
+        fmt(books.reading + books.finished) + ' books started'));
+    }
+    if (text.characters_read > 0) {
+      grid.appendChild(tile(fmt(text.characters_read), 'characters you\'ve actually read',
+        'estimated from chapters marked read, not just cached'));
+    }
     grid.appendChild(tile(fmt(chapters.cached), 'chapters downloaded', 'cached on this PC right now'));
     if (text.characters_cached > 0) {
       grid.appendChild(tile(fmt(text.characters_cached), 'characters downloaded',
