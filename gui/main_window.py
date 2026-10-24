@@ -41,6 +41,7 @@ from gui.pages.library_page import LibraryPage
 from gui.pages.multi_page import MultiPage
 from gui.pages.reader_page import ReaderPage
 from gui.pages.single_page import SinglePage
+from gui.pages.stats_page import StatsPage
 from gui.session import AppSession
 from gui.widgets.options_bar import OptionsBar
 from gui.widgets.progress_panel import ProgressPanel
@@ -139,11 +140,14 @@ class MainWindow(
         self.multi = MultiPage()
         self.library = LibraryPage(self.session)
         self.reader = ReaderPage()
+        self.stats = StatsPage(self.session)
         self.tabs.addTab(self.single, "Single")
         self.tabs.addTab(self.multi, "Multi")
         self.tabs.addTab(self.library, "Library")
         self.tabs.addTab(self.reader, "Read")
+        self.tabs.addTab(self.stats, "Stats")
         layout.addWidget(self.tabs, 1)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.options = OptionsBar(self.session)
         layout.addWidget(self.options)
@@ -169,6 +173,11 @@ class MainWindow(
         if self.session.library_store.get_library():
             QTimer.singleShot(4000, self.library.refresh)
         QTimer.singleShot(3500, self._maybe_offer_glossary_qwen)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        if self.tabs.widget(index) is self.stats:
+            self.stats.refresh()
 
     def _build_menu(self):
         mb = self.menuBar()

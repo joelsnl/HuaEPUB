@@ -48,13 +48,14 @@ def window(qapp, tmp_path, monkeypatch):
     qapp.processEvents()
 
 
-def test_window_opens_on_four_tabs(window, qapp):
+def test_window_opens_on_five_tabs(window, qapp):
     assert window.windowTitle().startswith("HuaEPUB")
     assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
         "Single",
         "Multi",
         "Library",
         "Read",
+        "Stats",
     ]
     window.tabs.setCurrentWidget(window.library)
     qapp.processEvents()
@@ -62,6 +63,17 @@ def test_window_opens_on_four_tabs(window, qapp):
     window.tabs.setCurrentWidget(window.reader)
     qapp.processEvents()
     assert "Open a novel" in window.reader.title_lbl.text()
+
+
+def test_switching_to_stats_refreshes_it(window, qapp):
+    window.session.library_store.upsert_library(
+        "https://a.example/book1", title="Book", translated_title="Book",
+        author="A", chapter_count=12,
+    )
+    window.tabs.setCurrentWidget(window.stats)
+    qapp.processEvents()
+    assert window.tabs.currentWidget() is window.stats
+    assert window.stats.grid.count() > 0
 
 
 def test_fetch_click_sends_the_url(window, qapp):

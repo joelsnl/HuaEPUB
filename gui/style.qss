@@ -213,6 +213,17 @@ QLabel#serverValue { font-family: "${mono}"; font-size: 13px; }
 QLabel#qrLabel { background: transparent; }
 QFrame#rule { background: ${rule}; max-height: 1px; min-height: 1px; border: none; }
 
+/* Stats page */
+QFrame#statTile, QFrame#statHero {
+    background-color: ${surface};
+    border: 1px solid ${rule};
+    border-radius: 0;
+}
+QLabel#statHeroNum { font-family: "${serif}"; font-size: 40px; color: ${accent}; }
+QLabel#statNum { font-family: "${serif}"; font-size: 24px; color: ${ink}; }
+QLabel#statLabel { color: ${muted}; font-size: 13px; }
+QLabel#statSub { color: ${ink}; font-size: 12px; }
+
 QMenuBar {
     background-color: ${ground};
     color: ${ink};

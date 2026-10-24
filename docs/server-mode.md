@@ -76,6 +76,14 @@ The same position (`reading.json`) as the desktop reader.
   whole job (steps, counts, notes, files) and **Pause / Cancel / Hide**. It never covers the text on
   its own. A finished job stays until you dismiss it, and dismissing it hides it on every device.
 
+### Stats
+
+A "wrapped"-style summary of the Library and your reading: books tracked, chapters and
+characters downloaded, words translated, your reading streak, notes saved, your longest book
+and the site you use most. It's built from data already on the PC (no new tracking) and
+recomputes each time you open the page. Characters and translated words are estimates from
+what's cached right now, not a lifetime total.
+
 ### Settings
 
 Translate, clean, cache, translator, glossary, workers, Polish and the books folder, plus

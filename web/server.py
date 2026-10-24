@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.branding import APP_TITLE
-from web import auth_api, download_api, library_api, reader_api, settings_api, task_api
+from web import auth_api, download_api, library_api, reader_api, settings_api, stats_api, task_api
 from web.auth_api import STATIC_DIR
 from web.context import ServerContext
 from web.guard import install_guard
@@ -31,7 +31,7 @@ def create_app(ctx: ServerContext) -> FastAPI:
                             status_code=409)
 
     install_guard(app, ctx)
-    for module in (auth_api, task_api, download_api, settings_api, library_api, reader_api):
+    for module in (auth_api, task_api, download_api, settings_api, library_api, reader_api, stats_api):
         app.include_router(module.build_router(ctx))
 
     @app.get("/")

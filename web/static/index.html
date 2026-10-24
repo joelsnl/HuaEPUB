@@ -43,6 +43,7 @@
       <a href="#single" data-view="single"><span class="nav-long">Add a book</span><span class="nav-short">Add</span></a>
       <a href="#multi" data-view="multi"><span class="nav-long">Add several</span><span class="nav-short">Batch</span></a>
       <a href="#read" data-view="read">Read</a>
+      <a href="#stats" data-view="stats">Stats</a>
       <a href="#settings" data-view="settings">Settings</a>
     </nav>
   </header>
@@ -435,6 +436,31 @@
     </div>
   </section>
 
+  <!-- ============ STATS ============ -->
+  <section class="view view-stats" id="view-stats" hidden>
+    <div class="page-head">
+      <h1 class="page-title">Your reading, wrapped</h1>
+      <p class="page-lede">Pulled from what is already stored on this PC — nothing here is sent anywhere.</p>
+    </div>
+    <div class="stats-empty" id="stats-empty" hidden>
+      <p>Nothing to show yet.</p>
+      <p class="muted">Add a book and start reading, and this fills in.</p>
+      <a class="btn btn-main btn-auto" href="#single" data-view="single">Add a book</a>
+    </div>
+    <div id="stats-full" hidden>
+      <div class="stats-hero card">
+        <span class="seal stats-hero-seal" aria-hidden="true">译</span>
+        <div class="stats-hero-text">
+          <span class="stats-hero-num" id="stats-hero-num">0</span>
+          <span class="stats-hero-label" id="stats-hero-label">chapters read</span>
+          <p class="stats-hero-sub" id="stats-hero-sub"></p>
+        </div>
+      </div>
+      <div class="stats-grid" id="stats-grid"></div>
+      <p class="muted small stats-foot" id="stats-foot"></p>
+    </div>
+  </section>
+
   <!-- ============ SETTINGS ============ -->
   <section class="view view-settings" id="view-settings" hidden>
     <div class="page-head">
@@ -524,6 +550,7 @@
 <script src="/static/multi.js" defer></script>
 <script src="/static/library.js" defer></script>
 <script src="/static/read.js" defer></script>
+<script src="/static/stats.js" defer></script>
 <script src="/static/settings.js" defer></script>
 <script src="/static/storage.js" defer></script>
 <script src="/static/boot.js" defer></script>
