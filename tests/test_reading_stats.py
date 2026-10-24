@@ -122,6 +122,53 @@ class TestComputeReadingStats:
         stats = compute_reading_stats(session)
         assert stats["glossary_terms"] == 2
 
+    def test_most_read_book_and_favorite_author(self, session):
+        _add_book(session, "https://a.example/book1", "Short Read", "Author A", 10)
+        _add_book(session, "https://a.example/book2", "Long Read", "Author B", 100)
+        set_position("https://a.example/book1", chapter_index=2, data_dir=session.data_dir)
+        set_position("https://a.example/book2", chapter_index=49, data_dir=session.data_dir)
+
+        stats = compute_reading_stats(session)
+        assert stats["most_read_book"] == {"title": "Long Read", "chapters": 50}
+        assert stats["favorite_author"] == {"name": "Author B", "chapters": 50}
+
+    def test_currently_reading_is_most_recently_updated_unfinished_book(self, session):
+        _add_book(session, "https://a.example/book1", "Older", "A", 10)
+        _add_book(session, "https://a.example/book2", "Newer", "A", 20)
+        set_position("https://a.example/book1", chapter_index=4, data_dir=session.data_dir)
+        set_position("https://a.example/book2", chapter_index=9, data_dir=session.data_dir)
+
+        stats = compute_reading_stats(session)
+        assert stats["currently_reading"]["title"] == "Newer"
+        assert stats["currently_reading"]["percent"] == 50
+
+    def test_finished_books_excluded_from_currently_reading(self, session):
+        _add_book(session, "https://a.example/book1", "Done", "A", 5)
+        set_position("https://a.example/book1", chapter_index=4, data_dir=session.data_dir)
+
+        stats = compute_reading_stats(session)
+        assert stats["currently_reading"] is None
+
+    def test_average_completion_percent(self, session):
+        _add_book(session, "https://a.example/book1", "Book1", "A", 10)
+        _add_book(session, "https://a.example/book2", "Book2", "A", 10)
+        set_position("https://a.example/book1", chapter_index=4, data_dir=session.data_dir)  # 50%
+        set_position("https://a.example/book2", chapter_index=9, data_dir=session.data_dir)  # 100%
+
+        stats = compute_reading_stats(session)
+        assert stats["average_completion_percent"] == 75
+
+    def test_characters_read_only_counts_read_chapters(self, session):
+        _add_book(session, "https://a.example/book1", "Book", "A", 10)
+        for i in range(10):
+            session.cache.put_chapter("https://a.example/book1", f"https://a.example/{i}", "t",
+                                       "<p>" + ("x" * 100) + "</p>")
+        set_position("https://a.example/book1", chapter_index=2, data_dir=session.data_dir)  # 3 read
+
+        stats = compute_reading_stats(session)
+        assert stats["text"]["characters_read"] == 300
+        assert stats["text"]["characters_cached"] == 1000
+
     def test_cached_chapter_and_translation_totals(self, session):
         session.cache.put_chapter("https://a.example/book1", "https://a.example/1", "t",
                                    "<p>" + ("x" * 100) + "</p>")

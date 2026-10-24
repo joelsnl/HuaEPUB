@@ -131,9 +131,38 @@ class StatsPage(QWidget):
         tiles = [self._tile(
             f"{books['tracked']:,}", f"{_word(books['tracked'], 'book')} in your library",
             f"{books['finished']:,} finished · {books['reading']:,} in progress",
-        ), self._tile(
-            f"{chapters['cached']:,}", "chapters downloaded", "cached on this PC right now",
         )]
+        current = stats["currently_reading"]
+        if current:
+            tiles.append(self._tile(
+                f"{current['percent']}%", "through your current read", current["title"],
+            ))
+        most_read = stats["most_read_book"]
+        if most_read:
+            tiles.append(self._tile(
+                f"{most_read['chapters']:,}", "chapters in your most-read book", most_read["title"],
+            ))
+        favorite_author = stats["favorite_author"]
+        if favorite_author:
+            tiles.append(self._tile(
+                f"{favorite_author['chapters']:,}", "chapters from your favorite author",
+                favorite_author["name"],
+            ))
+        if stats["average_completion_percent"] > 0:
+            started = books["reading"] + books["finished"]
+            tiles.append(self._tile(
+                f"{stats['average_completion_percent']}%",
+                "average, how far into the books you've started",
+                f"{started:,} {_word(started, 'book')} started",
+            ))
+        if text["characters_read"] > 0:
+            tiles.append(self._tile(
+                f"{text['characters_read']:,}", "characters you've actually read",
+                "estimated from chapters marked read, not just cached",
+            ))
+        tiles.append(self._tile(
+            f"{chapters['cached']:,}", "chapters downloaded", "cached on this PC right now",
+        ))
         if text["characters_cached"] > 0:
             tiles.append(self._tile(
                 f"{text['characters_cached']:,}", "characters downloaded",

@@ -200,6 +200,21 @@ class NovelCache:
             out.append(blob[:max_chars])
         return out
 
+    def estimate_read_characters(self, book_key: str, read_count: int, sample_limit: int = 8) -> int:
+        """Rough characters actually read so far in one book (tags stripped): a small cached
+        sample's average chapter length times how many chapters are marked read. For the stats
+        page - distinct from the whole-cache estimate in :meth:`chapter_text_totals`, which
+        counts everything cached whether or not it's been opened.
+        """
+        if read_count <= 0:
+            return 0
+        sample = self.sample_chapter_contents(book_key, limit=sample_limit)
+        if not sample:
+            return 0
+        lengths = [len(_TAG_STRIP.sub("", s)) for s in sample]
+        avg_chars = sum(lengths) / len(lengths)
+        return int(avg_chars * read_count)
+
     def count_chapters(self, book_key: str) -> int:
         """Number of cached chapters for a book."""
         if not self._conn:
