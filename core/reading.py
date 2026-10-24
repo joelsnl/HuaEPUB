@@ -221,6 +221,18 @@ def toggle_bookmark(
         return False
 
 
+def count_all_bookmarks(*, data_dir: Optional[Path] = None) -> int:
+    """Total saved bookmarks across every book, from one read of reading.json (for the
+    stats page)."""
+    with _lock:
+        data = _load_unlocked(_path(data_dir))
+    total = 0
+    for raw in data.values():
+        if isinstance(raw, dict):
+            total += len(raw.get("bookmarks") or [])
+    return total
+
+
 def clear_position(source_url: str, *, data_dir: Optional[Path] = None) -> None:
     url = (source_url or "").strip()
     if not url:

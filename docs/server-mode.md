@@ -80,7 +80,8 @@ The same position (`reading.json`) as the desktop reader.
 ### Stats
 
 A "wrapped"-style summary of the Library and your reading: books tracked, chapters and
-characters downloaded, words translated, your reading streak, notes saved, your longest book
+characters downloaded, words translated, your reading streak, notes and bookmarks saved, names
+and terms your translator has learned, books still waiting for you to start, your longest book
 and the site you use most. It's built from data already on the PC (no new tracking) and
 recomputes each time you open the page. Characters and translated words are estimates from
 what's cached right now, not a lifetime total.

@@ -24,7 +24,8 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from core.notes import count_all_notes
-from core.reading import reading_marks
+from core.reading import count_all_bookmarks, reading_marks
+from core.translation.glossary import count_learned_terms
 
 
 def _site_of(source_url: str) -> str:
@@ -143,5 +144,7 @@ def compute_reading_stats(session) -> Dict[str, Any]:
         ),
         "reading_streak_days": streak,
         "notes": count_all_notes(data_dir=session.data_dir),
+        "bookmarks": count_all_bookmarks(data_dir=session.data_dir),
+        "glossary_terms": count_learned_terms(data_dir=session.data_dir),
         "history_since": oldest_history_at,
     }

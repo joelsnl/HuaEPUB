@@ -108,13 +108,14 @@ it. Removing a book also clears its position.
 ## Stats
 
 **Stats** is a "wrapped"-style summary: books in your library, chapters and characters
-downloaded, words translated, your reading streak, notes saved, your longest book, and the
-site you use most. It is built from `library.json`, `reading.json`, `notes.json` and the
-chapter/translation cache on this PC, so it is free to open as often as you like - nothing is
-counted or sent anywhere else. It recomputes each time you open the tab (desktop) or page
-(browser). Characters and translated words are estimates from what the cache holds right now,
-not a lifetime total, since old cached chapters can be evicted to stay under the cache's size
-cap (see [The cache](#the-cache)).
+downloaded, words translated, your reading streak, notes and bookmarks saved, names and terms
+your translator has learned, books still waiting for you to start, your longest book, and the
+site you use most. It is built from `library.json`, `reading.json`, `notes.json`, the saved
+glossary files and the chapter/translation cache on this PC, so it is free to open as often as
+you like - nothing is counted or sent anywhere else. It recomputes each time you open the tab
+(desktop) or page (browser). Characters and translated words are estimates from what the cache
+holds right now, not a lifetime total, since old cached chapters can be evicted to stay under
+the cache's size cap (see [The cache](#the-cache)).
 
 ## Where files live
 
