@@ -136,6 +136,13 @@ def set_label(source_url: str, note_id: str, label: str, *, data_dir: Optional[P
     return False
 
 
+def count_all_notes(*, data_dir: Optional[Path] = None) -> int:
+    """Total notes across every book, from one read of notes.json (for the stats page)."""
+    with _lock:
+        data = _load_unlocked(_path(data_dir))
+    return sum(len(_book_rows(data, url)) for url in data.keys())
+
+
 def delete_note(source_url: str, note_id: str, *, data_dir: Optional[Path] = None) -> bool:
     url = (source_url or "").strip()
     with _lock:

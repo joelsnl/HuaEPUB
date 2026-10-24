@@ -508,6 +508,16 @@ def test_library_entries_carry_the_reading_position(session):
     assert [e["read_chapter"] for e in entries if e["url"] == url] == [4]
 
 
+def test_stats_route_reflects_the_library(session):
+    url = "https://example.com/book/stats"
+    session.library_store.upsert_library(url, title="书", translated_title="Stats Book",
+                                         author="A", chapter_count=10)
+    data = _signed_in(_ctx(session)).get("/api/stats").json()
+    assert data["books"]["tracked"] == 1
+    assert data["chapters"]["in_library"] == 10
+    assert data["longest_book"] == {"title": "Stats Book", "chapters": 10}
+
+
 def test_library_entries_say_when_a_book_was_last_read(session):
     from core.reading import set_position
 

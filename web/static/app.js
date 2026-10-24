@@ -149,7 +149,7 @@
   }
 
   // ---------- views ----------
-  var VIEWS = ['single', 'multi', 'library', 'read', 'settings'];
+  var VIEWS = ['single', 'multi', 'library', 'read', 'stats', 'settings'];
   var current = null;
   var viewHooks = {};
   function onView(name, fn) { viewHooks[name] = fn; }

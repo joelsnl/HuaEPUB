@@ -40,6 +40,7 @@ def _cache_write_failed(action: str, exc: Exception) -> None:
 
 
 _WS = re.compile(r"\s+")
+_TAG_STRIP = re.compile(r"<[^>]+>")
 _CHAPTER_FP_PREFIX = "\x01ch\x01"
 _IN_BATCH = 400
 
@@ -231,6 +232,78 @@ class NovelCache:
             return total
         except Exception:
             return 0
+
+    def chapter_text_totals(self, sample_limit: int = 24) -> Dict[str, int]:
+        """Rough total cached chapters and characters (tags stripped), for the stats page.
+
+        Estimated from one aggregate query plus a small sample's stripped-text-to-raw-HTML
+        ratio, so the whole table is never loaded into memory (see the module docstring on
+        why a full-table scan per chapter would be too slow on a Raspberry Pi; this runs once
+        per stats view, not once per chapter).
+        """
+        if not self._conn:
+            return {"chapters": 0, "characters": 0}
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) FROM chapters"
+                ).fetchone()
+                sample = self._conn.execute(
+                    "SELECT content FROM chapters WHERE content != '' "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (sample_limit,),
+                ).fetchall()
+            total_chapters = int(row[0]) if row else 0
+            raw_chars = int(row[1]) if row else 0
+            if not sample or not raw_chars:
+                return {"chapters": total_chapters, "characters": raw_chars}
+            raw_sample = 0
+            text_sample = 0
+            for r in sample:
+                blob = (r[0] if r else "") or ""
+                raw_sample += len(blob)
+                text_sample += len(_TAG_STRIP.sub("", blob))
+            ratio = (text_sample / raw_sample) if raw_sample else 1.0
+            return {"chapters": total_chapters, "characters": int(raw_chars * ratio)}
+        except Exception:
+            return {"chapters": 0, "characters": 0}
+
+    def translation_text_totals(self, sample_limit: int = 24) -> Dict[str, int]:
+        """Rough total translated segments, characters and words, for the stats page.
+
+        Words are estimated the same way as :meth:`chapter_text_totals`: one aggregate
+        character count, scaled by a small sample's words-per-character ratio.
+        """
+        if not self._conn:
+            return {"segments": 0, "words": 0, "characters": 0}
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(translated)), 0) FROM translations"
+                ).fetchone()
+                sample = self._conn.execute(
+                    "SELECT translated FROM translations WHERE translated != '' "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (sample_limit,),
+                ).fetchall()
+            total_segments = int(row[0]) if row else 0
+            total_chars = int(row[1]) if row else 0
+            if not sample or not total_chars:
+                return {"segments": total_segments, "words": 0, "characters": total_chars}
+            char_sample = 0
+            word_sample = 0
+            for r in sample:
+                text = (r[0] if r else "") or ""
+                char_sample += len(text)
+                word_sample += len(text.split())
+            words_per_char = (word_sample / char_sample) if char_sample else 0.0
+            return {
+                "segments": total_segments,
+                "words": int(total_chars * words_per_char),
+                "characters": total_chars,
+            }
+        except Exception:
+            return {"segments": 0, "words": 0, "characters": 0}
 
     def clear_book(self, book_key: str):
         """Drop all cached chapters for a book (force fresh download)."""
