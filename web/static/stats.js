@@ -28,9 +28,9 @@
 
     var heroNum = chapters.read > 0 ? chapters.read : chapters.in_library;
     setText('stats-hero-num', fmt(heroNum));
-    setText('stats-hero-label', chapters.read > 0 ? 'chapters read' : 'chapters in your library');
+    setText('stats-hero-label', chapters.read > 0 ? 'chapters read, all time' : 'chapters in your library');
     var streakText = data.reading_streak_days >= 2
-      ? fmt(data.reading_streak_days) + '-day reading streak'
+      ? 'Reading streak: ' + fmt(data.reading_streak_days) + ' days running'
       : (data.reading_streak_days === 1 ? 'You read today — keep it going.' : '');
     setText('stats-hero-sub', streakText);
 
@@ -73,9 +73,23 @@
   }
 
   function load() {
+    show('stats-empty', false);
+    show('stats-full', false);
+    show('stats-error', false);
+    show('stats-loading', true);
     H.api('GET', '/api/stats').then(function (res) {
-      if (res.ok) render(res.data);
-    }).catch(function () {});
+      show('stats-loading', false);
+      if (res.ok) {
+        render(res.data);
+      } else {
+        setText('stats-error', "Couldn't load stats. Try again in a moment.");
+        show('stats-error', true);
+      }
+    }).catch(function () {
+      show('stats-loading', false);
+      setText('stats-error', "Couldn't load stats. Try again in a moment.");
+      show('stats-error', true);
+    });
   }
 
   H.onView('stats', load);

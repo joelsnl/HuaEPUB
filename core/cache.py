@@ -236,71 +236,61 @@ class NovelCache:
     def chapter_text_totals(self, sample_limit: int = 24) -> Dict[str, int]:
         """Rough total cached chapters and characters (tags stripped), for the stats page.
 
-        Estimated from one aggregate query plus a small sample's stripped-text-to-raw-HTML
-        ratio, so the whole table is never loaded into memory (see the module docstring on
-        why a full-table scan per chapter would be too slow on a Raspberry Pi; this runs once
-        per stats view, not once per chapter).
+        ``COUNT(*)`` alone is cheap (the ``url`` primary key index covers it), but
+        ``SUM(LENGTH(content))`` is not: it forces SQLite to read every chapter's full HTML off
+        disk, following overflow pages for each one. On a cache built up over months (chapters
+        scattered across a fragmented WAL file) that full-column scan took real users about a
+        minute. So the character count is estimated instead, the same way
+        :meth:`sample_chapter_contents` already samples: average stripped length over a small
+        sample, times the (cheap) row count. See the module docstring on why a full scan per
+        *chapter* would be worse still; this is the whole-table version of the same mistake.
         """
         if not self._conn:
             return {"chapters": 0, "characters": 0}
         try:
             with self._lock:
-                row = self._conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) FROM chapters"
-                ).fetchone()
+                row = self._conn.execute("SELECT COUNT(*) FROM chapters").fetchone()
                 sample = self._conn.execute(
                     "SELECT content FROM chapters WHERE content != '' "
                     "ORDER BY rowid DESC LIMIT ?",
                     (sample_limit,),
                 ).fetchall()
             total_chapters = int(row[0]) if row else 0
-            raw_chars = int(row[1]) if row else 0
-            if not sample or not raw_chars:
-                return {"chapters": total_chapters, "characters": raw_chars}
-            raw_sample = 0
-            text_sample = 0
-            for r in sample:
-                blob = (r[0] if r else "") or ""
-                raw_sample += len(blob)
-                text_sample += len(_TAG_STRIP.sub("", blob))
-            ratio = (text_sample / raw_sample) if raw_sample else 1.0
-            return {"chapters": total_chapters, "characters": int(raw_chars * ratio)}
+            if not sample or not total_chapters:
+                return {"chapters": total_chapters, "characters": 0}
+            lengths = [len(_TAG_STRIP.sub("", (r[0] if r else "") or "")) for r in sample]
+            avg_chars = sum(lengths) / len(lengths)
+            return {"chapters": total_chapters, "characters": int(avg_chars * total_chapters)}
         except Exception:
             return {"chapters": 0, "characters": 0}
 
     def translation_text_totals(self, sample_limit: int = 24) -> Dict[str, int]:
         """Rough total translated segments, characters and words, for the stats page.
 
-        Words are estimated the same way as :meth:`chapter_text_totals`: one aggregate
-        character count, scaled by a small sample's words-per-character ratio.
+        Same reasoning as :meth:`chapter_text_totals`: a fast ``COUNT(*)`` (the ``key`` primary
+        key index covers it), with characters and words estimated from a small sample's
+        averages rather than summing every row's text.
         """
         if not self._conn:
             return {"segments": 0, "words": 0, "characters": 0}
         try:
             with self._lock:
-                row = self._conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(translated)), 0) FROM translations"
-                ).fetchone()
+                row = self._conn.execute("SELECT COUNT(*) FROM translations").fetchone()
                 sample = self._conn.execute(
                     "SELECT translated FROM translations WHERE translated != '' "
                     "ORDER BY rowid DESC LIMIT ?",
                     (sample_limit,),
                 ).fetchall()
             total_segments = int(row[0]) if row else 0
-            total_chars = int(row[1]) if row else 0
-            if not sample or not total_chars:
-                return {"segments": total_segments, "words": 0, "characters": total_chars}
-            char_sample = 0
-            word_sample = 0
-            for r in sample:
-                text = (r[0] if r else "") or ""
-                char_sample += len(text)
-                word_sample += len(text.split())
-            words_per_char = (word_sample / char_sample) if char_sample else 0.0
+            if not sample or not total_segments:
+                return {"segments": total_segments, "words": 0, "characters": 0}
+            texts = [(r[0] if r else "") or "" for r in sample]
+            avg_chars = sum(len(t) for t in texts) / len(texts)
+            avg_words = sum(len(t.split()) for t in texts) / len(texts)
             return {
                 "segments": total_segments,
-                "words": int(total_chars * words_per_char),
-                "characters": total_chars,
+                "words": int(avg_words * total_segments),
+                "characters": int(avg_chars * total_segments),
             }
         except Exception:
             return {"segments": 0, "words": 0, "characters": 0}
