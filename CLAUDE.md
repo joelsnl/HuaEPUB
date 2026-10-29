@@ -297,13 +297,18 @@ this PC.
 - Window geometry is restored from settings. The Library grid/list uses extended selection (Select All
   / None / Invert, or Ctrl/Shift-click): **Update**, **Remove** and **Download EPUB** apply to the
   selection, while **Read**, **Open URL** and double-click use the current book.
-- `gui/theme.py` + `gui/style.qss` are the Slips look. `style.qss` is a `string.Template` (`${ground}`,
-  `${accent}`, …) rendered per palette; never hardcode colours in widgets (use object names such as
-  `mutedLabel` / `hintLabel` / `eyebrow`). Six palettes match `web/static/app.css` exactly (a test checks).
-  `ui_look`: `auto` (follows `styleHints().colorScheme()` live: dark is Catalogue at night, light is
-  Catalogue) | `dark` | `light` | `indigo` | `gold` | `cinnabar` | `mist` | `random` (opt-in only).
-  Hanken Grotesk and JetBrains Mono (OFL) are bundled in `gui/assets/fonts`; the CJK serif is not
-  bundled (system fallback). `gui/widgets/slips.py` (`SlipStrip`, `SealMark` 译) replaces the progress bar.
+- `gui/theme.py` + `gui/style.qss` are the pocket-instrument look (Teenage Engineering in spirit: warm grey
+  or near-black housing, one orange, mono labels, keys with a hard edge, an always-dark LCD).
+  `style.qss` is a `string.Template` (`${ground}`, `${accent}`, `${edge}`, `${lcd}`, …) rendered per
+  palette; never hardcode colours in widgets (use object names such as `mutedLabel` / `hintLabel` /
+  `eyebrow`). Buttons are keys: a thick `border-bottom` in the edge colour that `:pressed` trades for
+  padding. Two palettes, `dark` and `light`, match `web/static/app.css` exactly (a test checks ground,
+  ink, accent and flag). `ui_look`: `auto` (follows `styleHints().colorScheme()` live) | `light` |
+  `dark`; looks saved by older versions (`graphite`, `indigo`, `gold`, `cinnabar` to dark; `celadon`,
+  `mist` to light; `random` to auto) are mapped by `normalize_look`, so never reintroduce them.
+  Hanken Grotesk (400/500/600) and JetBrains Mono (OFL) are bundled in `gui/assets/fonts`; the CJK serif
+  is not bundled (system fallback). `gui/widgets/slips.py` (`SlipStrip`, `SealMark` 译) is the LCD
+  step-sequencer progress strip and the lit 译 key.
 - `gui/window/server_actions.py`: the **SERVE** chip (tab-bar corner) and File → Server mode…
   (`gui/server_dialog.py`). It refuses to start while a desktop job or a library check runs. While
   serving, the central `QStackedWidget` shows `gui/widgets/server_screen.py`; Server mode, the Library
@@ -358,10 +363,22 @@ Qt or `gui`.
 No build step; scripts load in order: app, single, multi, library, read, settings, storage, boot.
 Keep script-referenced IDs when editing `index.html`.
 
-- **Look:** the "card catalogue". The Library is the home page and each book is a catalogue card (a
-  call number from the source URL, one red rule under it, the title in Literata (Play Books' typeface),
-  details in Hanken Grotesk, a "+N new" stamp, and the reading position from `reading.json` as
-  `read_chapter`; no ruled lines). The detail dialog is the same card enlarged.
+- **Look:** the same pocket-instrument look as the desktop. Two themes (`dark`, `light`; `theme.js`
+  maps looks saved by older versions: indigo/gold/cinnabar to dark, mist to light, surprise to auto);
+  tokens `--ground --card --ink --muted --line --rule --mid --accent --accent-text --edge --flag --lcd`
+  (use `--accent-text`, not `--accent`, for orange *text*: it is darker on light). Type is Hanken Grotesk
+  with JetBrains Mono for small uppercase labels; no serif UI font (the CJK serif is only for Chinese
+  titles). Controls are keys (a hard shadow that flattens on `:active`), the nav is a numbered key row
+  (CSS counters), checkboxes are switches, and the header status (Disk, RAM, version, Look) is an LCD.
+  The Library is the home page and each book is a cartridge-style card (a short number from the source
+  URL, the title, the "+N new" orange label, and the reading position from `reading.json` as
+  `read_chapter`). The detail dialog is the same card enlarged.
+- **Progress display:** `#lcd` on the Add-a-book page is a dark panel with a phase LED, a counter, a
+  big percentage (`lcdFor` in `single.js` picks `data-mode`: `idle` / `busy` / `run` / `paused` /
+  `done` / `warn` / `error`), the sequencer row that `H.drawSlips` fills (`.slip.is-done` orange,
+  `.is-fetched` pale, `.is-cur` the blinking playhead, `.is-flag` a red dot) and the four stages as
+  indicator lights (`#steps`). The job dock on other pages is the same display in small. Blinking uses
+  `@keyframes lcd-blink`; the reduced-motion rule turns it off.
 - **Library page:** **Continue reading** (the book with the newest `read_at`), search over title /
   Chinese title / author / call number / URL, sort (Recent = the newer of `read_at` and `updated_at`,
   Title, Author, Most left to read, Longest) and a filter (All / Reading / Not started / New chapters).

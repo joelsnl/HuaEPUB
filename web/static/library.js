@@ -256,7 +256,7 @@
     setText('lib-filter-shelved-text', 'Shelved (' + shelvedCount + ')');
     show('lib-shelved-head', filter === 'shelved');
     setText('lib-lede', entries.length
-      ? H.plural(books.length, 'book') + ' in the catalogue' +
+      ? H.plural(books.length, 'book') + ' on the shelf' +
         (shelvedCount ? ', ' + shelvedCount + ' shelved.' : '.') +
         (withUpdates ? ' ' + withUpdates + (withUpdates === 1 ? ' has' : ' have') + ' new chapters.' : '')
       : 'Books you have downloaded on this PC.');

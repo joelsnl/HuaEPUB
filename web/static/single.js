@@ -46,6 +46,37 @@
   }
 
   var STEP = { fetching: 0, translating: 1, polishing: 1, writing: 2 };
+  var LCD_PHASE = { fetching: 'Fetching', translating: 'Translating', polishing: 'Polishing', writing: 'Writing' };
+
+  // The readout above the sequencer: [mode, phase, count, percent]. `mode` drives the LED.
+  function lcdFor(s, task) {
+    var total = task && task.chapters || 0;
+    if (s === 'resolving') return ['busy', 'Loading', '', '--'];
+    if (s === 'preview') {
+      var r = range();
+      return ['idle', 'Ready', r.ok ? r.count + ' of ' + preview.chapter_count + ' ch' : preview.chapter_count + ' ch', '--'];
+    }
+    if (s === 'running' && task) {
+      var paused = task.state === 'paused';
+      var done = Math.round((task.phase === 'fetching' ? task.fetched : task.built) * total) || 0;
+      return [paused ? 'paused' : 'run', paused ? 'Paused' : (LCD_PHASE[task.phase] || task.phase_label || 'Working'),
+        total ? Math.min(done, total) + ' / ' + total + ' ch' : '', Math.round((task.fraction || 0) * 100) + '%'];
+    }
+    if (s === 'done') {
+      return [task && task.result && task.result.warnings ? 'warn' : 'done', 'Saved', total ? total + ' ch' : '', '100%'];
+    }
+    if (s === 'error') return ['error', 'Failed', '', '--'];
+    if (s === 'cancelled') return ['error', 'Stopped', '', '--'];
+    return ['idle', 'Ready', '', '--'];
+  }
+
+  function setLcd(parts) {
+    $('lcd').setAttribute('data-mode', parts[0]);
+    setText('lcd-phase', parts[1]);
+    setText('lcd-count', parts[2]);
+    setText('lcd-pct', parts[3]);
+  }
+
   var TITLES = {
     idle: 'Ready when you are.', resolving: 'Reading the page', fetching: 'Fetching chapters',
     translating: 'Translating', polishing: 'Polishing English', writing: 'Writing the EPUB',
@@ -127,6 +158,7 @@
       setSteps(-1, false);
     }
 
+    setLcd(lcdFor(s, task));
     setText('title', title);
     setText('status', line);
     $('status').classList.toggle('mono', mono);

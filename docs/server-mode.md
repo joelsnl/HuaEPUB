@@ -27,9 +27,9 @@ port is taken it says so and opens the desktop app instead.
 
 ### Library
 
-The home page. Each book is a catalogue card: a call number from its source link, the English and
-Chinese titles, the author, the chapter count, the chapter you're on, and a red **+N new** stamp
-after **Check for updates**.
+The home page. Each book is a card like a cartridge: a short number from its source link, the English
+and Chinese titles, the author, the chapter count, the chapter you're on, and an orange **+N new**
+label after **Check for updates**.
 
 - **Continue reading** at the top reopens the book you read last, where you left off.
 - **Search** by title (English or Chinese), author or site; press **/** to jump to the box.
@@ -93,7 +93,11 @@ what's cached right now, not a lifetime total.
 Translate, clean, cache, translator, glossary, workers, Polish and the books folder, plus
 installing Polish, Offline NMT or an Ollama model (Ollama itself must already be installed).
 
-### Header
+### Header and look
+
+The five keys under the logo switch pages. The **Look** menu on the right of the header picks Auto
+(follow the device), Light or Dark; it is remembered per browser, so a phone and a PC can differ.
+
 
 Next to the version, the header shows how much **disk space** is left on the tightest disk the
 server writes to, and how much **memory** is available, so a Pi doesn't fill up unnoticed. It turns

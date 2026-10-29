@@ -152,9 +152,9 @@ raises the cap, sets it to unlimited, or clears chapters, translations or everyt
 ## Menus and keys
 
 - **File**: Open books folder, Open data folder, Open log file, **Server mode…**, Exit.
-- **View → Look**: Auto follows your system (Catalogue at night when dark, Catalogue when light), or
-  pick Indigo & Jade, Ink & Gold, Cinnabar Night, Blue Mist or Surprise me. The browser app uses the
-  same palettes.
+- **View → Look**: Auto follows your system, or pick Light or Dark. The browser app has the same two
+  looks. (If an older version had you on Indigo & Jade, Ink & Gold or Cinnabar Night, you are on Dark
+  now; Blue Mist became Light.)
 - **Library**: Check for updates, Reset library…
 - **Help**: Check for updates, Auto-check updates on startup, How translation works…, Polish glossaries
   with Qwen…, **Cache…**, About.

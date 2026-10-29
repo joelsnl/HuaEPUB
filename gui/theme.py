@@ -1,15 +1,14 @@
 # Author: joelsnl and Anthropic Claude
-"""The Slips look for the desktop app: the same palettes as the browser pages.
+"""The desktop look: a pocket-instrument style, the same two palettes as the browser pages.
 
 ``style.qss`` is a template (``${ground}``, ``${accent}``, …). ``apply_look``
 renders it for the chosen palette and sets it on the application. ``auto``
-follows the system colour scheme (Catalogue at night when dark, Catalogue when
-light); ``random`` is opt-in only.
+follows the system colour scheme (the dark unit when dark, the light one when
+light). Looks saved by older versions map to the nearest of the two.
 """
 
 from __future__ import annotations
 
-import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from string import Template
@@ -40,16 +39,23 @@ class Palette:
     accent: str
     flag: str
     seal: str
-    seal_ink: str = "#FFF3EE"
+    seal_ink: str = "#121212"
+    # The raised panel, the accent as text on a panel, the hard edge under a lit key, and the
+    # always-dark LCD (progress strip, readouts).
+    card: str = ""
+    accent_text: str = ""
+    edge: str = ""
+    lcd: str = "#131312"
+    lcd_ink: str = "#F1EFE8"
 
     def tokens(self) -> Dict[str, str]:
         t = {k: v for k, v in asdict(self).items() if isinstance(v, str)}
-        ground = QColor(self.ground)
-        # A field / tile surface one small step off the ground.
-        t["surface"] = (ground.lighter(118) if self.dark else ground.darker(104)).name()
-        t["accent_ink"] = self.ground
-        t["accent_hover"] = (QColor(self.accent).lighter(112) if self.dark
-                             else QColor(self.accent).darker(115)).name()
+        # A panel (cards, tiles, buttons) and a field (inputs) sit either side of the ground.
+        t["surface"] = self.card
+        t["field"] = _mix(self.ground, self.card, 0.45)
+        t["accent_ink"] = self.seal_ink
+        t["accent_hover"] = (QColor(self.accent).lighter(108) if self.dark
+                             else QColor(self.accent).lighter(106)).name()
         t["sans"] = SANS
         t["mono"] = MONO
         t["serif"] = serif_family()
@@ -57,41 +63,41 @@ class Palette:
 
 
 PALETTES: Dict[str, Palette] = {p.id: p for p in (
-    # The card catalogue: steel cabinet, ruled cards, library-red rule, date-stamp blue.
-    Palette("graphite", "Catalogue at night", True, "#1A2027", "#E6E9EE", "#95A0AC", "#4C5866",
-            "#2E3843", "#3C4855", "#93A9F2", "#E4746A", "#C9463A"),
-    Palette("celadon", "Catalogue", False, "#D8DDDA", "#1F2430", "#5B6470", "#9AA4AD",
-            "#C2CAC9", "#AAB6BA", "#2C4A9A", "#B8322E", "#B8322E"),
-    Palette("indigo", "Indigo & Jade", True, "#12172A", "#E6EEE9", "#8C98B5", "#4A5680",
-            "#2C3556", "#3A4676", "#8FD3B6", "#F0806B", "#D2452F"),
-    Palette("gold", "Ink & Gold", True, "#181611", "#EDE7D8", "#A29A86", "#5A5442",
-            "#33301F", "#4A4433", "#D9B45A", "#EF8A6A", "#C2402B"),
-    Palette("cinnabar", "Cinnabar Night", True, "#1A1213", "#F1E6E3", "#B09890", "#6B4B4D",
-            "#3A2628", "#5A3436", "#F08A6B", "#F2C46D", "#B3362A"),
-    Palette("mist", "Blue Mist", False, "#E8ECF2", "#131A2B", "#505B75", "#97A3BE",
-            "#C8D0E0", "#B4BFD8", "#2F4BA6", "#B4361F", "#B4361F"),
+    # The night unit: near-black housing, warm paper-white ink, one orange.
+    Palette("dark", "Dark", True, "#131312", "#ECEAE3", "#8F8D86", "#3D3C38", "#2A2926", "#5B5953",
+            "#FF6B2C", "#FF4A6A", "#FF6B2C", "#121212", "#1D1C1A", "#FF6B2C", "#B34A12", "#070707"),
+    # The field unit: warm light-grey housing, off-white panels, the same orange.
+    Palette("light", "Light", False, "#E4E2DC", "#121212", "#66645E", "#B9B6AD", "#D2CFC6", "#9C988D",
+            "#FF5A1F", "#E2183F", "#FF5A1F", "#121212", "#F2F1ED", "#B93A08", "#C2400C", "#131312"),
 )}
 
 # Menu order and labels; the same ids as the browser's Look menu.
 LOOKS = (
     ("auto", "Auto (follow system)"),
-    ("dark", "Catalogue at night"),
-    ("light", "Catalogue"),
-    ("indigo", "Indigo & Jade"),
-    ("gold", "Ink & Gold"),
-    ("cinnabar", "Cinnabar Night"),
-    ("mist", "Blue Mist"),
-    ("random", "Surprise me"),
+    ("light", "Light"),
+    ("dark", "Dark"),
 )
-# The other looks share their palette's id.
-_LOOK_TO_PALETTE = {"dark": "graphite", "light": "celadon"}
+# Looks saved by older versions (six palettes, and "Surprise me") map to the nearest of the two.
+_LEGACY = {"graphite": "dark", "indigo": "dark", "gold": "dark", "cinnabar": "dark",
+           "celadon": "light", "mist": "light", "random": "auto"}
 
 _current: Optional[Palette] = None
 _fonts_loaded = False
 
 
+def _mix(a: str, b: str, t: float) -> str:
+    """``a`` blended towards ``b`` by ``t`` (0..1), as a hex colour."""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(
+        round(ca.red() + (cb.red() - ca.red()) * t),
+        round(ca.green() + (cb.green() - ca.green()) * t),
+        round(ca.blue() + (cb.blue() - ca.blue()) * t),
+    ).name()
+
+
 def normalize_look(look: str) -> str:
     look = (look or "auto").strip().lower()
+    look = _LEGACY.get(look, look)
     return look if look in dict(LOOKS) else "auto"
 
 
@@ -99,7 +105,7 @@ def system_is_dark() -> bool:
     app = QGuiApplication.instance()
     if app is None:
         return True
-    # Dark or Unknown: the app was dark before the Slips look
+    # Dark or Unknown: the app was dark before it had a light look
     return app.styleHints().colorScheme() != Qt.ColorScheme.Light
 
 
@@ -107,14 +113,12 @@ def resolve(look: str, *, system_dark: Optional[bool] = None) -> Palette:
     look = normalize_look(look)
     if look == "auto":
         dark = system_is_dark() if system_dark is None else system_dark
-        return PALETTES["graphite" if dark else "celadon"]
-    if look == "random":
-        return PALETTES[random.choice(list(PALETTES))]
-    return PALETTES[_LOOK_TO_PALETTE.get(look, look)]
+        return PALETTES["dark" if dark else "light"]
+    return PALETTES[look]
 
 
 def current() -> Palette:
-    return _current or PALETTES["graphite"]
+    return _current or PALETTES["dark"]
 
 
 def render_qss(palette: Palette) -> str:
