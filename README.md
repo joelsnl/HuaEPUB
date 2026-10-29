@@ -4,16 +4,19 @@ Download Chinese web novels, translate them to English, and read them as EPUBs: 
 from your phone through a built-in web app. Runs on **Windows, macOS and Linux**; prebuilt
 downloads are published for all three. (Formerly *Novel Downloader & Translator*.)
 
-![The library in a browser: each book is a catalogue card with its call number, reading position and a "+27 new" stamp](docs/screenshots/browser-library-light.png)
+![The library in a browser: each book is a card with its number, reading position and a "+27 new" label](docs/screenshots/browser-library-light.png)
 
 <table>
   <tr>
     <td width="50%"><img src="docs/screenshots/browser-detail-dark.png" alt="A book's card opened: facts, synopsis and chapter list"></td>
-    <td width="50%"><img src="docs/screenshots/desktop-serving-dark.png" alt="Server mode on the desktop: address, access code and QR code"></td>
+    <td width="50%"><img src="docs/screenshots/browser-progress-dark.png" alt="A translation in progress: the display with its phase light, percentage and step row"></td>
   </tr>
   <tr>
     <td><img src="docs/screenshots/desktop-library-light.png" alt="The desktop Library tab"></td>
-    <td align="center"><img src="docs/screenshots/phone-library-dark.png" width="45%" alt="The library on a phone"> <img src="docs/screenshots/phone-reader-light.png" width="45%" alt="Reading a chapter on a phone"></td>
+    <td><img src="docs/screenshots/desktop-serving-dark.png" alt="Server mode on the desktop: address, access code and QR code"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/screenshots/phone-library-dark.png" width="30%" alt="The library on a phone"> <img src="docs/screenshots/phone-reader-light.png" width="30%" alt="Reading a chapter on a phone"></td>
   </tr>
 </table>
 

@@ -105,7 +105,7 @@ def system_is_dark() -> bool:
     app = QGuiApplication.instance()
     if app is None:
         return True
-    # Dark or Unknown: the app was dark before the Slips look
+    # Dark or Unknown: the app was dark before it had a light look
     return app.styleHints().colorScheme() != Qt.ColorScheme.Light
 
 
