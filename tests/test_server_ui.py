@@ -41,12 +41,20 @@ def test_every_palette_renders_a_complete_stylesheet(qapp):
 
 
 def test_auto_follows_the_system_and_named_looks_are_fixed(qapp):
-    assert theme.resolve("auto", system_dark=True).id == "graphite"
-    assert theme.resolve("auto", system_dark=False).id == "celadon"
-    assert theme.resolve("light").id == "celadon"
-    assert theme.resolve("gold").id == "gold"
-    assert theme.resolve("not-a-look", system_dark=True).id == "graphite"
-    assert theme.resolve("random").id in theme.PALETTES
+    assert theme.resolve("auto", system_dark=True).id == "dark"
+    assert theme.resolve("auto", system_dark=False).id == "light"
+    assert theme.resolve("light", system_dark=True).id == "light"
+    assert theme.resolve("dark", system_dark=False).id == "dark"
+    assert theme.resolve("not-a-look", system_dark=True).id == "dark"
+    assert [look for look, _ in theme.LOOKS] == ["auto", "light", "dark"]
+
+
+def test_looks_saved_by_older_versions_map_to_the_nearest_one(qapp):
+    for old, new in (("graphite", "dark"), ("indigo", "dark"), ("gold", "dark"), ("cinnabar", "dark"),
+                     ("celadon", "light"), ("mist", "light"), ("random", "auto")):
+        assert theme.normalize_look(old) == new, old
+    assert theme.resolve("indigo", system_dark=False).id == "dark"
+    assert theme.resolve("mist", system_dark=True).id == "light"
 
 
 def test_web_and_desktop_share_the_same_palettes():
@@ -282,9 +290,12 @@ def test_remote_without_password_does_not_start(window):
 
 
 def test_look_menu_saves_the_choice(window):
-    window._set_look("gold")
-    assert window.session.settings["ui_look"] == "gold"
-    assert theme.current().id == "gold"
+    window._set_look("light")
+    assert window.session.settings["ui_look"] == "light"
+    assert theme.current().id == "light"
+    window._set_look("dark")
+    assert window.session.settings["ui_look"] == "dark"
+    assert theme.current().id == "dark"
     window._set_look("auto")
-    assert theme.current().id in ("graphite", "celadon")
+    assert theme.current().id in ("dark", "light")
     assert QApplication.instance().styleSheet()

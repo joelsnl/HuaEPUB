@@ -1,150 +1,176 @@
-/* HuaEPUB: the Slips look. A template: gui/theme.py fills in the palette colours. */
+/* HuaEPUB: the pocket-instrument look. A template: gui/theme.py fills in the palette colours.
+   Keys are rounded with a hard edge under them that flattens when pressed; the LCD is always dark. */
 QWidget {
     background-color: ${ground};
     color: ${ink};
     font-size: 13px;
-    selection-background-color: ${mid};
-    selection-color: ${ink};
+    selection-background-color: ${accent};
+    selection-color: ${accent_ink};
 }
 QMainWindow, QDialog { background-color: ${ground}; }
 QLabel, QCheckBox, QRadioButton { background: transparent; }
 
 QLineEdit, QTextEdit, QPlainTextEdit {
-    background-color: ${surface};
-    border: 1px solid ${rule};
-    border-bottom: 1px solid ${line};
-    border-radius: 0;
-    padding: 7px 8px;
+    background-color: ${field};
+    border: 1px solid ${line};
+    border-radius: 8px;
+    padding: 8px 10px;
 }
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus { border-bottom: 1px solid ${accent}; }
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid ${accent}; }
 QLineEdit:disabled, QTextEdit:disabled { color: ${muted}; }
 QComboBox {
     background-color: ${surface};
     border: 1px solid ${line};
-    border-radius: 0;
-    padding: 6px 8px;
+    border-radius: 8px;
+    padding: 6px 10px;
     min-height: 20px;
 }
-QComboBox:focus { border-color: ${accent}; }
-QComboBox::drop-down { border: none; width: 22px; }
+QComboBox:focus, QComboBox:on { border-color: ${accent}; }
+QComboBox::drop-down { border: none; width: 24px; }
 QComboBox QAbstractItemView {
-    background-color: ${ground};
-    border: 1px solid ${line};
-    selection-background-color: ${mid};
+    background-color: ${surface};
+    border: 1px solid ${ink};
+    border-radius: 6px;
+    selection-background-color: ${accent};
+    selection-color: ${accent_ink};
     outline: none;
 }
 QSpinBox {
-    background-color: ${surface};
-    border: 1px solid ${rule};
-    border-bottom: 1px solid ${line};
-    border-radius: 0;
-    padding: 4px 6px;
+    background-color: ${field};
+    border: 1px solid ${line};
+    border-radius: 8px;
+    padding: 4px 8px;
     min-height: 26px;
     font-family: "${mono}";
 }
-QSpinBox:focus { border-bottom: 1px solid ${accent}; }
+QSpinBox:focus { border: 1px solid ${accent}; }
 QSpinBox::up-button, QSpinBox::down-button {
     background-color: ${rule};
     width: 20px;
     border: none;
 }
+QSpinBox::up-button { border-top-right-radius: 7px; }
+QSpinBox::down-button { border-bottom-right-radius: 7px; }
 QSpinBox::up-button:hover, QSpinBox::down-button:hover { background-color: ${mid}; }
 
-/* Buttons: filled accent for the main action, outlines for the rest */
+/* Keys: lit orange for the main action, panels with an ink or grey edge for the rest. The
+   thick bottom border is the key's edge; pressing trades it for padding so the legend sinks. */
 QPushButton {
     background-color: ${accent};
     color: ${accent_ink};
-    border: 1px solid ${accent};
-    border-radius: 0;
-    padding: 8px 18px;
+    border: 1px solid ${edge};
+    border-bottom: 3px solid ${edge};
+    border-radius: 9px;
+    padding: 7px 18px 5px 18px;
     min-height: 20px;
     font-weight: 600;
-    letter-spacing: 1px;
 }
-QPushButton:hover { background-color: ${accent_hover}; border-color: ${accent_hover}; }
-QPushButton:disabled { background-color: transparent; color: ${muted}; border: 1px solid ${rule}; }
-QPushButton#successBtn { background-color: transparent; color: ${accent}; border: 1px solid ${accent}; }
-QPushButton#successBtn:hover { background-color: ${rule}; }
-QPushButton#secondaryBtn { background-color: transparent; color: ${ink}; border: 1px solid ${line}; }
-QPushButton#secondaryBtn:hover { background-color: ${rule}; }
-QPushButton#dangerBtn { background-color: transparent; color: ${flag}; border: 1px solid ${flag}; }
-QPushButton#dangerBtn:hover { background-color: ${rule}; }
+QPushButton:hover { background-color: ${accent_hover}; }
+QPushButton:pressed { border-bottom: 1px solid ${edge}; padding: 9px 18px 5px 18px; }
+QPushButton:disabled {
+    background-color: transparent; color: ${muted};
+    border: 1px solid ${rule}; border-bottom: 3px solid ${rule};
+}
+QPushButton#successBtn {
+    background-color: ${surface}; color: ${ink};
+    border: 1px solid ${ink}; border-bottom: 3px solid ${ink};
+}
+QPushButton#successBtn:hover { background-color: ${ink}; color: ${surface}; }
+QPushButton#successBtn:pressed { border-bottom: 1px solid ${ink}; padding: 9px 18px 5px 18px; }
+QPushButton#secondaryBtn {
+    background-color: transparent; color: ${ink};
+    border: 1px solid ${line}; border-bottom: 3px solid ${line};
+}
+QPushButton#secondaryBtn:hover { border-color: ${ink}; background-color: ${surface}; }
+QPushButton#secondaryBtn:pressed { border-bottom: 1px solid ${ink}; padding: 9px 18px 5px 18px; }
+QPushButton#dangerBtn {
+    background-color: transparent; color: ${flag};
+    border: 1px solid ${flag}; border-bottom: 3px solid ${flag};
+}
+QPushButton#dangerBtn:hover { background-color: ${surface}; }
+QPushButton#dangerBtn:pressed { border-bottom: 1px solid ${flag}; padding: 9px 18px 5px 18px; }
 QPushButton#successBtn:disabled, QPushButton#secondaryBtn:disabled, QPushButton#dangerBtn:disabled {
-    background-color: transparent; color: ${muted}; border: 1px solid ${rule};
+    background-color: transparent; color: ${muted};
+    border: 1px solid ${rule}; border-bottom: 3px solid ${rule};
 }
 QPushButton#linkBtn {
     background: transparent; border: none; color: ${ink}; padding: 2px 0;
-    font-weight: 400; letter-spacing: 0; text-decoration: underline;
+    font-weight: 500; text-decoration: underline;
 }
-QPushButton#linkBtn:hover { color: ${accent}; }
+QPushButton#linkBtn:hover { color: ${accent_text}; }
 
-QCheckBox, QRadioButton { spacing: 8px; }
+QCheckBox, QRadioButton { spacing: 10px; }
 QCheckBox:disabled, QRadioButton:disabled { color: ${muted}; }
 QCheckBox::indicator, QRadioButton::indicator {
-    width: 14px; height: 14px; border: 1px solid ${line}; background: transparent;
+    width: 16px; height: 16px; border: 1.5px solid ${ink}; border-radius: 5px; background: ${field};
 }
-QRadioButton::indicator { border-radius: 8px; }
-QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: ${accent}; border-color: ${accent}; }
-QCheckBox::indicator:disabled { border-color: ${rule}; }
+QRadioButton::indicator { border-radius: 9px; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: ${accent}; border-color: ${edge}; }
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled { border-color: ${line}; background: transparent; }
 
 QProgressBar {
-    border: 1px solid ${rule};
-    border-radius: 0;
+    border: none;
+    border-radius: 6px;
     text-align: center;
-    color: ${ink};
-    background: transparent;
+    color: ${lcd_ink};
+    background: ${lcd};
     height: 18px;
     font-family: "${mono}";
     font-size: 11px;
 }
-QProgressBar::chunk { background-color: ${accent}; }
+QProgressBar::chunk { background-color: ${accent}; border-radius: 6px; }
 
-/* Tabs read like the browser's header nav: words with an accent underline */
-QTabWidget::pane { border: none; border-top: 1px solid ${rule}; top: -1px; }
+/* Tabs are a row of keys; the one you are on is lit. */
+QTabWidget::pane { border: none; top: -1px; }
 QTabBar { background: transparent; }
 QTabBar::tab {
-    background: transparent;
-    color: ${muted};
-    padding: 10px 2px 8px 2px;
-    margin-right: 22px;
-    border: none;
-    border-bottom: 2px solid transparent;
+    background: ${surface};
+    color: ${ink};
+    padding: 8px 16px 6px 16px;
+    margin: 6px 8px 8px 0;
+    border: 1px solid ${line};
+    border-bottom: 3px solid ${line};
+    border-radius: 9px;
     font-family: "${mono}";
     font-size: 12px;
-    letter-spacing: 2px;
+    letter-spacing: 1px;
 }
-QTabBar::tab:hover { color: ${ink}; }
-QTabBar::tab:selected { color: ${ink}; border-bottom: 2px solid ${accent}; }
+QTabBar::tab:hover { border-color: ${ink}; }
+QTabBar::tab:selected {
+    background: ${accent}; color: ${accent_ink};
+    border: 1px solid ${edge}; border-bottom: 3px solid ${edge};
+}
 
 QToolButton#serveChip {
-    background: transparent;
-    color: ${muted};
-    border: 1px solid ${line};
-    padding: 4px 12px;
+    background: ${lcd};
+    color: ${lcd_ink};
+    border: 1px solid ${lcd};
+    border-radius: 7px;
+    padding: 5px 12px;
     margin: 0 0 4px 0;
     font-family: "${mono}";
     font-size: 11px;
     letter-spacing: 2px;
 }
-QToolButton#serveChip:hover { color: ${ink}; border-color: ${accent}; }
+QToolButton#serveChip:hover { border-color: ${accent}; color: ${accent}; }
 
 QTreeWidget, QTableWidget, QListWidget {
     background-color: ${ground};
     alternate-background-color: ${surface};
-    border: 1px solid ${rule};
-    border-radius: 0;
+    border: 1px solid ${line};
+    border-radius: 10px;
     outline: none;
 }
 QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected {
-    background-color: ${mid};
-    color: ${ink};
+    background-color: ${accent};
+    color: ${accent_ink};
 }
 QHeaderView::section {
     background-color: ${ground};
     color: ${muted};
     padding: 6px;
     border: none;
-    border-bottom: 1px solid ${line};
+    border-bottom: 1px solid ${ink};
     font-family: "${mono}";
     font-size: 11px;
     letter-spacing: 1px;
@@ -157,57 +183,66 @@ QLabel#eyebrow {
     font-size: 11px;
     letter-spacing: 2px;
 }
-QLabel#flagLabel { color: ${flag}; }
-QLabel#coverLabel { background: ${mid}; color: ${ink}; }
+QLabel#flagLabel { color: ${flag}; font-weight: 600; }
+QLabel#coverLabel { background: ${rule}; color: ${muted}; border-radius: 6px; }
 QFrame#libraryTile {
-    background-color: ${ground};
-    border: 1px solid ${rule};
-    border-radius: 0;
+    background-color: ${surface};
+    border: 1px solid ${line};
+    border-bottom: 3px solid ${line};
+    border-radius: 12px;
 }
-QListWidget::item:selected QFrame#libraryTile { border: 1px solid ${accent}; background-color: ${surface}; }
+QListWidget::item:selected QFrame#libraryTile { border: 1px solid ${accent}; border-bottom: 3px solid ${edge}; }
 QGroupBox {
     border: none;
     border-top: 1px solid ${rule};
-    margin-top: 14px;
-    padding-top: 10px;
+    margin-top: 16px;
+    padding-top: 12px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 0;
-    padding: 0 6px 0 0;
-    color: ${muted};
+    padding: 0 8px 0 0;
+    color: ${ink};
     font-family: "${mono}";
+    font-weight: 500;
     font-size: 11px;
     letter-spacing: 2px;
 }
-QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
-QScrollBar::handle:vertical { background: ${line}; min-height: 24px; }
+QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
+QScrollBar::handle:vertical { background: ${line}; min-height: 28px; border-radius: 4px; }
+QScrollBar::handle:vertical:hover { background: ${mid}; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar:horizontal { background: transparent; height: 10px; margin: 0; }
-QScrollBar::handle:horizontal { background: ${line}; min-width: 24px; }
+QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
+QScrollBar::handle:horizontal { background: ${line}; min-width: 28px; border-radius: 4px; }
+QScrollBar::handle:horizontal:hover { background: ${mid}; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QFrame#resumeBanner {
-    background-color: transparent;
+    background-color: ${lcd};
     border: none;
-    border-top: 1px solid ${flag};
-    border-bottom: 1px solid ${rule};
+    border-left: 5px solid ${accent};
+    border-radius: 10px;
 }
+QFrame#resumeBanner QLabel { color: ${lcd_ink}; background: transparent; }
 
 /* Server screen */
-QLabel#serverTitle { font-family: "${serif}"; font-size: 26px; }
+QLabel#serverTitle { font-size: 30px; font-weight: 600; letter-spacing: -1px; }
 QLabel#serverNotice {
-    font-size: 16px;
-    color: ${ink};
-    background: ${surface};
-    border: 1px solid ${accent};
-    padding: 10px 12px;
+    font-size: 14px;
+    color: ${lcd_ink};
+    background: ${lcd};
+    border-left: 5px solid ${accent};
+    border-radius: 10px;
+    padding: 12px 14px;
 }
-QLabel#bookTitle { font-family: "${serif}"; font-size: 20px; }
+QLabel#bookTitle { font-size: 20px; font-weight: 600; letter-spacing: -0.5px; }
 QLabel#serverCode {
     font-family: "${mono}";
     font-size: 30px;
     letter-spacing: 4px;
-    color: ${ink};
+    color: ${lcd_ink};
+    background: ${lcd};
+    border-radius: 10px;
+    padding: 8px 18px;
 }
 QLabel#serverValue { font-family: "${mono}"; font-size: 13px; }
 QLabel#qrLabel { background: transparent; }
@@ -216,12 +251,13 @@ QFrame#rule { background: ${rule}; max-height: 1px; min-height: 1px; border: non
 /* Stats page */
 QFrame#statTile, QFrame#statHero {
     background-color: ${surface};
-    border: 1px solid ${rule};
-    border-radius: 0;
+    border: 1px solid ${line};
+    border-bottom: 3px solid ${line};
+    border-radius: 12px;
 }
-QLabel#statHeroNum { font-family: "${serif}"; font-size: 40px; color: ${accent}; }
-QLabel#statNum { font-family: "${serif}"; font-size: 24px; color: ${ink}; }
-QLabel#statLabel { color: ${muted}; font-size: 13px; }
+QLabel#statHeroNum { font-size: 44px; font-weight: 600; letter-spacing: -2px; color: ${accent_text}; }
+QLabel#statNum { font-size: 26px; font-weight: 600; letter-spacing: -1px; color: ${ink}; }
+QLabel#statLabel { color: ${muted}; font-family: "${mono}"; font-size: 10px; letter-spacing: 1px; }
 QLabel#statSub { color: ${ink}; font-size: 12px; }
 
 QMenuBar {
@@ -236,46 +272,52 @@ QMenuBar::item {
     color: ${ink};
     padding: 6px 12px;
     margin: 0px 1px;
+    border-radius: 6px;
 }
 QMenuBar::item:disabled { color: ${muted}; }
 QMenuBar::item:selected,
 QMenuBar::item:pressed {
-    background: ${rule};
-    color: ${ink};
+    background: ${accent};
+    color: ${accent_ink};
 }
 QMenu {
-    background-color: ${ground};
+    background-color: ${surface};
     color: ${ink};
-    border: 1px solid ${line};
-    padding: 4px 0px;
+    border: 1px solid ${ink};
+    border-radius: 8px;
+    padding: 5px 0px;
 }
 QMenu::item {
     background: transparent;
     color: ${ink};
     /* Left pad matches indicator column so checkable + plain items line up */
     padding: 7px 28px 7px 32px;
-    margin: 1px 4px;
+    margin: 1px 5px;
+    border-radius: 5px;
 }
-QMenu::item:selected { background-color: ${rule}; color: ${ink}; }
+QMenu::item:selected { background-color: ${accent}; color: ${accent_ink}; }
 QMenu::item:disabled { color: ${muted}; }
 QMenu::separator { height: 1px; background: ${rule}; margin: 5px 10px; }
 QMenu::indicator { width: 12px; height: 12px; margin-left: 10px; }
 QMenu::indicator:non-exclusive:unchecked,
 QMenu::indicator:exclusive:unchecked {
-    border: 1px solid ${line};
+    border: 1.5px solid ${ink};
+    border-radius: 4px;
     background: transparent;
 }
 QMenu::indicator:non-exclusive:checked,
 QMenu::indicator:exclusive:checked {
-    border: 1px solid ${accent};
+    border: 1.5px solid ${edge};
+    border-radius: 4px;
     background: ${accent};
 }
 QMenu::right-arrow { width: 10px; height: 10px; margin-right: 8px; }
 QToolTip {
-    background-color: ${ground};
-    color: ${ink};
-    border: 1px solid ${line};
-    padding: 4px;
+    background-color: ${lcd};
+    color: ${lcd_ink};
+    border: 1px solid ${lcd};
+    border-radius: 4px;
+    padding: 4px 6px;
 }
 QMessageBox QLabel { color: ${ink}; }
 QTextBrowser#readerView { background: ${ground}; border: none; border-left: 1px solid ${rule}; }

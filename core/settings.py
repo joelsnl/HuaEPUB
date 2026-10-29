@@ -99,7 +99,7 @@ DEFAULTS: Dict[str, Any] = {
     # Optional own certificate for remote mode; empty = generated self-signed
     'server_cert_path': '',
     'server_key_path': '',
-    # Look: 'auto' (follow system) | 'dark' | 'light' | a palette name | 'random'
+    # Look: 'auto' (follow system) | 'light' | 'dark' (older palette names map to the nearest)
     'ui_look': 'auto',
 }
 
