@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from core.cache import NovelCache
 from core.cleaner import ContentCleaner, count_chinese_chars, is_chinese
 from core.download_job import save_job
-from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder
+from core.epub_builder import EPUBBuilder, StreamingEpubWriter, TranslatedEPUBBuilder
 from core.library import LibraryStore
 from core.parser import Chapter, NovelInfo
 from core.settings import get_default_books_dir
@@ -40,15 +40,21 @@ from core.utils import format_count, format_ratio, plural, safe_filename
 from core.security import safe_epub_basename
 
 
-def _learn_site_junk(cleaner, chapters, set_status=None, *, finalize: bool = False) -> None:
-    """Repeating ads from many chapters. Independent of Polish / llama.cpp."""
+def _learn_site_junk(
+    cleaner, chapters, set_status=None, *, finalize: bool = False, cache=None
+) -> None:
+    """Repeating ads from many chapters. Independent of Polish / llama.cpp.
+
+    ``cache``: lets the finalize spread-sample fall back to the on-disk
+    chapter cache for chapters a streaming download already released.
+    """
     if cleaner is None:
         return
     try:
         from core.ad_detect import learn_site_junk
 
         learn_site_junk(
-            cleaner, chapters, set_status=set_status, finalize=finalize
+            cleaner, chapters, set_status=set_status, finalize=finalize, cache=cache
         )
     except Exception as exc:
         print(f"  Site-ad learning skipped: {exc}")
@@ -368,6 +374,7 @@ def download_chapters_with_cache(
     set_progress: ProgressFn,
     translator=None,
     cleaner=None,
+    stream_writer=None,
 ) -> List[str]:
     """
     Sequential chapter download with cache + retry.
@@ -375,11 +382,20 @@ def download_chapters_with_cache(
 
     ETA is based only on uncached (network) chapters so library updates that
     reuse hundreds of cached chapters do not report "ETA 0s".
+
+    ``stream_writer``: when given (plain, non-translated downloads only), each
+    chapter is written straight into the EPUB and released as soon as its
+    content is ready, instead of staying resident until a later build step.
     """
     total = len(chapters)
     delay = getattr(parser, "request_delay", 2.0)
     failed: List[Chapter] = []
+    idx_of = {id(ch): i for i, ch in enumerate(chapters)}
     _bind_translator(control, translator)
+
+    def _stream(chapter: Chapter) -> None:
+        if stream_writer is not None:
+            stream_writer.add_chapter(idx_of[id(chapter)], chapter, total=total)
 
     def _cancel_download():
         if translator is not None and hasattr(translator, "cancel"):
@@ -445,6 +461,7 @@ def download_chapters_with_cache(
             _learn_then_prefetch(
                 cleaner, chapters, translator, control, set_status, chapter
             )
+            _stream(chapter)
             control.persist_job()
             continue
 
@@ -466,6 +483,7 @@ def download_chapters_with_cache(
             _learn_then_prefetch(
                 cleaner, chapters, translator, control, set_status, chapter
             )
+            _stream(chapter)
         except Exception as e:
             print(f"  Chapter [{idx + 1}/{total}] failed: {chapter.title}: {e}")
             failed.append(chapter)
@@ -492,13 +510,15 @@ def download_chapters_with_cache(
                 _learn_then_prefetch(
                     cleaner, chapters, translator, control, set_status, chapter
                 )
+                _stream(chapter)
                 print(f"  Retry succeeded: {chapter.title}")
             except Exception as e:
                 print(f"  Retry failed: {chapter.title}: {e}")
                 chapter.content = "<p>[Chapter could not be downloaded from the source site.]</p>"
+                _stream(chapter)
                 still_failed.append(chapter.title)
 
-    _learn_site_junk(cleaner, chapters, set_status, finalize=True)
+    _learn_site_junk(cleaner, chapters, set_status, finalize=True, cache=cache)
     _prefetch_ready_chapters(translator, cleaner, chapters, control)
     return still_failed
 
@@ -937,8 +957,26 @@ def build_epub(
     glossary_mode: str = "auto",
     translator=None,
     cleaner=None,
+    stream_writer=None,
 ) -> EpubBuildResult:
-    """Phase 2: build EPUB (optionally with translation). Progress 0..1 within this phase."""
+    """Phase 2: build EPUB (optionally with translation). Progress 0..1 within this phase.
+
+    ``stream_writer``: when given (plain downloads only — see
+    ``download_chapters_with_cache``), every chapter was already streamed
+    into the EPUB during fetch, so this just finalizes it instead of
+    building from ``chapters`` again.
+    """
+    if stream_writer is not None:
+        set_status("Finishing EPUB…")
+        _forward_progress(set_progress, set_status, 1.0, "Finishing EPUB…")
+        output_path = stream_writer.finalize()
+        return EpubBuildResult(
+            output_path=output_path,
+            heuristic_chapters=[
+                ch.title for ch in chapters if getattr(ch, "used_heuristic", False)
+            ],
+        )
+
     polish = bool(ollama_polish) and backend != "ollama"
     if translate and polish:
         _forward_progress(
@@ -950,7 +988,7 @@ def build_epub(
         set_status("Writing EPUB…")
     if cleaner is None:
         cleaner = ContentCleaner() if clean else None
-    _learn_site_junk(cleaner, chapters, set_status=set_status, finalize=True)
+    _learn_site_junk(cleaner, chapters, set_status=set_status, finalize=True, cache=cache)
     if translate:
         translator = translator or make_translator(
             cache=cache,

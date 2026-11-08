@@ -35,6 +35,7 @@ from core.download_runner import (
     record_successful_download,
     translator_backend_kwargs,
 )
+from core.epub_builder import StreamingEpubWriter
 from core.library import new_chapters_since
 from core.notify import notify
 from core.parser import fetch_info_and_chapters, get_parser_for_url
@@ -146,33 +147,50 @@ def download_one_novel(
         novel_info=info,
         chapters=chapters,
     )
-    failed = download_chapters_with_cache(
-        control=session.control,
-        cache=session.cache,
-        parser=parser,
-        chapters=chapters,
-        book_key=book_key,
-        use_cache=bool(options.get("use_cache", True)),
-        set_status=set_status,
-        set_progress=set_progress,
-        translator=translator,
-        cleaner=cleaner,
-    )
-    build_result = build_epub(
-        control=session.control,
-        cache=session.cache,
-        info=info,
-        chapters=chapters,
-        output_path=output_path,
-        clean=bool(options.get("clean", True)),
-        translate=bool(options.get("translate", True)),
-        workers=int(options.get("workers", 200) or 200),
-        **kw,
-        set_status=set_status,
-        set_progress=set_build_progress,
-        translator=translator,
-        cleaner=cleaner,
-    )
+    # Plain (non-translated) downloads stream each chapter straight into the
+    # EPUB as it's fetched, instead of holding the whole novel in memory
+    # until a separate build step. Translated downloads still need the
+    # whole book fetched first (for glossary/name consistency), so they
+    # keep the old build-at-the-end path for now.
+    stream_writer = None
+    if not translating:
+        stream_writer = StreamingEpubWriter(
+            output_path, info, cleaner=cleaner, image_cache=session.cache,
+        )
+    try:
+        failed = download_chapters_with_cache(
+            control=session.control,
+            cache=session.cache,
+            parser=parser,
+            chapters=chapters,
+            book_key=book_key,
+            use_cache=bool(options.get("use_cache", True)),
+            set_status=set_status,
+            set_progress=set_progress,
+            translator=translator,
+            cleaner=cleaner,
+            stream_writer=stream_writer,
+        )
+        build_result = build_epub(
+            control=session.control,
+            cache=session.cache,
+            info=info,
+            chapters=chapters,
+            output_path=output_path,
+            clean=bool(options.get("clean", True)),
+            translate=bool(options.get("translate", True)),
+            workers=int(options.get("workers", 200) or 200),
+            **kw,
+            set_status=set_status,
+            set_progress=set_build_progress,
+            translator=translator,
+            cleaner=cleaner,
+            stream_writer=stream_writer,
+        )
+    except BaseException:
+        if stream_writer is not None:
+            stream_writer.abort()
+        raise
     record_successful_download(
         session.library_store, info, chapters, translated_title, output_path
     )

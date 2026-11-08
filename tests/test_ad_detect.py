@@ -4,13 +4,14 @@ from core.ad_detect import learn_site_junk, repeating_junk_lines
 from core.cleaner import ContentCleaner
 
 
-def _chapter(html: str, title: str = "第1章"):
+def _chapter(html: str, title: str = "第1章", url: str = ""):
     class Ch:
         pass
 
     ch = Ch()
     ch.title = title
     ch.content = html
+    ch.url = url
     return ch
 
 
@@ -113,6 +114,36 @@ class TestLearnRepeatingJunk:
         live = learn_site_junk(cleaner, chapters)
         assert not any(footer in item for item in live)
         final = learn_site_junk(cleaner, chapters, finalize=True)
+        assert any(footer in item for item in final)
+
+    def test_finalize_falls_back_to_cache_once_content_is_released(self):
+        """A streaming download clears chapter.content as it writes each one;
+        the finalize spread-sample must still find ads via the chapter cache."""
+        footer = "请到顶点小说网阅读最新章节无弹窗"
+        chapters = [
+            _chapter(f"<p>设定集第{i}页，没有广告。</p>", url=f"https://example.com/{i}")
+            for i in range(12)
+        ] + [
+            _chapter(
+                f"<p>第{i}章正文很长，主角走在路上。</p><p>{footer}</p>",
+                url=f"https://example.com/{i}",
+            )
+            for i in range(12, 24)
+        ]
+        cache = {ch.url: ch.content for ch in chapters}
+        cleaner = ContentCleaner()
+        learn_site_junk(cleaner, chapters)  # locks in on the first 12 (no footer yet)
+        for ch in chapters:
+            ch.content = ""  # already streamed into the EPUB and released
+
+        class _Cache:
+            def get_chapter(self, url):
+                return cache.get(url)
+
+        without_cache = learn_site_junk(cleaner, chapters, finalize=True)
+        assert not any(footer in item for item in without_cache)
+
+        final = learn_site_junk(cleaner, chapters, finalize=True, cache=_Cache())
         assert any(footer in item for item in final)
 
     def test_does_not_strip_repeated_plot(self):

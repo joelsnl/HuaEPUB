@@ -1,5 +1,6 @@
 """Tests for core.download_runner helpers."""
 
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from core.download_runner import (
     completion_dialog_title,
     completion_has_warnings,
 )
+from core.epub_builder import StreamingEpubWriter
 from core.parser import Chapter, NovelInfo
 from core.tasks import download_one_novel
 
@@ -201,6 +203,60 @@ def test_library_update_eta_ignores_cache_hits():
     assert all("ETA" not in s for s in cache_lines)
     assert any("Fetching chapters [1/1]" in s for s in statuses)
     assert chapters[-1].content == "<p>fresh https://example.com/4</p>"
+
+
+def test_stream_writer_covers_cache_hit_fetch_and_both_retry_outcomes(tmp_path):
+    """Exercises every point download_chapters_with_cache streams a chapter:
+    cache hit, fresh fetch, a retry that succeeds, and one that never does."""
+    chapters = [
+        Chapter(title="Cached", url="https://example.com/0", content="", index=0),
+        Chapter(title="Fresh", url="https://example.com/1", content="", index=1),
+        Chapter(title="RetrySucceeds", url="https://example.com/2", content="", index=2),
+        Chapter(title="RetryFails", url="https://example.com/3", content="", index=3),
+    ]
+    cache = _MemCache({chapters[0].url: "<p>already cached content here.</p>"})
+
+    attempts = {}
+
+    class FlakyParser:
+        request_delay = 0
+
+        def get_chapter_content(self, chapter):
+            attempts[chapter.url] = attempts.get(chapter.url, 0) + 1
+            if chapter.url == chapters[2].url and attempts[chapter.url] == 1:
+                raise RuntimeError("transient failure")
+            if chapter.url == chapters[3].url:
+                raise RuntimeError("permanent failure")
+            return f"<p>fresh content for {chapter.title}.</p>"
+
+    info = NovelInfo(title="Stream Test", author="Author", source_url="https://example.com/book")
+    writer = StreamingEpubWriter(str(tmp_path / "out.epub"), info)
+
+    still_failed = download_chapters_with_cache(
+        control=DownloadControl(),
+        cache=cache,
+        parser=FlakyParser(),
+        chapters=chapters,
+        book_key="https://example.com/book",
+        use_cache=True,
+        set_status=lambda _s: None,
+        set_progress=lambda _f, _s="": None,
+        stream_writer=writer,
+    )
+
+    assert still_failed == ["RetryFails"]
+    # Every chapter was streamed and released, including the two that hit the
+    # exception branches (retry-success and retry-permanent-failure).
+    for ch in chapters:
+        assert ch.content == ""
+    assert set(writer._chapters_meta) == {0, 1, 2, 3}
+
+    out = writer.finalize()
+    with zipfile.ZipFile(out) as zf:
+        assert zf.read("EPUB/chapter_0000.xhtml").count(b"already cached") == 1
+        assert zf.read("EPUB/chapter_0001.xhtml").count(b"fresh content") == 1
+        assert zf.read("EPUB/chapter_0002.xhtml").count(b"fresh content") == 1
+        assert b"could not be downloaded" in zf.read("EPUB/chapter_0003.xhtml")
 
 
 def test_cache_lookup_does_not_preload_html_before_first_fetch():
