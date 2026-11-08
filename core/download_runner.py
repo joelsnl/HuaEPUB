@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from core.cache import NovelCache
 from core.cleaner import ContentCleaner, count_chinese_chars, is_chinese
 from core.download_job import save_job
-from core.epub_builder import EPUBBuilder, StreamingEpubWriter, TranslatedEPUBBuilder
+from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder
 from core.library import LibraryStore
 from core.parser import Chapter, NovelInfo
 from core.settings import get_default_books_dir
