@@ -1,12 +1,14 @@
 """Offline tests for core.epub_builder."""
 
 import hashlib
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
 from ebooklib import epub
 
-from core.epub_builder import EPUBBuilder, TranslatedEPUBBuilder, VOLUME_PREFIX_RE
+from core.epub_builder import EPUBBuilder, StreamingEpubWriter, TranslatedEPUBBuilder, VOLUME_PREFIX_RE
 from core.parser import Chapter, NovelInfo
 
 
@@ -289,3 +291,110 @@ class TestReleaseContent:
         info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
         EPUBBuilder().build(info, chapters, str(tmp_path / "out.epub"), release_content=True)
         assert chapters[0].content == ""
+
+
+def _strip_modified(opf_bytes: bytes) -> bytes:
+    """``dcterms:modified`` is wall-clock time; it will never match between two builds."""
+    return re.sub(
+        rb'<meta property="dcterms:modified">[^<]*</meta>',
+        b'<meta property="dcterms:modified"/>',
+        opf_bytes,
+    )
+
+
+def _read_epub(path) -> dict:
+    with zipfile.ZipFile(path) as zf:
+        out = {}
+        for name in zf.namelist():
+            data = zf.read(name)
+            if name.endswith(".opf"):
+                data = _strip_modified(data)
+            out[name] = data
+        return out
+
+
+class TestStreamingEpubWriter:
+    def _chapters(self):
+        return [
+            Chapter(title=f"Chapter {i}", url=f"https://example.com/{i}",
+                    content=f"<p>Hello chapter {i}, 你好.</p>", index=i)
+            for i in range(4)
+        ]
+
+    def test_matches_non_streaming_output_byte_for_byte(self, tmp_path):
+        info = NovelInfo(title="Test Book", author="Author",
+                          source_url="https://example.com/b", language="zh")
+
+        normal_chapters = self._chapters()
+        normal_path = tmp_path / "normal.epub"
+        EPUBBuilder().build(info, normal_chapters, str(normal_path))
+
+        stream_chapters = self._chapters()
+        stream_path = tmp_path / "stream.epub"
+        writer = StreamingEpubWriter(str(stream_path), info)
+        for idx, ch in enumerate(stream_chapters):
+            writer.add_chapter(idx, ch)
+        writer.finalize()
+
+        normal_files = _read_epub(normal_path)
+        stream_files = _read_epub(stream_path)
+        assert set(normal_files) == set(stream_files)
+        for name in normal_files:
+            assert normal_files[name] == stream_files[name], f"mismatch in {name}"
+
+    def test_releases_content_as_it_goes(self, tmp_path):
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        chapters = self._chapters()
+        writer = StreamingEpubWriter(str(tmp_path / "out.epub"), info)
+        for idx, ch in enumerate(chapters):
+            writer.add_chapter(idx, ch)
+            assert ch.content == ""
+        writer.finalize()
+
+    def test_out_of_order_add_chapter_still_produces_correct_order(self, tmp_path):
+        """Mirrors a retry pass: later chapters can resolve before earlier ones."""
+        info = NovelInfo(title="Test Book", author="Author",
+                          source_url="https://example.com/b", language="zh")
+
+        normal_chapters = self._chapters()
+        normal_path = tmp_path / "normal.epub"
+        EPUBBuilder().build(info, normal_chapters, str(normal_path))
+
+        stream_chapters = self._chapters()
+        stream_path = tmp_path / "stream.epub"
+        writer = StreamingEpubWriter(str(stream_path), info)
+        for idx in (2, 0, 3, 1):  # out of order, like chapter 0 & 1 failing and retrying last
+            writer.add_chapter(idx, stream_chapters[idx])
+        writer.finalize()
+
+        normal_files = _read_epub(normal_path)
+        stream_files = _read_epub(stream_path)
+        assert set(normal_files) == set(stream_files)
+        for name in normal_files:
+            assert normal_files[name] == stream_files[name], f"mismatch in {name}"
+
+    def test_duplicate_add_chapter_is_ignored(self, tmp_path):
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        chapters = self._chapters()
+        writer = StreamingEpubWriter(str(tmp_path / "out.epub"), info)
+        writer.add_chapter(0, chapters[0])
+        writer.add_chapter(0, chapters[0])  # no-op: already streamed
+        for idx, ch in enumerate(chapters[1:], start=1):
+            writer.add_chapter(idx, ch)
+        writer.finalize()
+        assert len(writer._chapters_meta) == 4
+
+    def test_finalize_with_no_chapters_raises(self, tmp_path):
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        writer = StreamingEpubWriter(str(tmp_path / "out.epub"), info)
+        with pytest.raises(ValueError, match="No valid chapters"):
+            writer.finalize()
+
+    def test_abort_discards_the_tmp_file(self, tmp_path):
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        out_path = tmp_path / "out.epub"
+        writer = StreamingEpubWriter(str(out_path), info)
+        writer.add_chapter(0, self._chapters()[0])
+        writer.abort()
+        assert not out_path.exists()
+        assert not Path(str(out_path) + ".tmp").exists()

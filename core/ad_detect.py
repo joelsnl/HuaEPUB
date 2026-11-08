@@ -49,12 +49,16 @@ _JUNK_HINT = re.compile(
 StatusFn = Callable[[str], None]
 
 
-def _chapter_html(chapter) -> str:
-    return (
-        getattr(chapter, "content", None)
-        or getattr(chapter, "html", None)
-        or ""
-    )
+def _chapter_html(chapter, cache=None) -> str:
+    html = getattr(chapter, "content", None) or getattr(chapter, "html", None)
+    if not html and cache is not None:
+        url = (getattr(chapter, "url", None) or "").strip()
+        if url:
+            try:
+                html = cache.get_chapter(url)
+            except Exception:
+                html = None
+    return html or ""
 
 
 def sample_chapter_html(
@@ -62,10 +66,13 @@ def sample_chapter_html(
     n: int = SAMPLE_CHAPTERS,
     *,
     spread: bool = False,
+    cache=None,
 ) -> List[str]:
+    """``cache``: fall back to the on-disk chapter cache for a chapter whose
+    in-memory content was already released (a streaming download)."""
     htmls: List[str] = []
     for chapter in chapters or []:
-        html = str(_chapter_html(chapter)).strip()
+        html = str(_chapter_html(chapter, cache)).strip()
         if html:
             htmls.append(html)
     if not htmls:
@@ -132,6 +139,7 @@ def learn_site_junk(
     *,
     set_status: Optional[StatusFn] = None,
     finalize: bool = False,
+    cache=None,
 ) -> List[str]:
     """
     Compare chapters and add repeating ads to *cleaner*.
@@ -139,6 +147,9 @@ def learn_site_junk(
     During fetch, wait until SAMPLE_CHAPTERS have HTML before locking.
     ``finalize=True`` (end of fetch / EPUB build) spread-samples the book
     and may add more literals. Never starts Polish / llama.cpp.
+
+    ``cache``: see ``sample_chapter_html`` — needed when a streaming download
+    has already released chapters' in-memory content by the time this runs.
     """
     if cleaner is None:
         return []
@@ -147,7 +158,7 @@ def learn_site_junk(
     if already and not finalize:
         return existing
     cap = FINAL_SAMPLE_CHAPTERS if finalize else SAMPLE_CHAPTERS
-    htmls = sample_chapter_html(chapters, cap, spread=finalize)
+    htmls = sample_chapter_html(chapters, cap, spread=finalize, cache=cache)
     if len(htmls) < _MIN_SAMPLES:
         return existing
     if not finalize and len(htmls) < SAMPLE_CHAPTERS:
