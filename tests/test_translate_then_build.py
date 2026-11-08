@@ -89,7 +89,8 @@ class FakeBuilder:
     def apply_translations(self, info, chapters, all_texts, translated):
         self.applied.append(list(translated))
 
-    def build(self, info, chapters, path, progress, skip_html_clean=False, language=None):
+    def build(self, info, chapters, path, progress, skip_html_clean=False, language=None,
+              release_content=False):
         self.built.append((path, skip_html_clean, language))
         return path
 

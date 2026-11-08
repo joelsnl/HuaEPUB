@@ -101,10 +101,11 @@ class EPUBBuilder:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         skip_html_clean: bool = False,
         language: Optional[str] = None,
+        release_content: bool = False,
     ) -> str:
         """
         Build an EPUB file from chapters.
-        
+
         Args:
             novel_info: Novel metadata
             chapters: List of chapters with content loaded
@@ -114,7 +115,11 @@ class EPUBBuilder:
                 (translated builds already cleaned before applying translations).
             language: Override BCP-47 language. Default: English after
                 translation, otherwise novel_info.language (for Play Books TTS).
-            
+            release_content: Free each chapter's raw content right after it's
+                encoded into the EPUB, roughly halving peak memory on a big
+                novel. Only pass True when the caller won't read or rebuild
+                from these same ``chapters`` afterward.
+
         Returns:
             Path to the created EPUB file
         """
@@ -136,7 +141,7 @@ class EPUBBuilder:
         self._add_metadata(book, novel_info, lang)
         self._add_cover(book, novel_info)
         epub_chapters, spine, overlay_durations = self._add_chapters(
-            book, valid_chapters, lang, skip_html_clean, progress_callback
+            book, valid_chapters, lang, skip_html_clean, progress_callback, release_content
         )
         if not epub_chapters:
             raise ValueError("No valid chapters to include in EPUB")
@@ -220,7 +225,10 @@ class EPUBBuilder:
         except Exception as e:
             print(f"  Warning: Could not download cover image: {e}")
 
-    def _add_chapters(self, book, valid_chapters, lang, skip_html_clean, progress_callback):
+    def _add_chapters(
+        self, book, valid_chapters, lang, skip_html_clean, progress_callback,
+        release_content=False,
+    ):
         """Add one XHTML file per chapter (plus its Read Aloud overlay).
 
         Returns ``(epub_chapters, spine, overlay_durations)``.
@@ -261,6 +269,10 @@ class EPUBBuilder:
             )
             xhtml_content = self._wrap_xhtml(chapter.title, marked, lang=lang)
             epub_chapter.content = xhtml_content.encode('utf-8')
+            if release_content:
+                # Already encoded above; drop the raw copy so a big novel doesn't hold
+                # both the source text and the EPUB-encoded text for every chapter at once.
+                chapter.content = ""
 
             book.add_item(epub_chapter)
             epub_chapters.append(epub_chapter)
