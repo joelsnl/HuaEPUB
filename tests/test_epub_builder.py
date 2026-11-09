@@ -269,3 +269,23 @@ class TestSkipSecondClean:
         builder = TranslatedEPUBBuilder(translator=FakeTranslator(), cleaner=None)
         builder.build_with_translation(info, chapters, str(tmp_path / "out.epub"))
         assert seen.get("skip") is True
+
+
+class TestReleaseContent:
+    def test_default_leaves_chapter_content_untouched(self, tmp_path):
+        """Default behavior: chapters stay rebuildable (e.g. clean vs. skip-clean passes)."""
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content="<p>Hello.</p>"),
+        ]
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        EPUBBuilder().build(info, chapters, str(tmp_path / "out.epub"))
+        assert chapters[0].content == "<p>Hello.</p>"
+
+    def test_release_content_frees_raw_text_after_encoding(self, tmp_path):
+        """Opt-in: the one-shot download path uses this to halve peak memory on a big novel."""
+        chapters = [
+            Chapter(title="Chapter 1", url="https://example.com/1", content="<p>Hello.</p>"),
+        ]
+        info = NovelInfo(title="Test Book", author="Author", source_url="https://example.com/b")
+        EPUBBuilder().build(info, chapters, str(tmp_path / "out.epub"), release_content=True)
+        assert chapters[0].content == ""

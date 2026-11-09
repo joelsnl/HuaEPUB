@@ -684,7 +684,9 @@ def translate_then_build(
     """
     translator = builder.translator
     if not translator:
-        return builder.build(novel_info, chapters, output_path, progress_callback)
+        return builder.build(
+            novel_info, chapters, output_path, progress_callback, release_content=True
+        )
 
     _configure_translator(translator, novel_info, chapters)
     builder.chapters_with_chinese = []
@@ -761,6 +763,7 @@ def translate_then_build(
         novel_info, chapters, output_path, progress_callback,
         skip_html_clean=True,
         language="en",
+        release_content=True,
     )
 
 
@@ -1003,7 +1006,7 @@ def build_epub(
             status,
         )
 
-    builder.build(info, chapters, output_path, progress_cb)
+    builder.build(info, chapters, output_path, progress_cb, release_content=True)
     return EpubBuildResult(
         output_path=output_path,
         heuristic_chapters=[
