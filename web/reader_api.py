@@ -31,6 +31,7 @@ from core.reader import (
     resolve_reader_book,
     resume_index,
     sanitize_reader_html,
+    trim_chapter_window,
 )
 from core.notes import add_note, delete_note, list_notes, set_label
 from core.reading import get_bookmarks, get_position, set_position, toggle_bookmark
@@ -111,9 +112,21 @@ def build_router(ctx) -> APIRouter:
     session = ctx.session
 
     def fetch_chapter(item: OpenBook, index: int) -> str:
-        """Fetch one chapter body from the site, waiting out the site delay."""
+        """Fill one chapter's body: the on-disk cache first, the site only on a miss.
+
+        A chapter already downloaded once (including one this process trimmed back
+        out of memory, see ``trim_chapter_window``) comes straight from ``cache.db``
+        instead of hitting the site again.
+        """
         book = item.book
         ch = book.chapters[index]
+        try:
+            cached = session.cache.get_chapter(ch.url) if ch.url else None
+        except Exception:
+            cached = None
+        if cached:
+            ch.html = cached
+            return cached
         delay = _site_delay(ch.url, book.source_url)
         if item.last_fetch:
             wait = delay - (time.monotonic() - item.last_fetch)
@@ -254,6 +267,7 @@ def build_router(ctx) -> APIRouter:
             except Exception as exc:
                 note = f"Translation failed: {str(exc)[:120]}"
         prefetch_next(item, index)
+        trim_chapter_window(book, index)
         return {"index": index, "title": ch.title, "html": sanitize_reader_html(ch.html or ""),
                 "note": note}
 
