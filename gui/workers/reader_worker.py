@@ -41,6 +41,16 @@ class ReaderChapterFetchWorker(QObject):
     @Slot()
     def run(self):
         try:
+            cached = None
+            try:
+                cached = self.cache.get_chapter(self.url) if self.url else None
+            except Exception:
+                cached = None
+            if cached:
+                # Already on disk (including a chapter the reader's memory window
+                # trimmed back out): no need to hit the site or wait out its delay.
+                self.finished.emit(self.index, self.url, cached)
+                return
             if self.delay:
                 self.status.emit("Waiting for site delay…")
                 time.sleep(self.delay)

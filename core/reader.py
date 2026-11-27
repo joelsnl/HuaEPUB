@@ -348,6 +348,10 @@ def chapters_from_toc(
     cache=None,
     extras: Optional[Iterable] = None,
 ) -> List[ReaderChapter]:
+    """Chapter list for a cache-backed book. HTML is left empty here on purpose:
+    callers fetch (and cache.get_chapter) one chapter at a time, so opening a long
+    book never pulls every chapter's text into memory at once.
+    """
     rows: List[dict] = []
     seen = set()
     for item in list(toc or []):
@@ -372,22 +376,31 @@ def chapters_from_toc(
     chapters: List[ReaderChapter] = []
     for row in rows:
         url = row["url"]
-        html = ""
-        if cache is not None:
-            try:
-                html = cache.get_chapter(url) or ""
-            except Exception:
-                html = ""
         chapters.append(
             ReaderChapter(
                 title=row["title"] or f"Chapter {len(chapters) + 1}",
                 key=url,
                 index=len(chapters),
-                html=html,
+                html="",
                 url=url,
             )
         )
     return chapters
+
+
+def trim_chapter_window(book: "ReaderBook", index: int, radius: int = 2) -> None:
+    """Drop cached HTML for chapters far from ``index`` so a long reading session
+    stays flat in memory instead of piling up every chapter ever visited.
+
+    Cache-backed chapters are cheap to re-fetch (``cache.get_chapter``), so this
+    only trims ``KIND_CACHE`` books; a local EPUB already holds all of its
+    chapters' text from the one-time read at open.
+    """
+    if book is None or book.kind != KIND_CACHE or not book.chapters:
+        return
+    for ch in book.chapters:
+        if abs(ch.index - index) > radius:
+            ch.html = ""
 
 
 def resolve_reader_book(

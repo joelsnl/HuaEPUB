@@ -298,8 +298,14 @@
     show('read-book', true);
     hideSheets();
     showChrome();
-    texts = {};
-    textOrder = [];
+    // A server restart (or any other reason the book_id went stale) reopens the
+    // same book under a fresh id; chapters already shown this visit are still
+    // good, so keep them instead of forcing every one to reload from scratch.
+    var reopeningSameBook = !!(book && arg && arg.url && arg.url === book.url);
+    if (!reopeningSameBook) {
+      texts = {};
+      textOrder = [];
+    }
     here = 0;
     setJumpBack(null);
     setText('read-title', 'Opening…');

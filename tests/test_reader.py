@@ -18,6 +18,7 @@ from core.reader import (
     resolve_reader_book,
     resume_index,
     sanitize_reader_html,
+    trim_chapter_window,
 )
 from core.reading import clear_position, get_position, set_position
 
@@ -137,7 +138,11 @@ class TestResolveEpub:
 
 
 class TestResolveCache:
-    def test_uses_toc_and_cached_html(self, tmp_path):
+    def test_uses_toc_without_preloading_html(self, tmp_path):
+        """Opening a cache-backed book builds the chapter list from the TOC alone:
+        no chapter's HTML is pulled into memory until it is actually read (a long
+        book must not load every cached chapter's text just to be opened).
+        """
         cache = NovelCache(tmp_path / "cache.db", max_bytes=0)
         url = "https://example.com/book"
         cache.put_chapter_list(
@@ -157,11 +162,41 @@ class TestResolveCache:
             )
             assert result.book is not None
             assert result.book.kind == KIND_CACHE
-            assert "cached one" in result.book.chapters[0].html
+            assert result.book.chapters[0].html == ""
             assert result.book.chapters[1].html == ""
+            assert result.book.chapters[0].url == "https://example.com/1"
             assert result.book.chapters[1].url == "https://example.com/2"
         finally:
             cache.close()
+
+
+class TestTrimChapterWindow:
+    def test_keeps_only_nearby_chapters(self):
+        book = ReaderBook(
+            source_url="https://example.com/book",
+            title="Book",
+            kind=KIND_CACHE,
+            chapters=[
+                ReaderChapter(title=f"Ch {i}", key=str(i), index=i, html=f"<p>{i}</p>")
+                for i in range(10)
+            ],
+        )
+        trim_chapter_window(book, 5, radius=2)
+        kept = {ch.index for ch in book.chapters if ch.html}
+        assert kept == {3, 4, 5, 6, 7}
+
+    def test_leaves_epub_books_alone(self):
+        book = ReaderBook(
+            source_url="https://example.com/book",
+            title="Book",
+            kind=KIND_EPUB,
+            chapters=[
+                ReaderChapter(title=f"Ch {i}", key=str(i), index=i, html=f"<p>{i}</p>")
+                for i in range(5)
+            ],
+        )
+        trim_chapter_window(book, 0, radius=2)
+        assert all(ch.html for ch in book.chapters)
 
     def test_cache_open_uses_stored_english_titles(self, tmp_path):
         cache = NovelCache(tmp_path / "cache.db", max_bytes=0)
