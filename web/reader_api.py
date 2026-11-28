@@ -35,9 +35,16 @@ from core.reader import (
 )
 from core.notes import add_note, delete_note, list_notes, set_label
 from core.reading import get_bookmarks, get_position, set_position, toggle_bookmark
+from core.utils import release_memory
 from web.tasks import Busy
 
 MAX_OPEN_BOOKS = 6
+
+# No tab-close signal reaches the server unless the browser gets the chance to send one
+# (killed tab, lost network, a phone backgrounding the page). This is the fallback: an
+# open book that hasn't been touched (chapter fetch or the periodic ``/touch``) in this
+# long is dropped on the next store access, same as if the tab had told us it closed.
+IDLE_SECONDS = 600.0
 
 
 @dataclass
@@ -50,26 +57,55 @@ class OpenBook:
 
 
 class ReaderStore:
-    def __init__(self, limit: int = MAX_OPEN_BOOKS):
+    def __init__(self, limit: int = MAX_OPEN_BOOKS, idle_seconds: float = IDLE_SECONDS):
         self._limit = limit
+        self._idle_seconds = idle_seconds
         self._items: "OrderedDict[str, OpenBook]" = OrderedDict()
         self._lock = threading.Lock()
 
+    def _evict_idle_unlocked(self) -> bool:
+        now = time.monotonic()
+        stale = [
+            key for key, item in self._items.items()
+            if (now - item.seen) > self._idle_seconds
+        ]
+        for key in stale:
+            del self._items[key]
+        return bool(stale)
+
     def put(self, book) -> OpenBook:
         item = OpenBook(id=secrets.token_urlsafe(9), book=book)
+        freed = False
         with self._lock:
+            freed = self._evict_idle_unlocked()
             self._items[item.id] = item
             while len(self._items) > self._limit:
                 self._items.popitem(last=False)
+                freed = True
+        if freed:
+            release_memory()
         return item
 
     def get(self, book_id: str) -> Optional[OpenBook]:
         with self._lock:
+            freed = self._evict_idle_unlocked()
             item = self._items.get(book_id)
             if item is not None:
                 item.seen = time.monotonic()
                 self._items.move_to_end(book_id)
-            return item
+        if freed:
+            release_memory()
+        return item
+
+    def drop(self, book_id: str) -> bool:
+        """Close one reading session right away (the browser tab actually closed),
+        instead of waiting for the idle timeout to notice.
+        """
+        with self._lock:
+            removed = self._items.pop(book_id, None) is not None
+        if removed:
+            release_memory()
+        return removed
 
     def active(self, within: float = 180.0) -> bool:
         """True when a browser still has a book open (a touch within ``within`` seconds)."""
@@ -275,6 +311,15 @@ def build_router(ctx) -> APIRouter:
     def touch(book_id: str):
         if ctx.readers.get(book_id) is None:
             return JSONResponse({"error": "book_closed"}, status_code=404)
+        return {"ok": True}
+
+    @r.post("/{book_id}/close")
+    def close_book(book_id: str):
+        """The tab actually closed (or navigated away): free this session's memory now
+        instead of waiting out the idle timeout. Sent best-effort via sendBeacon, so a
+        book that's already gone (or never existed) is not an error.
+        """
+        ctx.readers.drop(book_id)
         return {"ok": True}
 
     @r.post("/{book_id}/position")

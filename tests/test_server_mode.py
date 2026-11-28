@@ -823,6 +823,14 @@ def test_library_list_and_reader_from_cache(session, monkeypatch):
 
     saved = get_position(url, data_dir=session.data_dir)
     assert saved and saved["chapter_index"] == 1
+    closed = c.post(f"/api/read/{book['book_id']}/close", headers=H)
+    assert closed.status_code == 200 and closed.json() == {"ok": True}
+    # The session is gone right away; touching it now looks like it was never open.
+    assert c.post(f"/api/read/{book['book_id']}/touch", headers=H).status_code == 404
+    # Closing an already-closed (or unknown) book is not an error: the browser sends
+    # this best-effort on every tab close, so it can't assume the server still has it.
+    again = c.post(f"/api/read/{book['book_id']}/close", headers=H)
+    assert again.status_code == 200 and again.json() == {"ok": True}
 
 
 def test_library_update_epub_and_remove(session, monkeypatch):
@@ -1242,6 +1250,39 @@ def test_an_open_book_counts_as_reading_until_it_goes_quiet():
     assert store.get(item.id) is item
     item.seen = time.monotonic() - 181
     assert not store.active()
+
+
+def test_reader_store_drops_a_session_the_browser_closed(monkeypatch):
+    """Closing the tab frees that reading session right away, not just once six
+    other books have been opened.
+    """
+    import web.reader_api as reader_api
+
+    freed = []
+    monkeypatch.setattr(reader_api, "release_memory", lambda: freed.append(True))
+    store = reader_api.ReaderStore()
+    item = store.put(object())
+    assert store.get(item.id) is item
+    assert store.drop(item.id) is True
+    assert store.get(item.id) is None
+    assert freed  # the freed memory was handed back to the OS, not just dropped from the dict
+    assert store.drop(item.id) is False  # already gone: no error, no second release
+
+
+def test_reader_store_evicts_a_session_nobody_touched(monkeypatch):
+    """A tab that dies without a chance to say so (killed, lost network) is reclaimed
+    once it has gone quiet for a while, instead of sitting in memory until six other
+    books get opened.
+    """
+    import web.reader_api as reader_api
+
+    freed = []
+    monkeypatch.setattr(reader_api, "release_memory", lambda: freed.append(True))
+    store = reader_api.ReaderStore(idle_seconds=60)
+    item = store.put(object())
+    item.seen = time.monotonic() - 61
+    assert store.get(item.id) is None
+    assert freed
 
 
 def test_card_description_turns_site_markup_into_lines():

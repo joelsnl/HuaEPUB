@@ -283,15 +283,37 @@
     try { window.localStorage.setItem(LOCAL_KEY, JSON.stringify(row)); } catch (e) { /* private mode */ }
   }
 
+  // Free this reading session on the server right away instead of leaving it for the
+  // server's own idle timeout to notice. keepalive lets the request outlive the page
+  // (a real tab close or navigation), and it carries the same session cookie + CSRF
+  // header as every other API call, so it can't go through sendBeacon (no custom
+  // headers there).
+  function closeOnServer() {
+    if (!book || !book.book_id) return;
+    try {
+      fetch('/api/read/' + book.book_id + '/close', {
+        method: 'POST', headers: { 'X-HuaEPUB': '1' }, credentials: 'same-origin',
+        keepalive: true, body: ''
+      });
+    } catch (e) { /* best effort */ }
+  }
+
   // There is no picker of its own: a book is always opened from Library (Read button,
   // Continue reading, or double-click), same as the desktop Read tab.
   function toLibrary() {
+    closeOnServer();
     document.body.classList.remove('is-reading', 'dock-open');
     show('read-book', false);
     hideSheets();
     letSleep();
     H.go('library');
   }
+
+  window.addEventListener('pagehide', function (ev) {
+    // event.persisted means the page is going into the back/forward cache, not really
+    // closing — the user may be back in a second, so don't drop the session for that.
+    if (!ev.persisted) closeOnServer();
+  });
 
   function open(arg) {
     document.body.classList.add('is-reading');
